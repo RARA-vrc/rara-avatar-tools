@@ -1,7 +1,7 @@
 {
   "name": "jp.rara.avatar-tools",
   "displayName": "RARA Avatar Tools (アバター軽量化・Quest/iOS対応)",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "unity": "2022.3",
   "description": "VRChatアバターの軽量化とQuest/iOS対応を支援するエディタ拡張ツール群です。Quest Converter・PC Optimizer・Avatar Studio を収録しています。",
   "author": {

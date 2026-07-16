@@ -1607,6 +1607,15 @@ namespace RARA.AvatarStudio
                 if (!Equals(newTr, s.transparentHandling)) { s.transparentHandling = newTr; changed = true; }
             }
 
+            // 見え方トラブルの常設注意書き(恒久対応=この行で変換方法を指定して再生成 / 応急処置=生成複製の
+            // シェーダー直変更)。静的テキストのみ・無条件表示なので、同一OnGUIの Layout/Repaint でコントロール数は食い違わない。
+            EditorGUILayout.HelpBox(
+                "見えるべきものが消えた/消えるべきものが見えている場合: 該当マテリアルの行で変換方法を選び直して再生成してください" +
+                "(見せたい→Toon Standard(不透明)や乗算・加算 / 消したい→非表示)。" +
+                "急ぎの場合は生成された複製のマテリアルのシェーダーを直接 VRChat/Mobile/Toon Standard 等へ変更しても表示できます" +
+                "(ただし再生成で上書きされるため、恒久対応はこの行での指定を推奨)。",
+                MessageType.None);
+
             // quest は OnGUI 冒頭で s から値コピー済みのスナップショット。上のドロップダウンで
             // s.shaderTarget / s.transparentHandling を変えても quest 側は旧値のままなので、sig が
             // 新値へ動く一方 PreviewMaterials が旧 quest を読み、プレビューが1フレーム前の設定で

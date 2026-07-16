@@ -472,6 +472,20 @@ namespace RARA.AvatarStudio
             // 変換結果チェック(Quest): 元マテリアル ← → 変換後マテリアルのサムネイル比較。
             DrawResultCheckGrid(result, window);
 
+            // 見た目トラブル時の二段構え案内(恒久=⑥マテリアルのQuestパネルで変換方法を指定して再生成 /
+            // 応急=生成された _Quest 複製のシェーダーを直変更)。Quest を生成したときのみ表示。result は描画中に
+            // 不変なので、条件付きでも同一OnGUIの Layout/Repaint でコントロール数は食い違わない(静的テキスト)。
+            if (result.ranQuest)
+            {
+                EditorGUILayout.HelpBox(
+                    "見た目がおかしいときは: 見えるべきものが消えた/消えるべきものが見えている場合は、⑥マテリアルのQuestパネルで" +
+                    "該当マテリアルの変換方法を選び直して再生成してください(見せたい→Toon Standard(不透明)や乗算・加算 / 消したい→非表示)。" +
+                    "急ぎの場合は生成された _Quest 複製のマテリアルのシェーダーを直接 VRChat/Mobile/Toon Standard 等へ変更しても表示できます" +
+                    "(再生成で上書きされるため、恒久対応はパネルでの指定を推奨)。" +
+                    "アップロード前に Build & Test で実機相当の見え方を確認してください。",
+                    MessageType.Info);
+            }
+
             // H5: AAO のビルド時適用に関する後注。
             EditorGUILayout.HelpBox(
                 "注: AAO(Trace and Optimize)によるメッシュ/スロット統合や非表示メッシュ削減はビルド時(アップロード時)に反映されます。"

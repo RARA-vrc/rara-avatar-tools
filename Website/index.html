@@ -3,18 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>RARA Avatar Tools</title>
+  <title>RARA Avatar Tools — アバター軽量化・Quest/iOS対応</title>
+  <meta name="description" content="VRChatアバターの軽量化とQuest/iOS対応を1つのウィンドウで行うUnityエディタ拡張。非破壊で _Opt / _Quest 複製を生成。VCC / ALCOM に追加。">
   <!--
-    配置先: このファイルは公開先リポジトリの Website/index.html として上書き配置してください。
-            GitHub Pages のトップページ (https://rara-vrc.github.io/rara-avatar-tools/) になります。
-    URL は RARA-vrc / rara-avatar-tools 向けに設定済みです。
-    注: このページは package-list-action の Scriban テンプレートとして処理されますが、
-        テンプレート記法 (二重波括弧) を含まないため、そのまま静的ページとして出力されます。
+    配置先: 公開先リポジトリ (RARA-vrc / rara-avatar-tools) の Website/index.html として配置。
+    GitHub Pages のトップ (https://rara-vrc.github.io/rara-avatar-tools/) になります。
+    package-list-action の Scriban テンプレートとして処理されますが、テンプレート記法(二重波括弧)を
+    含まないため、そのまま静的ページとして出力されます。生成される index.json と併存します。
   -->
   <style>
     :root {
       color-scheme: light dark;
       --bg: #f5f6f8;
+      --bg2: #eceef2;
       --card: #ffffff;
       --fg: #1a1c1f;
       --muted: #5b6068;
@@ -22,10 +23,15 @@
       --accent-fg: #ffffff;
       --border: #e2e5ea;
       --code-bg: #eef0f4;
+      --ok: #1f8a4c;
+      --warn: #b26a00;
+      --table-head: #eef1f6;
+      --table-alt: #f7f8fa;
     }
     @media (prefers-color-scheme: dark) {
       :root {
         --bg: #16181d;
+        --bg2: #101216;
         --card: #1f232a;
         --fg: #eceef1;
         --muted: #9aa0aa;
@@ -33,115 +39,534 @@
         --accent-fg: #0d0f13;
         --border: #2c313a;
         --code-bg: #12151a;
+        --ok: #4ac47e;
+        --warn: #e0a53a;
+        --table-head: #262b33;
+        --table-alt: #1b1f25;
       }
     }
-    * {
-      box-sizing: border-box;
-    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
     body {
       margin: 0;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 24px;
       background: var(--bg);
       color: var(--fg);
       font-family: -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif;
-      line-height: 1.7;
+      line-height: 1.75;
+      -webkit-font-smoothing: antialiased;
     }
-    .card {
-      width: 100%;
-      max-width: 560px;
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 36px 32px;
-      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.08);
+    .wrap { max-width: 860px; margin: 0 auto; padding: 0 20px; }
+
+    /* HERO */
+    header.hero {
+      background:
+        radial-gradient(1200px 400px at 80% -10%, rgba(91,134,245,0.16), transparent 60%),
+        var(--bg2);
+      border-bottom: 1px solid var(--border);
+      padding: 56px 0 40px;
     }
-    h1 {
-      font-size: 1.6rem;
-      margin: 0 0 4px;
-    }
-    .sub {
-      color: var(--muted);
-      margin: 0 0 24px;
-      font-size: 0.95rem;
-    }
-    .btn {
-      display: block;
-      text-align: center;
-      text-decoration: none;
-      background: var(--accent);
-      color: var(--accent-fg);
-      font-weight: 700;
-      font-size: 1.1rem;
-      padding: 16px 20px;
-      border-radius: 12px;
-      margin: 8px 0 16px;
-    }
-    .btn:hover {
-      opacity: 0.92;
-    }
-    h2 {
-      font-size: 1rem;
-      margin: 24px 0 8px;
-    }
-    p {
-      margin: 8px 0;
-    }
-    .url {
-      display: block;
-      background: var(--code-bg);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 10px 12px;
-      font-family: "SFMono-Regular", Consolas, monospace;
-      font-size: 0.9rem;
-      word-break: break-all;
-      user-select: all;
-    }
-    ul {
-      margin: 8px 0;
-      padding-left: 1.2em;
-    }
-    .muted {
-      color: var(--muted);
-      font-size: 0.9rem;
-    }
-    a {
+    .eyebrow {
+      display: inline-block;
+      font-size: 0.8rem;
+      letter-spacing: 0.06em;
       color: var(--accent);
+      font-weight: 700;
+      margin: 0 0 10px;
     }
-    hr {
-      border: none;
-      border-top: 1px solid var(--border);
-      margin: 24px 0;
+    h1 { font-size: 1.95rem; line-height: 1.35; margin: 0 0 10px; letter-spacing: -0.01em; }
+    .lead { color: var(--muted); font-size: 1.05rem; margin: 0 0 26px; max-width: 640px; }
+    .cta-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 22px; }
+    .btn {
+      display: inline-block; text-align: center; text-decoration: none;
+      background: var(--accent); color: var(--accent-fg);
+      font-weight: 700; font-size: 1.05rem;
+      padding: 15px 26px; border-radius: 12px;
+      box-shadow: 0 6px 20px rgba(59,110,240,0.25);
+    }
+    .btn:hover { opacity: 0.93; }
+    .btn.secondary {
+      background: transparent; color: var(--fg);
+      border: 1px solid var(--border); box-shadow: none; font-weight: 600; font-size: 0.98rem;
+    }
+    .copy-field {
+      display: flex; gap: 8px; align-items: stretch; margin: 6px 0 4px; max-width: 640px;
+    }
+    .copy-field code {
+      flex: 1; min-width: 0;
+      background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px;
+      padding: 11px 13px; font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 0.86rem; overflow-x: auto; white-space: nowrap; user-select: all;
+      display: flex; align-items: center;
+    }
+    .copy-btn {
+      flex: 0 0 auto; cursor: pointer;
+      background: var(--card); color: var(--fg);
+      border: 1px solid var(--border); border-radius: 10px;
+      padding: 0 16px; font-size: 0.88rem; font-weight: 600;
+    }
+    .copy-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .hint { color: var(--muted); font-size: 0.86rem; margin: 4px 0 0; }
+
+    /* SECTIONS */
+    section { padding: 40px 0; border-bottom: 1px solid var(--border); }
+    section:last-of-type { border-bottom: none; }
+    h2 { font-size: 1.4rem; margin: 0 0 6px; letter-spacing: -0.01em; }
+    h2 .num {
+      display: inline-block; color: var(--accent); font-weight: 800; margin-right: 8px;
+    }
+    .section-sub { color: var(--muted); margin: 0 0 22px; font-size: 0.96rem; }
+    h3 { font-size: 1.05rem; margin: 22px 0 8px; }
+    p { margin: 10px 0; }
+    a { color: var(--accent); }
+
+    /* numbered steps */
+    ol.steps { counter-reset: step; list-style: none; padding: 0; margin: 16px 0; }
+    ol.steps > li {
+      position: relative; padding: 4px 0 14px 46px; margin: 0;
+    }
+    ol.steps > li::before {
+      counter-increment: step; content: counter(step);
+      position: absolute; left: 0; top: 2px;
+      width: 30px; height: 30px; border-radius: 50%;
+      background: var(--accent); color: var(--accent-fg);
+      font-weight: 700; font-size: 0.92rem;
+      display: flex; align-items: center; justify-content: center;
+    }
+    ol.steps > li:not(:last-child)::after {
+      content: ""; position: absolute; left: 14px; top: 34px; bottom: 0;
+      width: 2px; background: var(--border);
+    }
+    ol.steps b { font-weight: 700; }
+
+    ul { margin: 10px 0; padding-left: 1.3em; }
+    ul li { margin: 5px 0; }
+
+    /* cards grid */
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; margin: 18px 0; }
+    .card {
+      background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+      padding: 18px 20px;
+    }
+    .card h3 { margin: 0 0 6px; font-size: 1rem; }
+    .card p { margin: 0; color: var(--muted); font-size: 0.92rem; }
+
+    /* details / accordion */
+    details {
+      background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+      margin: 10px 0; overflow: hidden;
+    }
+    details[open] { box-shadow: 0 4px 18px rgba(0,0,0,0.05); }
+    summary {
+      cursor: pointer; padding: 15px 18px; font-weight: 700; font-size: 1rem;
+      list-style: none; display: flex; align-items: center; gap: 10px;
+    }
+    summary::-webkit-details-marker { display: none; }
+    summary::before {
+      content: "＋"; color: var(--accent); font-weight: 800; font-size: 1.05rem;
+      flex: 0 0 auto; transition: transform 0.15s;
+    }
+    details[open] summary::before { content: "－"; }
+    summary .badge {
+      margin-left: auto; font-size: 0.72rem; font-weight: 600; color: var(--muted);
+      background: var(--bg2); border: 1px solid var(--border); border-radius: 20px; padding: 2px 10px;
+    }
+    .details-body { padding: 2px 18px 18px; border-top: 1px solid var(--border); }
+    .details-body > *:first-child { margin-top: 12px; }
+
+    /* tables */
+    .table-scroll { overflow-x: auto; margin: 14px 0; -webkit-overflow-scrolling: touch; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.88rem; min-width: 460px; }
+    th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); }
+    thead th { background: var(--table-head); font-weight: 700; white-space: nowrap; }
+    tbody tr:nth-child(even) { background: var(--table-alt); }
+    td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    caption { text-align: left; color: var(--muted); font-size: 0.82rem; padding: 6px 2px; caption-side: bottom; }
+
+    /* callouts */
+    .note {
+      border-left: 4px solid var(--accent); background: var(--card);
+      border-radius: 0 10px 10px 0; padding: 12px 16px; margin: 14px 0;
+      font-size: 0.92rem;
+    }
+    .note.warn { border-left-color: var(--warn); }
+    .note.ok { border-left-color: var(--ok); }
+    .note b { font-weight: 700; }
+    code.inline {
+      background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px;
+      padding: 1px 6px; font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.85em;
+    }
+
+    /* footer */
+    footer { padding: 34px 0 48px; color: var(--muted); font-size: 0.9rem; }
+    footer a { color: var(--accent); }
+    .foot-links { display: flex; flex-wrap: wrap; gap: 18px; margin: 0 0 16px; }
+
+    .kicker { font-size: 0.82rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px; }
+
+    @media (max-width: 560px) {
+      h1 { font-size: 1.6rem; }
+      .btn { width: 100%; }
+      .cta-row { flex-direction: column; align-items: stretch; }
     }
   </style>
 </head>
 <body>
-  <main class="card">
-    <h1>RARA Avatar Tools</h1>
-    <p class="sub">アバター軽量化・Quest/iOS対応のエディタ拡張ツール群</p>
 
-    <a class="btn" href="vcc://vpm/addRepo?url=https%3A%2F%2Frara-vrc.github.io%2Frara-avatar-tools%2Findex.json">VCC / ALCOM に追加</a>
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <p class="eyebrow">VRChat / Unity エディタ拡張 — VPM パッケージ</p>
+    <h1>RARA アバター軽量化・Quest・iOS対応ツール</h1>
+    <p class="lead">
+      VRChatアバターの軽量化とQuest / iOS対応を、1つの統合ウィンドウ(Avatar Studio)でまとめて実行。
+      元アバターは一切変更しない非破壊方式で、PC用の <code class="inline">_Opt</code>・Quest用の <code class="inline">_Quest</code> 複製を生成します。
+    </p>
 
-    <p class="muted">上のボタンを押すと VCC (VRChat Creator Companion) または ALCOM が起動し、リポジトリの追加確認画面が開きます。</p>
+    <div class="cta-row">
+      <a class="btn" href="vcc://vpm/addRepo?url=https%3A%2F%2Frara-vrc.github.io%2Frara-avatar-tools%2Findex.json">VCC / ALCOM に追加</a>
+      <a class="btn secondary" href="https://github.com/RARA-vrc/rara-avatar-tools" target="_blank" rel="noopener">GitHub リポジトリ</a>
+    </div>
+    <p class="hint">ボタンを押すと VCC(VRChat Creator Companion)または ALCOM が起動し、リポジトリの追加確認画面が開きます。</p>
 
-    <h2>手動で追加する場合</h2>
-    <p>VCC / ALCOM の Settings &gt; Packages &gt; Add Repository に次の URL を貼り付けてください。</p>
-    <div class="url">https://rara-vrc.github.io/rara-avatar-tools/index.json</div>
+    <p class="kicker" style="margin-top:24px;">手動で追加する場合の URL</p>
+    <div class="copy-field">
+      <code id="repoUrl">https://rara-vrc.github.io/rara-avatar-tools/index.json</code>
+      <button class="copy-btn" type="button" onclick="copyRepo(this)">コピー</button>
+    </div>
+    <p class="hint">VCC / ALCOM の Settings &gt; Packages &gt; Add Repository に貼り付けてください。</p>
+  </div>
+</header>
 
-    <h2>収録ツール</h2>
-    <ul>
-      <li>Quest Converter — Quest/iOS 向けのマテリアル・メッシュ変換と軽量化</li>
-      <li>PC Optimizer — PC 向けアバターの最適化</li>
-      <li>Avatar Studio — 変換・診断・アップロード補助の統合ウィンドウ</li>
-    </ul>
+<!-- ============ 導入手順 ============ -->
+<section id="install">
+  <div class="wrap">
+    <h2>導入手順(VCC / ALCOM)</h2>
+    <p class="section-sub">リポジトリを追加し、プロジェクトにパッケージを入れると、Unity のメニューバーにツールが追加されます。</p>
 
-    <hr>
-    <p class="muted">ALCOM (anatawa12 版の代替クライアント) でも、同じボタン・同じ URL で追加できます。</p>
-    <p class="muted">ライセンス: MIT。利用規約は MIT ライセンスに準じます。</p>
-  </main>
+    <ol class="steps">
+      <li>
+        <b>リポジトリを追加する。</b>
+        上の「VCC / ALCOM に追加」ボタンを押すか、VCC / ALCOM の <b>Settings &gt; Packages &gt; Add Repository</b> に
+        <code class="inline">https://rara-vrc.github.io/rara-avatar-tools/index.json</code> を貼り付けます。
+      </li>
+      <li>
+        <b>プロジェクトにパッケージを追加する。</b>
+        対象のアバタープロジェクトを VCC / ALCOM で開き、<b>Manage Project</b> の一覧から
+        <b>RARA Avatar Tools</b> を追加します。パッケージは <code class="inline">Packages/jp.rara.avatar-tools/</code> に配置されます。
+      </li>
+      <li>
+        <b>Unity で RARA メニューを開く。</b>
+        コンパイルが終わると、メニューバーに <b>RARA &gt; アバター軽量化・Quest・iOS対応ツール</b> が追加されます。これを選ぶと統合ウィンドウが開きます。
+      </li>
+    </ol>
+
+    <div class="note warn">
+      <b>依存ツール:AAO(Avatar Optimizer)の導入を強く推奨。</b>
+      メッシュ・マテリアルスロットの統合や非表示メッシュの削減は、ビルド時に AAO(<code class="inline">com.anatawa12.avatar-optimizer</code>)が担当する分業設計です。
+      AAO が無いと削減効果が出にくく、Quest ではスキンメッシュ数の上限に収まらず Very Poor でアップロードできないことがあります。
+      ブラウザで <a href="https://vpm.anatawa12.com/add-repo" target="_blank" rel="noopener">https://vpm.anatawa12.com/add-repo</a> を開き、VCC / ALCOM で
+      Add Repository → プロジェクトに Avatar Optimizer を追加 → Unity へ戻ってください。
+    </div>
+    <p class="hint">メニューは1項目に統合されています。開いたあとにウィンドウ上部のチップで PC / Quest / 両方を切り替えます(既定は両方)。</p>
+  </div>
+</section>
+
+<!-- ============ 使い方の完全ガイド ============ -->
+<section id="guide">
+  <div class="wrap">
+    <h2>使い方の完全ガイド</h2>
+    <p class="section-sub">
+      ウィンドウは上から順に進めれば完了する構成です:
+      対象/プリセット → ① 診断 → ② 構成整理 → ③ PhysBone → ④ テクスチャ → ⑤ ポリゴン → ⑥ マテリアル → ⑦ 実行 → ⑧ ヘルプ。
+      各ステップの詳細を下の折りたたみで確認できます。
+    </p>
+
+    <!-- 対象 / プリセット -->
+    <details open>
+      <summary>対象(PC / Quest)とプリセット<span class="badge">はじめに</span></summary>
+      <div class="details-body">
+        <p>シーンに置いたアバター(<code class="inline">VRCAvatarDescriptor</code> 付き)を選ぶと、自動で診断が走ります。上部の「対象」チップで <b>PC</b> / <b>Quest / iOS</b> を切り替えます(既定は両方)。目的に近いプリセットを押すと、対象と目標ランクがまとめて設定され、あとから各項目で微調整できます。</p>
+        <ul>
+          <li><b>雑にQuest対応</b> — Quest のみ / 目標 Poor。透過は乗算・加算で自動再現(ストッキング等の透けも保持)。ポリゴン削減は既定オフ。</li>
+          <li><b>PCをPoorに</b> — PC のみ / 目標 Poor。</li>
+          <li><b>PCをGoodに</b> — PC のみ / 目標 Good。</li>
+          <li><b>フル両対応(おすすめ)</b> — PC(Good)と Quest(Poor)の両方。</li>
+        </ul>
+      </div>
+    </details>
+
+    <!-- ① 診断 -->
+    <details>
+      <summary>① 診断 — 現在値と目標ランク、しきい値表<span class="badge">閾値の実数</span></summary>
+      <div class="details-body">
+        <p>VRChat SDK の性能統計 API を使い、現在の総合ランク・カテゴリ別ランクを <b>PC 基準</b>と <b>Quest 基準</b>の二列で表示します。対象ごとに目標ランクを選べます。<code class="inline">EditorOnly</code> タグのオブジェクトは、実際のビルドと同様に除外して計算されます。下部の「目標達成ガイド」には、目標を超えた項目ごとに推奨アクションと「→ ステップ n で対応」ボタンが並びます。Quest 基準では、推定ダウンロードサイズ(10MB 上限との比較)・Quest 非対応シェーダーのマテリアル一覧・Android 非対応コンポーネント一覧・テクスチャ設定の警告も表示します。</p>
+
+        <h3>PC(Windows)ランク閾値</h3>
+        <p class="hint">各数値はそのランクの上限。値がその数値以下なら少なくともそのランク以内。Poor の数値を超えると Very Poor になります(数値は SDK 判定アセットの実値)。</p>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr><th>項目</th><th class="n">Excellent</th><th class="n">Good</th><th class="n">Medium</th><th class="n">Poor</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>ポリゴン(三角形)</td><td class="n">32,000</td><td class="n">70,000</td><td class="n">70,000</td><td class="n">70,000</td></tr>
+              <tr><td>スキンメッシュ数</td><td class="n">1</td><td class="n">2</td><td class="n">8</td><td class="n">16</td></tr>
+              <tr><td>メッシュレンダラー数</td><td class="n">4</td><td class="n">8</td><td class="n">16</td><td class="n">24</td></tr>
+              <tr><td>マテリアルスロット数</td><td class="n">4</td><td class="n">8</td><td class="n">16</td><td class="n">32</td></tr>
+              <tr><td>テクスチャメモリ(MB)</td><td class="n">40</td><td class="n">75</td><td class="n">110</td><td class="n">150</td></tr>
+              <tr><td>ボーン数</td><td class="n">75</td><td class="n">150</td><td class="n">256</td><td class="n">400</td></tr>
+              <tr><td>PhysBone コンポーネント</td><td class="n">4</td><td class="n">8</td><td class="n">16</td><td class="n">32</td></tr>
+              <tr><td>PhysBone 対象トランスフォーム</td><td class="n">16</td><td class="n">64</td><td class="n">128</td><td class="n">256</td></tr>
+              <tr><td>PhysBone コライダー</td><td class="n">4</td><td class="n">8</td><td class="n">16</td><td class="n">32</td></tr>
+              <tr><td>PhysBone 衝突判定回数</td><td class="n">32</td><td class="n">128</td><td class="n">256</td><td class="n">512</td></tr>
+              <tr><td>コンタクト(ローカル除く)</td><td class="n">8</td><td class="n">16</td><td class="n">24</td><td class="n">32</td></tr>
+              <tr><td>コンストレイント</td><td class="n">100</td><td class="n">250</td><td class="n">300</td><td class="n">350</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="hint">ポリゴンは Excellent だけ 32,000、Good / Medium / Poor はすべて 70,000。32,001〜70,000 は Good に載り、70,000 を超えると一気に Very Poor になります。</p>
+
+        <h3>Quest / iOS(Android)ランク閾値</h3>
+        <p class="hint">iOS も Quest(Android)と同じモバイル制限。Very Poor はモバイルへアップロード不可(既定の表示ランクは Medium)。</p>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr><th>項目</th><th class="n">Excellent</th><th class="n">Good</th><th class="n">Medium</th><th class="n">Poor</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>ポリゴン(三角形)</td><td class="n">7,500</td><td class="n">10,000</td><td class="n">15,000</td><td class="n">20,000</td></tr>
+              <tr><td>スキンメッシュ数</td><td class="n">1</td><td class="n">1</td><td class="n">2</td><td class="n">2</td></tr>
+              <tr><td>マテリアルスロット数</td><td class="n">1</td><td class="n">1</td><td class="n">2</td><td class="n">4</td></tr>
+              <tr><td>PhysBone コンポーネント</td><td class="n">0</td><td class="n">4</td><td class="n">6</td><td class="n">8</td></tr>
+              <tr><td>PhysBone 対象ボーン</td><td class="n">0</td><td class="n">16</td><td class="n">32</td><td class="n">64</td></tr>
+              <tr><td>PhysBone コライダー</td><td class="n">0</td><td class="n">4</td><td class="n">8</td><td class="n">16</td></tr>
+              <tr><td>コンタクト</td><td class="n">2</td><td class="n">4</td><td class="n">8</td><td class="n">16</td></tr>
+              <tr><td>テクスチャメモリ(MB)</td><td class="n">10</td><td class="n">18</td><td class="n">25</td><td class="n">40</td></tr>
+            </tbody>
+            <caption>ダウンロードサイズはビルド後圧縮で 10MB まで(超過はアップロード不可)。コンポーネント数が Very Poor 閾値を超えると、モバイルでは PhysBone・コンタクト・コンストレイントがすべて無効化されます。</caption>
+          </table>
+        </div>
+        <div class="note">代表値の目安です。実際の判定は VRChat SDK の診断結果に従ってください。診断はエディタ上の状態で計算されるため、AAO がビルド時に統合・削減する分は反映されず、実際より悪めに出ることがあります。</div>
+      </div>
+    </details>
+
+    <!-- ② 構成整理 -->
+    <details>
+      <summary>② 構成整理 — トグル固定 / SkinnedMesh統合<span class="badge">要AAO</span></summary>
+      <div class="details-body">
+        <p>トグルで切り替える衣装・アクセサリを検出し、各グループを「トグル維持 / 表示で固定 / 非表示で固定」から選びます。</p>
+        <ul>
+          <li><b>表示で固定</b> — 常時表示にしてトグルアニメを外す。AAO がビルド時に結合できるようになり、スキンメッシュ数・スロット数が減ります。</li>
+          <li><b>非表示で固定</b> — そのメッシュを削除(<code class="inline">EditorOnly</code>)。ビルドから外れます(AAO 不要)。</li>
+          <li><b>SkinnedMesh統合(顔以外を1つへ)</b> — 顔(ビセーム / まばたき)以外の SkinnedMeshRenderer を AAO の Merge Skinned Mesh で1つに統合。SkinnedMesh 数とスロット数が同時に減ります(既定:統合)。統合対象外:顔メッシュ、Cloth 付き、EditorOnly、プレビューで個別に「統合しない」を選んだメッシュ。</li>
+        </ul>
+        <p class="hint">Quest 対象のときは、続けて <b>Quest 除外(ビルド除外)</b>と <b>隠面メッシュ削減</b>(服の下に隠れる肌などをブレンドシェイプで削除)もここで設定できます。</p>
+        <div class="note warn"><b>トグルは統合先に追従しません。</b>統合したメッシュは常時表示になり、ON/OFF トグルは効かなくなります。切り替えを残したいメッシュはプレビューで「このメッシュは統合しない」を選んでください。</div>
+        <p>元アバターの共有アニメクリップは変更されず(クローン側のクリップだけ編集)、m_IsActive 以外のアニメ(ブレンドシェイプ等)は維持されます。</p>
+      </div>
+    </details>
+
+    <!-- ③ PhysBone -->
+    <details>
+      <summary>③ PhysBone 整理 — 選別・マージ<span class="badge">揺れ維持</span></summary>
+      <div class="details-body">
+        <p>残す・削除・マージを設定します。設定が一致する兄弟 PhysBone チェーンを共通の親でまとめ、揺れを維持したままコンポーネント数を削減します。積極マージ(既定オン)では、完全一致しない兄弟チェーンも先頭の設定に統一してマージします(アニメ制御・パラメータ使用などの安全ゲートは維持)。</p>
+        <p>選択後のコンポーネント数が PC / Quest の上限とあわせて色付きで表示され、ランク別の上限ラダーと「次のランクまであと何個」の目安が併記されます。</p>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>PhysBone コンポーネント上限</th><th class="n">Excellent</th><th class="n">Good</th><th class="n">Medium</th><th class="n">Poor</th></tr></thead>
+            <tbody>
+              <tr><td>PC</td><td class="n">4</td><td class="n">8</td><td class="n">16</td><td class="n">32</td></tr>
+              <tr><td>Quest / iOS</td><td class="n">0</td><td class="n">4</td><td class="n">6</td><td class="n">8</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note warn"><b>Quest はコンポーネント 8個 を超えると、モバイルで揺れものが全て停止します。</b>超過している場合は「優先度で自動選択(Quest 8本まで)」を押すと、髪・胸などを優先して自動的に上限内へ収められます(PC は超過してもアップロード可、ランクが下がるだけ)。</div>
+      </div>
+    </details>
+
+    <!-- ④ テクスチャ -->
+    <details>
+      <summary>④ テクスチャ縮小 — VRAM とサイズを減らす</summary>
+      <div class="details-body">
+        <p>メイン・エミッション・ノーマル・マスク類まで全テクスチャのメモリ寄与を推定し、寄与の大きいものから縮小提案を並べます。個別「適用」または「提案をすべて適用」で縮小計画に登録し、目標ランクの上限に収まるよう自動調整もできます。Quest では「10MB 以下まで自動調整」で、寄与の大きいテクスチャから段階的に解像度を下げる計画を自動作成できます(顔・体系の名前を持つテクスチャは後回しにして画質を優先)。</p>
+        <div class="note ok">縮小計画のテクスチャは、生成時に低解像度コピーが <code class="inline">Generated</code> に作られ、複製がそれを参照します。<b>元のテクスチャとインポート設定には一切触れません。</b>「縮小計画をクリア」でいつでも取り消せます。</div>
+      </div>
+    </details>
+
+    <!-- ⑤ ポリゴン -->
+    <details>
+      <summary>⑤ ポリゴン削減(Quest)— 目標ポリゴン数へ簡略化<span class="badge">既定オフ</span></summary>
+      <div class="details-body">
+        <p>目標ポリゴン数(Excellent 7,500 / Good 10,000 / Medium 15,000 / Poor 20,000)を選び、「自動で配分計画を作成」でメッシュごとの削減目標を割り当てます。優先度の低いメッシュ(その他 → 衣装 → 素体 → 髪 → 顔)から順に削って目標に収めます。頂点を間引く方式なので、UV・法線・ボーンウェイト・ブレンドシェイプ(表情)はそのまま保持されます。</p>
+        <ul>
+          <li><b>ポリゴン削減は既定で無効</b>です。現在の三角形数が目標を超えているときは、パネルに琥珀の案内と「ポリゴン削減を有効にする」ボタンが出るので、そこから有効化します。</li>
+          <li>顔(リップシンク対象)と髪は品質下限で強く保護されます。各メッシュはバッジ(顔 / 髪 / 素体 / 衣装 / その他)で分類表示。</li>
+          <li>Unity Cloth 付きメッシュは削減対象から自動除外(布シミュレーション維持のため)。</li>
+        </ul>
+        <div class="note">大きく削る場合は、先に外部ツール(Blender 等)でメッシュを整えてから本ツールで微調整するのがおすすめです。無料の削減(メッシュ削減・衣装整理・Quest除外)を先に済ませてから使うと崩れにくくなります。</div>
+      </div>
+    </details>
+
+    <!-- ⑥ マテリアル / 透過 -->
+    <details>
+      <summary>⑥ マテリアル / 透過・アトラス・Quest変換設定<span class="badge">PC列 / Quest列</span></summary>
+      <div class="details-body">
+        <p>PC 列と Quest 列を並べて、アトラス統合や変換方法を設定します。</p>
+
+        <h3>変換方法(Quest)</h3>
+        <p>全マテリアルが一覧表示され(透過 / カットアウト / パーティクル / アニメ使用 / メニュー・ギミック参照などのバッジ付き)、マテリアルごとに変換方法を選べます:<b>自動(推奨) / Toon Standard / Toon Lit / パーティクル加算 / パーティクル乗算 / 非表示 / 変換しない</b>。各行に「変換後にどうなるか」が表示されます。Modular Avatar の Material Setter や Avatar Menu Creator 等から参照されるマテリアルも収集・変換・差し替えされます(メニューで切り替わる目・衣装・表情差分の消失を防止)。</p>
+
+        <h3>半透明マテリアルの自動再現(既定)</h3>
+        <p>Quest には半透明シェーダーが無いため、アルファブレンド透過(チーク・涙・ガラス等)は乗算 / 加算の Particles シェーダーで近似再現します。暗めの透過は <code class="inline">Particles/Multiply</code>(乗算)、明るい透過は <code class="inline">Particles/Additive</code>(加算)へ、メインテクスチャの明るさから自動判定。既定処理は「透過マテリアルの既定処理」で <b>自動で半透明を再現(推奨) / 非表示にする(最軽量) / 不透明に変換</b>から切り替えられ、マテリアル単位の上書きも可能です。大型メッシュと髪、カットアウト(髪の透け先端など)は保護対象で、常に不透明として変換されます。</p>
+
+        <h3>アトラス統合(実験的)</h3>
+        <p>互換性のある複数マテリアルを1枚のアトラステクスチャ+1マテリアルに統合し、メッシュの UV を再マップしてスロット数を減らします。同一メッシュ内は変換時、メッシュをまたぐ統合はビルド時に AAO が実施。アニメでマテリアル差し替えされるもの、UV が 0..1 範囲外(タイリング使用)のものは自動で対象外(理由付きで表示)。PC 列では、テクスチャ無しの色だけ材質は色セルを、エミッションはエミッションマスクセルをアトラスにベイクして、統合後も色・発光が保たれます。</p>
+        <p class="hint">Quest 対象のときは、表情デカール(チーク / 涙 / アイハイライト)の再現・非表示や、Quest 変換設定(シェーダー・テクスチャ形式など)もこのステップで設定します。変換設定は実行の直前に最終確認できるよう末尾に配置されています。</p>
+      </div>
+    </details>
+
+    <!-- ⑦ 実行 -->
+    <details>
+      <summary>⑦ 実行 — 非破壊で複製を生成<span class="badge">_Opt / _Quest</span></summary>
+      <div class="details-body">
+        <p>実行オプション(プレファブ保存・AAO 付与)を確認し、「この実行で行われること」の要約と実行前の確認ダイアログを見てから実行します。元アバターは変更されず、PC 用に <code class="inline">{名前}_Opt</code>、Quest 用に <code class="inline">{名前}_Quest</code> の複製がシーンとプレファブの両方に生成されます。アップロードするのはこの複製です。</p>
+        <p>実行後は、変換前後の比較テーブル(PC / Quest、目標との突き合わせ)と、Quest の変換結果チェック(元 ←→ 変換後マテリアルのサムネイル比較)が結果欄に表示されます。</p>
+        <div class="note ok"><b>繰り返し再生成は安全です。</b>実行のたびに前回の <code class="inline">_Opt</code> / <code class="inline">_Quest</code> 複製は自動で作り直され、生成アセットは決まった場所へ GUID 保持で上書きされるので、複製が増え続けたり参照が壊れたりしません。元アバターの名前を変えたあとに取り残された古い複製がある場合は、実行結果に名前付きで警告が出ます(自動削除はしません)。</div>
+        <div class="note warn"><b>ビルド時に効く処理があります。</b>AAO によるメッシュ・スロット統合や非表示メッシュ削減は、ビルド(アップロード)時に反映されます。生成直後にシーンや診断表で見える数値は最終ビルドより控えめに出ます。最終確認は SDK のビルド結果で行ってください。</div>
+      </div>
+    </details>
+
+    <!-- アップロードガイド -->
+    <details>
+      <summary>アップロードガイド — Blueprint ID で PC / Quest 両対応<span class="badge">内蔵</span></summary>
+      <div class="details-body">
+        <p>1つの Blueprint ID で <code class="inline">_Opt</code>(PC)と <code class="inline">_Quest</code>(Quest / iOS)を同一アバターの両対応版(フォールバック)として上げる手順が、ウィンドウに内蔵されています。</p>
+        <ol class="steps">
+          <li><b>Windows で _Opt をアップロード。</b>ビルドターゲットを Windows にして SDK コントロールパネルから <code class="inline">_Opt</code> をアップロードすると、Blueprint ID が割り当てられます。</li>
+          <li><b>その ID を _Quest へ同期。</b>「同期」ボタンで <code class="inline">_Opt</code> の Blueprint ID を <code class="inline">_Quest</code> へコピーします(宛先に別の ID がある場合は確認ダイアログ)。</li>
+          <li><b>ビルドターゲットを Android に切替。</b>切替はテクスチャ等の再インポートを伴い時間がかかります。完了してから進みます。</li>
+          <li><b>Android で _Quest をアップロード。</b>PC 版と同じ Blueprint ID のままアップロードすると、1つのアバターで PC / Quest 両対応になります。</li>
+        </ol>
+      </div>
+    </details>
+
+    <!-- トラブルシューティング -->
+    <details>
+      <summary>トラブルシューティング — 見えない / 見えすぎる両方向</summary>
+      <div class="details-body">
+        <h3>Quest 版で消えた・見えない</h3>
+        <ul>
+          <li><b>髪が消えた</b> — 旧版の透過自動非表示が原因。最新版では大型メッシュ・髪は自動非表示の対象外なので、再変換すれば直ります。</li>
+          <li><b>メニューで切り替える目・衣装が消える</b> — 最新版ではメニュー / ギミック参照のマテリアルも自動変換されます。マテリアル設定に「メニュー/ギミック参照」バッジが付いているか確認してください。</li>
+          <li><b>ストッキング等が消えた</b> — 一覧の「不透明にする」/「乗算で再現」ボタンで、非表示になったマテリアル行を個別に戻せます。</li>
+        </ul>
+        <h3>白く光る・板になる・見えすぎる</h3>
+        <ul>
+          <li><b>一部が真っ白に光る</b> — エミッション引き継ぎが原因のことが多く、再変換で直ります。残る場合は該当マテリアルの Emission を生成マテリアルで手動調整。</li>
+          <li><b>チーク等が顔に板として乗る</b> — 既定は「自動で半透明を再現」で乗算 / 加算に近似されます。板に見える場合は、その既定処理(非表示にする 等)や個別指定を確認してください。</li>
+          <li><b>暗いワールドで真っ黒</b> — 最新版は lilToon の最低明るさを引き継ぐため、再変換で改善します。</li>
+        </ul>
+        <h3>反映されない・改善しない</h3>
+        <ul>
+          <li><b>SDK に赤いシェーダーアラート</b> — 変換前の元アバターを選んでいないか確認。アップロードするのは <code class="inline">_Quest</code> の方です。</li>
+          <li><b>軽くならない / PhysBone が減らない</b> — 前回の古い複製をアップロードしている可能性大。再変換してハイライトされた新しい複製をアップロードしてください。</li>
+        </ul>
+        <div class="note warn"><b>生成マテリアルの手動シェーダー変更は、再生成で上書きされます。</b>恒久的に変えたい場合は、マテリアル行の「変換方法」で指定してください(手動でシェーダーを差し替えても、次の生成でツールの変換結果に戻ります)。</div>
+      </div>
+    </details>
+
+    <!-- 軽くなる仕組み -->
+    <details>
+      <summary>軽くなる仕組み — 何をすると何が減るか</summary>
+      <div class="details-body">
+        <ul>
+          <li><b>トグル固定(表示で固定)</b> — 表示アニメを常時 ON に固定 → AAO がビルド時に同一メッシュへ結合でき、SkinnedMesh 数が減る(要 AAO)。</li>
+          <li><b>トグル固定(非表示で固定)</b> — 使わない衣装を EditorOnly 化 → ビルドから外れ SkinnedMesh 数が減る(AAO 不要)。</li>
+          <li><b>SkinnedMesh 統合</b> — 顔以外を1つにまとめる → SkinnedMesh 数が減る(結合はビルド時に AAO が実施)。</li>
+          <li><b>アトラス統合</b> — 複数マテリアルのテクスチャを1枚に → マテリアルスロット数が減る。</li>
+          <li><b>テクスチャ縮小</b> — 解像度を下げる → テクスチャメモリ(VRAM)とダウンロードサイズが減る。</li>
+          <li><b>ポリゴン削減</b> — 頂点を間引く(ブレンドシェイプと UV は保持)→ 三角数が減る。</li>
+          <li><b>PhysBone 整理</b> — 揺れもの設定を選別・マージ → PhysBone コンポーネント数が減る。</li>
+          <li><b>透過処理</b> — Quest には半透明シェーダーが無いため、乗算 / 加算の Particles シェーダーで見た目を近似(ランク削減ではなく Quest 対応のための処理)。</li>
+        </ul>
+      </div>
+    </details>
+
+  </div>
+</section>
+
+<!-- ============ 対応・環境・ライセンス ============ -->
+<section id="specs">
+  <div class="wrap">
+    <h2>対応シェーダー・動作環境</h2>
+
+    <div class="cards">
+      <div class="card">
+        <h3>対応シェーダー</h3>
+        <p>lilToon / NonToon(jp.lilxyzw)/ Poiyomi(ロック済みも可)/ Standard 系。前髪影(FakeShadow)やアウトライン専用などのエフェクト専用シェーダーは、Quest で再現できないため自動で非表示化されます。</p>
+      </div>
+      <div class="card">
+        <h3>Quest 変換先</h3>
+        <p>VRChat/Mobile/Toon Standard(既定)または Toon Lit(最軽量)へ変換。質感をテクスチャにベイク。透過は Particles Multiply / Additive で近似。</p>
+      </div>
+      <div class="card">
+        <h3>動作環境</h3>
+        <p>Unity 2022.3 系(2022.3.22f1 で確認)。VRChat Avatars SDK 3.8.1 以降(3.10.4 で確認)。レンダーパイプラインは Built-in のみ。</p>
+      </div>
+      <div class="card">
+        <h3>非破壊設計</h3>
+        <p>元アバターは無変更。<code class="inline">_Opt</code> / <code class="inline">_Quest</code> のシーン複製とプレファブを出力。何度でも安全に再生成できます。</p>
+      </div>
+    </div>
+
+    <div class="note">
+      <b>AAO(Avatar Optimizer)の導入を強く推奨。</b>
+      メッシュ・スロットの統合や非表示メッシュ削減はビルド時に AAO が担当します。導入は
+      <a href="https://vpm.anatawa12.com/add-repo" target="_blank" rel="noopener">https://vpm.anatawa12.com/add-repo</a> を VCC / ALCOM に追加して行います。
+    </div>
+  </div>
+</section>
+
+<!-- ============ FOOTER ============ -->
+<footer>
+  <div class="wrap">
+    <div class="foot-links">
+      <a href="https://github.com/RARA-vrc/rara-avatar-tools" target="_blank" rel="noopener">GitHub リポジトリ</a>
+      <a href="https://github.com/RARA-vrc/rara-avatar-tools/blob/main/CHANGELOG.md" target="_blank" rel="noopener">更新履歴(CHANGELOG)</a>
+      <a href="https://vpm.anatawa12.com/add-repo" target="_blank" rel="noopener">AAO(Avatar Optimizer)を追加</a>
+    </div>
+    <p><b>更新履歴の要点(v1.0.2):</b> メニューを1項目に統合、ヘルプを全面改訂(軽くなる仕組みの平易な説明・実装とのファクトチェック済み)、雑にQuest対応プリセットの透過を「自動再現」に変更、非表示マテリアル行に「不透明にする」「乗算で再現」ボタンを追加。詳細は上の CHANGELOG を参照してください。</p>
+    <p>ライセンス: <b>MIT</b>。利用規約は MIT ライセンスに準じます(同梱の LICENSE を参照)。ALCOM(anatawa12 版の代替クライアント)でも、同じボタン・同じ URL で追加できます。</p>
+    <p class="hint">© RARA — RARA Avatar Tools(jp.rara.avatar-tools)</p>
+  </div>
+</footer>
+
+<script>
+  function copyRepo(btn) {
+    var url = document.getElementById('repoUrl').textContent.trim();
+    var done = function () {
+      var old = btn.textContent;
+      btn.textContent = 'コピーしました';
+      setTimeout(function () { btn.textContent = old; }, 1600);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(done).catch(function () { fallback(url, done); });
+    } else {
+      fallback(url, done);
+    }
+  }
+  function fallback(text, done) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    try { document.execCommand('copy'); done(); } catch (e) {}
+    document.body.removeChild(ta);
+  }
+</script>
+
 </body>
 </html>
