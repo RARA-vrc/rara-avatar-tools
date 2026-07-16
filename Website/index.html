@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RARA Avatar Tools</title>
+  <!--
+    配置先: このファイルは公開先リポジトリの Website/index.html として上書き配置してください。
+            GitHub Pages のトップページ (https://rara-vrc.github.io/rara-avatar-tools/) になります。
+    URL は RARA-vrc / rara-avatar-tools 向けに設定済みです。
+    注: このページは package-list-action の Scriban テンプレートとして処理されますが、
+        テンプレート記法 (二重波括弧) を含まないため、そのまま静的ページとして出力されます。
+  -->
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f5f6f8;
+      --card: #ffffff;
+      --fg: #1a1c1f;
+      --muted: #5b6068;
+      --accent: #3b6ef0;
+      --accent-fg: #ffffff;
+      --border: #e2e5ea;
+      --code-bg: #eef0f4;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #16181d;
+        --card: #1f232a;
+        --fg: #eceef1;
+        --muted: #9aa0aa;
+        --accent: #5b86f5;
+        --accent-fg: #0d0f13;
+        --border: #2c313a;
+        --code-bg: #12151a;
+      }
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif;
+      line-height: 1.7;
+    }
+    .card {
+      width: 100%;
+      max-width: 560px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 36px 32px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.08);
+    }
+    h1 {
+      font-size: 1.6rem;
+      margin: 0 0 4px;
+    }
+    .sub {
+      color: var(--muted);
+      margin: 0 0 24px;
+      font-size: 0.95rem;
+    }
+    .btn {
+      display: block;
+      text-align: center;
+      text-decoration: none;
+      background: var(--accent);
+      color: var(--accent-fg);
+      font-weight: 700;
+      font-size: 1.1rem;
+      padding: 16px 20px;
+      border-radius: 12px;
+      margin: 8px 0 16px;
+    }
+    .btn:hover {
+      opacity: 0.92;
+    }
+    h2 {
+      font-size: 1rem;
+      margin: 24px 0 8px;
+    }
+    p {
+      margin: 8px 0;
+    }
+    .url {
+      display: block;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 0.9rem;
+      word-break: break-all;
+      user-select: all;
+    }
+    ul {
+      margin: 8px 0;
+      padding-left: 1.2em;
+    }
+    .muted {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    a {
+      color: var(--accent);
+    }
+    hr {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 24px 0;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>RARA Avatar Tools</h1>
+    <p class="sub">アバター軽量化・Quest/iOS対応のエディタ拡張ツール群</p>
+
+    <a class="btn" href="vcc://vpm/addRepo?url=https%3A%2F%2Frara-vrc.github.io%2Frara-avatar-tools%2Findex.json">VCC / ALCOM に追加</a>
+
+    <p class="muted">上のボタンを押すと VCC (VRChat Creator Companion) または ALCOM が起動し、リポジトリの追加確認画面が開きます。</p>
+
+    <h2>手動で追加する場合</h2>
+    <p>VCC / ALCOM の Settings &gt; Packages &gt; Add Repository に次の URL を貼り付けてください。</p>
+    <div class="url">https://rara-vrc.github.io/rara-avatar-tools/index.json</div>
+
+    <h2>収録ツール</h2>
+    <ul>
+      <li>Quest Converter — Quest/iOS 向けのマテリアル・メッシュ変換と軽量化</li>
+      <li>PC Optimizer — PC 向けアバターの最適化</li>
+      <li>Avatar Studio — 変換・診断・アップロード補助の統合ウィンドウ</li>
+    </ul>
+
+    <hr>
+    <p class="muted">ALCOM (anatawa12 版の代替クライアント) でも、同じボタン・同じ URL で追加できます。</p>
+    <p class="muted">ライセンス: MIT。利用規約は MIT ライセンスに準じます。</p>
+  </main>
+</body>
+</html>

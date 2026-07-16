@@ -1,0 +1,1810 @@
+// RARA アバター軽量化・Quest/iOS対応ツール(統合ウィンドウ) - プレビューパネル群
+// 各パネルは公開エンジン API を呼んで「実行前のプレビュー(概算)」を描画し、対応する
+// AvatarStudioSettings のフィールドを編集する(変更があれば戻り値 true → C が SaveSettings)。
+// エンジンは一切改変せず、READ-ONLY のプレビュー API のみを呼ぶ。重い計算は入力シグネチャで
+// キャッシュし、毎フレーム再計算しない(設定変更・アバター変更・世代更新で無効化される)。
+//
+// 【呼ぶ公開エンジン API(すべて READ-ONLY プレビュー)】
+//   ToggleConsolidator.DetectToggleGroups / SkinnedMeshMergePlanner.BuildPlan /
+//   ComponentRemover.PreviewPhysBoneMerge(+CollectPhysBoneTogglePaths) /
+//   PCTexturePlanner.BuildSuggestions(+EstimateTextureMemoryMB, ApplySuggestionsToPlan) /
+//   QuestSizeEstimator.Estimate / Decimation.PolygonBudgetPlanner.BuildPlan /
+//   PCMaterialAtlasser.PreviewPlan / AvatarQuestConverter.PreviewMaterials
+//
+// 【契約(Implementer A)】参照・編集する AvatarStudioSettings メンバー:
+//   共有: toggleChoices, mergeSkinnedMeshesMode, skinnedMeshMergeOptOutPaths,
+//         mergePhysBones, physBoneLooseMerge, physBoneRemovePaths
+//   PC : pcTargetRank, pcEnableAtlas, pcTexturePlan
+//   Quest: transparentHandling, shaderTarget, materialOverrides, questTextureSizePlan,
+//          questEnableDecimation, questDecimationTargetTriangles, questDecimationPlan
+//   (いずれも AvatarStudioSettings.cs で確認済みの実名。)
+//
+// 【エンジン設定の受け渡し】エンジンのプレビュー API が QuestConvertSettings / PCOptimizeSettings を要求する
+//   4パネル(Questテクスチャ・ポリゴン・PCアトラス・Questマテリアル)は、その設定を引数で受け取る。
+//   構築は C 側が A の AvatarStudioMapping.BuildQuestConvertSettings / BuildPCOptimizeSettings で行い、
+//   毎フレーム現在の AvatarStudioSettings から作り直して渡す(このファイルはマッピングに依存しない)。
+#if UNITY_EDITOR
+using System;
+using System.Collections.Generic;
+using UnityEditor;
+using UnityEngine;
+using RARA.PCOptimizer;
+using RARA.QuestConverter;
+using RARA.QuestConverter.Decimation;
+using VRC.SDK3.Avatars.Components;
+
+namespace RARA.AvatarStudio
+{
+    /// <summary>
+    /// プレビュー結果の入力シグネチャ付きキャッシュ。パネルごとに (signature, result) を保持し、
+    /// シグネチャ不一致のときのみ再計算する。generation を上げると全キャッシュが次回無効化される
+    /// (RunAll 実行後などに C が Bump する)。
+    /// </summary>
+    public sealed class AvatarStudioPreviewCache
+    {
+        /// <summary>強制無効化の世代カウンタ。</summary>
+        public int generation;
+
+        private readonly Dictionary<string, Entry> _map = new Dictionary<string, Entry>(StringComparer.Ordinal);
+
+        private struct Entry { public string sig; public object val; }
+
+        /// <summary>panel キーの結果を返す。sig が変わっていれば build() で再計算する(例外は握って null)。</summary>
+        public T GetOrBuild<T>(string panel, string sig, Func<T> build) where T : class
+        {
+            string full = generation + "|" + sig;
+            if (_map.TryGetValue(panel, out Entry e) && e.sig == full && e.val is T cached) return cached;
+
+            T val = null;
+            try { val = build(); }
+            catch (Exception ex) { Debug.LogError("[RARA AvatarStudio] プレビュー計算に失敗しました(" + panel + "): " + ex); }
+            _map[panel] = new Entry { sig = full, val = val };
+            return val;
+        }
+
+        /// <summary>全キャッシュを次回無効化する(世代を進める)。</summary>
+        public void Bump() { generation++; }
+
+        /// <summary>キャッシュを完全に破棄する(アバター切り替え時など)。</summary>
+        public void Clear() { _map.Clear(); }
+    }
+
+    /// <summary>統合ウィンドウのプレビューパネル群(静的)。各 Draw は変更があれば true を返す。</summary>
+    public static class AvatarStudioPreviewPanels
+    {
+        private const int MaxRows = 60;
+
+        // Quest(Android)PhysBoneコンポーネントのランク別上限のうち、Excellent/Good は公開定数が無い
+        // (QuestLimits は Medium/Poor のみ公開)ため、SDK 3.10.4 の
+        // StatsLevels/Android/{Excellent,Good}_Android.asset の physBone.componentCount を直接引用してハードコードする。
+        // Medium/Poor は QuestLimits.MediumPhysBoneComponents / PoorPhysBoneComponents を使う。
+        private const int QuestExcellentPhysBoneComponents = 0;
+        private const int QuestGoodPhysBoneComponents = 4;
+
+        // ポリゴン削減の目標ランク別プリセット(Quest StatsLevels の polyCount)。Medium/Poor は公開定数
+        // (QuestLimits)を、Excellent/Good は公開定数が無いため SDK の StatsLevels に合わせてハードコードする
+        // (旧QuestConverterウィンドウの DecimationRankPresets と同一の検証済み値)。
+        private static readonly int[] DecimationRankPresets = { 7500, 10000, QuestLimits.MediumPolygons, QuestLimits.PoorPolygons };
+        private static readonly GUIContent[] DecimationRankLabels =
+        {
+            new GUIContent("Excellent 7,500", "最も厳しい目標。7,500ポリゴン以下(顔・髪を強く保護すると到達できないことがあります)"),
+            new GUIContent("Good 10,000", "10,000ポリゴン以下"),
+            new GUIContent("Medium 15,000", "Questの既定表示ランク。15,000ポリゴン以下"),
+            new GUIContent("Poor 20,000", "アップロードできる上限。20,000ポリゴン以下(まずはここを目標にすると崩れにくい)"),
+        };
+
+        // ポリゴン削減カテゴリ別バッジ色(ダーク/ライト両スキンで読める中間トーン。旧ウィンドウと同系統)。
+        private static readonly Color CategoryFaceColor = new Color(0.95f, 0.45f, 0.5f);
+        private static readonly Color CategoryHairColor = new Color(0.9f, 0.62f, 0.35f);
+        private static readonly Color CategoryBodyColor = new Color(0.5f, 0.72f, 0.9f);
+        private static readonly Color CategoryClothesColor = new Color(0.55f, 0.8f, 0.5f);
+        private static readonly Color CategoryOtherColor = new Color(0.72f, 0.72f, 0.76f);
+
+        // Questマテリアル状態バッジ色(旧QuestConverterウィンドウの DrawMaterialBadges と同一値)。
+        private static readonly Color BadgeTransparentColor = new Color(0.95f, 0.55f, 0.25f);
+        private static readonly Color BadgeCutoutColor = new Color(0.85f, 0.72f, 0.25f);
+        private static readonly Color BadgeParticleColor = new Color(0.3f, 0.72f, 0.85f);
+        private static readonly Color BadgeAnimationColor = new Color(0.5f, 0.62f, 0.95f);
+        private static readonly Color BadgeTmpColor = new Color(0.8f, 0.5f, 0.85f);
+        private static readonly Color BadgeBrokenColor = new Color(0.95f, 0.35f, 0.35f);
+        private static readonly Color BadgeMobileColor = new Color(0.35f, 0.78f, 0.42f);
+        private static readonly Color BadgeComponentColor = new Color(0.95f, 0.55f, 0.7f);
+
+        // 状態バッジ用の遅延生成スタイル(ドメインリロードでnullに戻るため都度null判定で再生成)。
+        private static GUIStyle _badgeLabel;
+        private static GUIStyle BadgeStyle
+        {
+            get
+            {
+                if (_badgeLabel == null) _badgeLabel = new GUIStyle(EditorStyles.miniBoldLabel) { richText = false };
+                return _badgeLabel;
+            }
+        }
+
+        /// <summary>短い色付きバッジを1つ描画する(旧ウィンドウ DrawBadge と同じ体裁)。</summary>
+        private static void DrawBadge(string text, Color color, string tooltip)
+        {
+            Color prev = GUI.color;
+            GUI.color = color;
+            GUILayout.Label(new GUIContent(text, tooltip), BadgeStyle, GUILayout.ExpandWidth(false));
+            GUI.color = prev;
+        }
+
+        // ================================================================
+        // 1. 衣装・トグル整理(ToggleConsolidator.DetectToggleGroups)
+        // ================================================================
+        public static bool DrawTogglePanel(GameObject avatarRoot, AvatarStudioSettings s, AvatarStudioPreviewCache cache)
+        {
+            if (avatarRoot == null || s == null) { EditorGUILayout.HelpBox("アバターを選択してください。", MessageType.Info); return false; }
+
+            List<ToggleGroup> groups = cache.GetOrBuild(
+                "toggle",
+                avatarRoot.GetInstanceID().ToString(),
+                () => ToggleConsolidator.DetectToggleGroups(avatarRoot));
+
+            if (groups == null) { EditorGUILayout.HelpBox("トグルの検出に失敗しました(コンソール参照)。", MessageType.Warning); return false; }
+            if (groups.Count == 0)
+            {
+                EditorGUILayout.LabelField("切り替え(トグル)対象の衣装・アクセサリは見つかりませんでした。", EditorStyles.wordWrappedMiniLabel);
+                return false;
+            }
+
+            EditorGUILayout.LabelField(
+                "維持=従来どおり切替 / 常時表示=常にON固定(AAOがメッシュ・スロットを統合可能に) / 非表示除去=メッシュごと除去。",
+                EditorStyles.wordWrappedMiniLabel);
+
+            bool changed = false;
+            EnsureList(ref s.toggleChoices);
+            string[] labels = { "維持", "常時表示", "非表示除去" };
+
+            // 一括操作: 現在の表示状態で全トグルを固定 / すべて維持に戻す。
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                if (GUILayout.Button(new GUIContent("現在の表示状態で固定(全トグル)",
+                    "表示中のトグルは「常時表示」、非表示のトグルは「非表示除去」に一括設定します"), GUILayout.Height(22f)))
+                {
+                    foreach (ToggleGroup g in groups)
+                    {
+                        if (g == null || string.IsNullOrEmpty(g.id)) continue;
+                        SetToggleChoice(s.toggleChoices, g.id, g.defaultActive ? ToggleLockChoice.LockVisible : ToggleLockChoice.LockHidden);
+                    }
+                    changed = true;
+                }
+                if (GUILayout.Button(new GUIContent("すべて維持に戻す",
+                    "検出中のトグルをすべて「維持」に戻します"), GUILayout.Height(22f)))
+                {
+                    foreach (ToggleGroup g in groups)
+                    {
+                        if (g == null || string.IsNullOrEmpty(g.id)) continue;
+                        SetToggleChoice(s.toggleChoices, g.id, ToggleLockChoice.Keep);
+                    }
+                    changed = true;
+                }
+            }
+
+            int shown = 0;
+            foreach (ToggleGroup g in groups)
+            {
+                if (g == null) continue;
+                if (shown++ >= MaxRows) { EditorGUILayout.LabelField(string.Format("...他 {0} 件", groups.Count - MaxRows), EditorStyles.miniLabel); break; }
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    string src = string.IsNullOrEmpty(g.source) ? "" : "[" + g.source + "]";
+                    string stateText = g.defaultActive ? "表示中" : "非表示";
+                    EditorGUILayout.LabelField(new GUIContent(g.label + " " + src + " (現在: " + stateText + ")", g.id),
+                        GUILayout.MinWidth(140f), GUILayout.MaxWidth(260f));
+                    GUILayout.Label(string.Format("Renderer {0}", g.rendererCount), EditorStyles.miniLabel, GUILayout.Width(84f));
+
+                    int cur = (int)GetToggleChoice(s.toggleChoices, g.id);
+                    int next = GUILayout.Toolbar(cur, labels, GUILayout.Width(210f));
+                    if (next != cur)
+                    {
+                        SetToggleChoice(s.toggleChoices, g.id, (ToggleLockChoice)next);
+                        changed = true;
+                    }
+                    GUILayout.FlexibleSpace();
+                    DrawTogglePingButton(avatarRoot, g);
+                }
+            }
+
+            DrawToggleProjectedNote(groups, s.toggleChoices);
+            EditorGUILayout.LabelField("※ 統合はビルド時(AvatarOptimizer)に適用されます。数値は概算です。", EditorStyles.miniLabel);
+            return changed;
+        }
+
+        /// <summary>トグルグループの代表オブジェクトをシーンでピン表示するボタン(解決できなければ無効化)。</summary>
+        private static void DrawTogglePingButton(GameObject avatarRoot, ToggleGroup group)
+        {
+            Transform resolved = null;
+            if (avatarRoot != null && group != null && group.objectPaths != null)
+            {
+                foreach (string path in group.objectPaths)
+                {
+                    resolved = QuestCompat.FindByPath(avatarRoot.transform, path);
+                    if (resolved != null) break;
+                }
+            }
+            using (new EditorGUI.DisabledScope(resolved == null))
+            {
+                if (GUILayout.Button(new GUIContent("ピン", "シーン上の該当オブジェクトをハイライト表示します"), GUILayout.Width(36f)))
+                    EditorGUIUtility.PingObject(resolved.gameObject);
+            }
+        }
+
+        /// <summary>固定するトグル数(表示固定n/非表示固定m)の予測ノートを描画する。</summary>
+        private static void DrawToggleProjectedNote(List<ToggleGroup> groups, List<ToggleGroupChoice> choices)
+        {
+            if (groups == null) return;
+            int lockVisible = 0, lockHidden = 0;
+            foreach (ToggleGroup g in groups)
+            {
+                if (g == null || string.IsNullOrEmpty(g.id)) continue;
+                ToggleLockChoice choice = GetToggleChoice(choices, g.id);
+                if (choice == ToggleLockChoice.LockVisible) lockVisible++;
+                else if (choice == ToggleLockChoice.LockHidden) lockHidden++;
+            }
+            if (lockVisible + lockHidden == 0)
+            {
+                EditorGUILayout.LabelField("固定するトグルはありません(すべて維持)。", EditorStyles.miniLabel);
+                return;
+            }
+            EditorGUILayout.LabelField(
+                string.Format("固定するトグル数 {0}(表示固定 {1} / 非表示固定 {2})。表示固定はAAO結合対象、非表示固定はメッシュ削除になります。",
+                    lockVisible + lockHidden, lockVisible, lockHidden),
+                EditorStyles.wordWrappedMiniLabel);
+        }
+
+        private static ToggleLockChoice GetToggleChoice(List<ToggleGroupChoice> list, string groupId)
+        {
+            foreach (ToggleGroupChoice c in list)
+                if (c != null && c.groupId == groupId) return c.choice;
+            return ToggleLockChoice.Keep;
+        }
+
+        private static void SetToggleChoice(List<ToggleGroupChoice> list, string groupId, ToggleLockChoice choice)
+        {
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (list[i] != null && list[i].groupId == groupId)
+                {
+                    if (choice == ToggleLockChoice.Keep) list.RemoveAt(i); // Keep は既定=エントリ削除
+                    else list[i].choice = choice;
+                    return;
+                }
+            }
+            if (choice != ToggleLockChoice.Keep)
+                list.Add(new ToggleGroupChoice { groupId = groupId, choice = choice });
+        }
+
+        // ================================================================
+        // 2. SkinnedMesh統合(SkinnedMeshMergePlanner.BuildPlan)
+        // ================================================================
+        public static bool DrawSkinnedMeshMergePanel(GameObject avatarRoot, AvatarStudioSettings s, AvatarStudioPreviewCache cache)
+        {
+            if (avatarRoot == null || s == null) { EditorGUILayout.HelpBox("アバターを選択してください。", MessageType.Info); return false; }
+
+            bool changed = false;
+            EnsureList(ref s.skinnedMeshMergeOptOutPaths);
+
+            // トグルでモードを変えると次フレームの描画量(表 or 案内)が変わるため、モードは描画前に捕捉する。
+            // これで同一フレーム内の Layout/Repaint でコントロール数が食い違うのを防ぐ(反映は次回OnGUIから)。
+            bool mergeEnabled = s.mergeSkinnedMeshesMode != SkinnedMeshMergeMode.None;
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                EditorGUILayout.LabelField(new GUIContent("SkinnedMesh統合", "顔(ビセーム/まばたき)以外の SkinnedMeshRenderer を1つへ統合し、SMR数・スロット数を削減します。"),
+                    GUILayout.Width(120f));
+                bool newEnabled = GUILayout.Toggle(mergeEnabled, mergeEnabled ? "顔以外を統合(推奨)" : "統合しない", "Button", GUILayout.Width(160f));
+                if (newEnabled != mergeEnabled)
+                {
+                    s.mergeSkinnedMeshesMode = newEnabled ? SkinnedMeshMergeMode.MergeExceptFace : SkinnedMeshMergeMode.None;
+                    changed = true;
+                }
+            }
+
+            // 無効時: レンダラーごとに同じ「統合しない」行を並べず、1つの案内 + 目立つ有効化ボタンだけを見せる。
+            if (!mergeEnabled)
+            {
+                EditorGUILayout.HelpBox(
+                    "SkinnedMesh統合は無効です。『顔以外を統合』にすると、顔以外のメッシュ(静的なMeshRenderer含む)を" +
+                    "ビルド時に1つへ統合し、SkinnedMesh数を2まで削減できます(表示/非表示トグルは無効化されます)。",
+                    MessageType.Info);
+                if (GUILayout.Button(new GUIContent("顔以外を統合を有効にする",
+                    "顔(ビセーム/まばたき)以外の SkinnedMeshRenderer を1つへ統合するモードに切り替えます"), GUILayout.Height(28f)))
+                {
+                    s.mergeSkinnedMeshesMode = SkinnedMeshMergeMode.MergeExceptFace;
+                    changed = true;
+                    cache.Bump(); // キャッシュ済みのプラン/プレビューを無効化する
+                }
+                return changed;
+            }
+
+            string sig = avatarRoot.GetInstanceID() + "|" + (int)s.mergeSkinnedMeshesMode + "|" + HashPaths(s.skinnedMeshMergeOptOutPaths);
+            SkinnedMeshMergePlan plan = cache.GetOrBuild(
+                "smr", sig,
+                () => SkinnedMeshMergePlanner.BuildPlan(avatarRoot, s.mergeSkinnedMeshesMode, s.skinnedMeshMergeOptOutPaths));
+
+            if (plan == null) { EditorGUILayout.HelpBox("SkinnedMesh統合プレビューの計算に失敗しました。", MessageType.Warning); return changed; }
+
+            using (new EditorGUILayout.HorizontalScope(EditorStyles.helpBox))
+            {
+                EditorGUILayout.LabelField(string.Format("統合前 SMR {0} → 統合後(概算) {1}", plan.beforeCount, plan.expectedCount), EditorStyles.boldLabel);
+                GUILayout.FlexibleSpace();
+            }
+
+            int shown = 0;
+            foreach (SkinnedMeshMergeRow row in plan.rows)
+            {
+                if (row == null || row.isEditorOnly) continue;
+                if (shown++ >= MaxRows) { EditorGUILayout.LabelField("...(以下省略)", EditorStyles.miniLabel); break; }
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    Color prev = GUI.color;
+                    if (row.isFace) GUI.color = new Color(0.6f, 0.85f, 1f);
+                    else if (row.willMerge) GUI.color = new Color(0.6f, 0.9f, 0.6f);
+                    EditorGUILayout.LabelField(new GUIContent(row.rendererName, row.rendererPath), GUILayout.MinWidth(120f), GUILayout.MaxWidth(220f));
+                    GUI.color = prev;
+
+                    // 統合対象になり得る行(顔でない・メッシュあり)だけ opt-out トグルを出す。
+                    bool mergeable = !row.isFace && row.willMerge || IsOptedOut(s.skinnedMeshMergeOptOutPaths, row.rendererPath);
+                    if (s.mergeSkinnedMeshesMode != SkinnedMeshMergeMode.None && mergeable)
+                    {
+                        bool optOut = IsOptedOut(s.skinnedMeshMergeOptOutPaths, row.rendererPath);
+                        bool newOptOut = GUILayout.Toggle(optOut, "統合しない", GUILayout.Width(90f));
+                        if (newOptOut != optOut)
+                        {
+                            TogglePath(s.skinnedMeshMergeOptOutPaths, row.rendererPath, newOptOut);
+                            changed = true;
+                        }
+                    }
+                    GUILayout.Label(row.reason ?? "", EditorStyles.miniLabel, GUILayout.MinWidth(120f));
+                    GUILayout.FlexibleSpace();
+                }
+            }
+
+            EditorGUILayout.LabelField("※ 実際の統合はビルド時(AvatarOptimizer)に行われます。統合後SMR数は概算です。", EditorStyles.miniLabel);
+            return changed;
+        }
+
+        // ================================================================
+        // 3. PhysBone(ComponentRemover.PreviewPhysBoneMerge)
+        // ================================================================
+        public static bool DrawPhysBonePanel(GameObject avatarRoot, AvatarStudioSettings s, AvatarStudioPreviewCache cache)
+        {
+            if (avatarRoot == null || s == null) { EditorGUILayout.HelpBox("アバターを選択してください。", MessageType.Info); return false; }
+
+            bool changed = false;
+            EnsureList(ref s.physBoneRemovePaths);
+            EnsureList(ref s.questPhysBoneNoMergePaths);
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                bool merge = GUILayout.Toggle(s.mergePhysBones, "設定一致チェーンをマージ", "Button", GUILayout.Width(180f));
+                if (merge != s.mergePhysBones) { s.mergePhysBones = merge; changed = true; }
+                using (new EditorGUI.DisabledScope(!s.mergePhysBones))
+                {
+                    bool loose = GUILayout.Toggle(s.physBoneLooseMerge, "設定違いも先頭へ統一(ルーズ)", "Button", GUILayout.Width(210f));
+                    if (loose != s.physBoneLooseMerge) { s.physBoneLooseMerge = loose; changed = true; }
+                }
+            }
+
+            // 変換時と同じ入力(マージ除外パス・Quest除外サブツリー)でプレビューを取る。
+            // これらを空/nullにすると、変換では残る/除外されるPhysBoneが概算に反映されず、
+            // 8本ゲートを誤って通過(過小評価)したり過剰に警告(過大評価)したりする。
+            List<Transform> excludedRoots = s.targetQuest ? ResolveExcludedRoots(avatarRoot, s.questExcludePaths) : null;
+            string sig = avatarRoot.GetInstanceID() + "|" + s.physBoneLooseMerge + "|" + HashPaths(s.physBoneRemovePaths)
+                + "|" + HashPaths(s.questPhysBoneNoMergePaths) + "|" + (s.targetQuest ? HashPaths(s.questExcludePaths) : "-");
+            PhysBonePreview preview = cache.GetOrBuild(
+                "physbone", sig,
+                () => ComponentRemover.PreviewPhysBoneMerge(
+                    avatarRoot,
+                    ComponentRemover.CollectPhysBoneTogglePaths(avatarRoot),
+                    s.physBoneRemovePaths,
+                    s.questPhysBoneNoMergePaths,
+                    s.physBoneLooseMerge,
+                    excludedRoots));
+
+            if (preview == null)
+            {
+                EditorGUILayout.HelpBox("PhysBoneプレビューの計算に失敗しました。", MessageType.Warning);
+                // プレビュー失敗時も削除指定の一覧・「戻す」だけは出す。ここで return すると
+                // 下(通常時)の DrawPhysBoneRemoveList に到達せず、削除にしたPhysBoneを再Activeに戻せなくなるため。
+                changed |= DrawPhysBoneRemoveList(avatarRoot, s.physBoneRemovePaths);
+                return changed;
+            }
+
+            // 選択後に残るコンポーネント数(マージ設定・削除選択を反映した概算)と、対象ごとの上限メーター。
+            int projected = s.mergePhysBones ? preview.projectedComponentCount : preview.nonMergedComponentCount;
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    EditorGUILayout.LabelField(string.Format("現在 {0} 個 → 選択後(概算) {1} 個", preview.currentComponentCount, projected), EditorStyles.boldLabel);
+                    GUILayout.FlexibleSpace();
+                    using (new EditorGUI.DisabledScope(preview.rows == null || preview.rows.Count == 0))
+                    {
+                        if (GUILayout.Button(new GUIContent("優先度で自動選択(Quest 8本まで)",
+                            "髪・胸などの名前から優先度の高い揺れものを、Quest上限(" + QuestLimits.PoorPhysBoneComponents +
+                            "本)内で残し、残りを「削除」に設定します(現在の削除選択は置き換えられます)。\n" +
+                            QuestPhysBoneLadderText() + "(この上限がボタン名の「8本」です)"),
+                            GUILayout.Width(230f)))
+                        {
+                            if (AutoSelectPhysBonesForQuestCap(avatarRoot, s)) changed = true;
+                        }
+                    }
+                }
+
+                // 対象(PC / Quest)ごとに、選択後コンポーネント数を上限メーター・ランク別ラダー・次ランク目安とあわせて色付き表示する。
+                if (s.targetPC)
+                {
+                    DrawPhysBoneCapLine("PC", projected,
+                        PCRankLimits.GetLimit(s.pcTargetRank, PCRankLimits.PCStat.PhysBoneComponents),
+                        PCRankLimits.GetLimit(PCTargetRank.Poor, PCRankLimits.PCStat.PhysBoneComponents));
+                    DrawPhysBoneRankLadder("PC", projected,
+                        PCRankLimits.GetLimit(PCTargetRank.Excellent, PCRankLimits.PCStat.PhysBoneComponents),
+                        PCRankLimits.GetLimit(PCTargetRank.Good, PCRankLimits.PCStat.PhysBoneComponents),
+                        PCRankLimits.GetLimit(PCTargetRank.Medium, PCRankLimits.PCStat.PhysBoneComponents),
+                        PCRankLimits.GetLimit(PCTargetRank.Poor, PCRankLimits.PCStat.PhysBoneComponents));
+                }
+                if (s.targetQuest)
+                {
+                    DrawPhysBoneCapLine("Quest/iOS", projected,
+                        QuestLimits.MediumPhysBoneComponents, QuestLimits.PoorPhysBoneComponents);
+                    DrawPhysBoneRankLadder("Quest/iOS", projected,
+                        QuestExcellentPhysBoneComponents, QuestGoodPhysBoneComponents,
+                        QuestLimits.MediumPhysBoneComponents, QuestLimits.PoorPhysBoneComponents);
+                }
+                if (!s.targetPC && !s.targetQuest)
+                    EditorGUILayout.LabelField("対象(PC / Quest)を選ぶと上限メーターを表示します。", EditorStyles.miniLabel);
+            }
+
+            // Quest対象で上限超過のときは、モバイルで全PhysBoneが停止する旨を赤く警告する。
+            if (s.targetQuest && projected > QuestLimits.PoorPhysBoneComponents)
+            {
+                EditorGUILayout.HelpBox(
+                    "モバイルでは上限超過で全ての揺れが停止します(Quest上限 " + QuestLimits.PoorPhysBoneComponents +
+                    "本 / 現在の選択後 " + projected + "本)。「優先度で自動選択」か各行の「削除」で " +
+                    QuestLimits.PoorPhysBoneComponents + "本以下にしてください。",
+                    MessageType.Error);
+            }
+
+            if (preview.rows != null)
+            {
+                int shown = 0;
+                foreach (PhysBonePreviewRow row in preview.rows)
+                {
+                    if (row == null) continue;
+                    if (shown++ >= MaxRows) { EditorGUILayout.LabelField("...(以下省略)", EditorStyles.miniLabel); break; }
+                    // 1行=1 HorizontalScope。中央ラベルは MaxWidth で頭打ちし、削除トグルの直前に
+                    // FlexibleSpace を置くことで、グループ行・単独行いずれも削除チェックボックスを
+                    // 同じ右端の列に揃える(中央ラベル幅の差でチェックボックス位置がズレないように)。
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        if (row.isGroup)
+                        {
+                            int n = row.memberPaths != null ? row.memberPaths.Count : 0;
+                            Color prev = GUI.color; GUI.color = new Color(0.6f, 0.9f, 0.6f);
+                            EditorGUILayout.LabelField(string.Format("マージ {0}本 → 1本", n),
+                                EditorStyles.miniBoldLabel, GUILayout.Width(120f));
+                            GUI.color = prev;
+                            string label = row.memberLabels != null ? string.Join(", ", row.memberLabels) : "";
+                            GUILayout.Label(new GUIContent(Trunc(label, 40), label), EditorStyles.miniLabel, GUILayout.MinWidth(100f), GUILayout.MaxWidth(280f));
+                            if (row.looseMerged)
+                                GUILayout.Label(new GUIContent("(ルーズ)", "設定が異なるチェーンを先頭へ統一"), EditorStyles.miniLabel, GUILayout.Width(56f));
+                            GUILayout.FlexibleSpace();
+                            DrawPhysBonePingButton(avatarRoot, row.parentPath);
+                            // グループのマージ除外(このグループを1本へまとめず、各PhysBoneを残す)
+                            bool noMerge = AllRemoved(s.questPhysBoneNoMergePaths, row.memberPaths);
+                            bool newNoMerge = GUILayout.Toggle(noMerge, new GUIContent("マージしない", "このグループを1本へ統合せず、各PhysBoneを個別に残します"), GUILayout.Width(90f));
+                            if (newNoMerge != noMerge) { SetAllRemoved(s.questPhysBoneNoMergePaths, row.memberPaths, newNoMerge); changed = true; cache.Bump(); }
+                            // グループ削除(右端の固定列)
+                            bool removed = AllRemoved(s.physBoneRemovePaths, row.memberPaths);
+                            bool newRemoved = GUILayout.Toggle(removed, "削除", GUILayout.Width(52f));
+                            if (newRemoved != removed) { SetAllRemoved(s.physBoneRemovePaths, row.memberPaths, newRemoved); changed = true; }
+                        }
+                        else
+                        {
+                            GUILayout.Label("単独", EditorStyles.miniLabel, GUILayout.Width(120f));
+                            GUILayout.Label(new GUIContent(Trunc(row.singlePath ?? "", 40), row.singlePath), EditorStyles.miniLabel, GUILayout.MinWidth(100f), GUILayout.MaxWidth(280f));
+                            if (!string.IsNullOrEmpty(row.skipReason))
+                                GUILayout.Label(new GUIContent(Trunc(row.skipReason, 24), row.skipReason), EditorStyles.miniLabel, GUILayout.Width(150f));
+                            GUILayout.FlexibleSpace();
+                            DrawPhysBonePingButton(avatarRoot, row.singlePath);
+                            // 手動でマージ除外した(=強制的に単独へ分離した)PhysBoneは、ここで解除して再びマージ可能に戻せる。
+                            if (IsOptedOut(s.questPhysBoneNoMergePaths, row.singlePath))
+                            {
+                                bool newNoMerge = GUILayout.Toggle(true, new GUIContent("マージしない", "このPhysBoneをマージ対象へ戻すにはチェックを外します"), GUILayout.Width(90f));
+                                if (!newNoMerge) { TogglePath(s.questPhysBoneNoMergePaths, row.singlePath, false); changed = true; cache.Bump(); }
+                            }
+                            // 単独削除(右端の固定列)
+                            bool removed = IsOptedOut(s.physBoneRemovePaths, row.singlePath);
+                            bool newRemoved = GUILayout.Toggle(removed, "削除", GUILayout.Width(52f));
+                            if (newRemoved != removed) { TogglePath(s.physBoneRemovePaths, row.singlePath, newRemoved); changed = true; }
+                        }
+                    }
+                }
+            }
+
+            // 「削除」にしたPhysBoneは共有プランナー(ComponentRemover.PlanPhysBoneMerge)が
+            // 「存在しないもの」として扱いプレビュー行から除くため、上の表からは消える。
+            // その状態ではチェックを外す先が無く再Activeにできないので、削除指定を別枠で一覧し
+            // 「戻す」で復元できるようにする(旧QuestConverterウィンドウと同じ round-trip 対策)。
+            changed |= DrawPhysBoneRemoveList(avatarRoot, s.physBoneRemovePaths);
+
+            EditorGUILayout.HelpBox(
+                "Transform数は目安です(VRChatの正式カウントとは一致しません)。「削除」に入れた PhysBone は変換後アバターから除かれ、残りは全て残ります。" +
+                "モバイルは上限が厳しいため、Quest対象では上限内(" + QuestLimits.PoorPhysBoneComponents + "本)に収めてください。", MessageType.None);
+            return changed;
+        }
+
+        /// <summary>
+        /// 削除指定(physBoneRemovePaths)の全エントリを一覧し、各行に「戻す」ボタンを出す。変更があれば true。
+        /// 共有プランナーは削除指定分をプレビュー行・予測数から除く(ComponentRemover.PlanPhysBoneMerge)ため、
+        /// この一覧が無いと一度「削除」にしたPhysBoneを再びActive(残す)へ戻せない。
+        /// 現在のアバターで解決できないパス(改名・別アバター等)は黄色の「(見つかりません)」を添える。
+        /// </summary>
+        private static bool DrawPhysBoneRemoveList(GameObject avatarRoot, List<string> removePaths)
+        {
+            if (removePaths == null || removePaths.Count == 0) return false;
+
+            EditorGUILayout.Space(2f);
+            EditorGUILayout.LabelField("削除指定(変換時に削除され、揺れなくなります。「戻す」で復元できます)", EditorStyles.miniBoldLabel);
+
+            Color defaultColor = GUI.color;
+            int restoreIndex = -1;
+            int shown = 0;
+            for (int i = 0; i < removePaths.Count; i++)
+            {
+                if (shown++ >= MaxRows) { EditorGUILayout.LabelField("...(以下省略)", EditorStyles.miniLabel); break; }
+                string path = removePaths[i];
+                string shownPath = string.IsNullOrEmpty(path) ? "(空)" : path;
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    EditorGUILayout.LabelField(new GUIContent("・" + Trunc(shownPath, 60), shownPath),
+                        EditorStyles.miniLabel, GUILayout.MinWidth(120f), GUILayout.MaxWidth(360f));
+                    if (!PhysBoneIdentityPathExists(avatarRoot, path))
+                    {
+                        GUI.color = AvatarStudioUI.NoteYellowColor;
+                        EditorGUILayout.LabelField("(見つかりません)", EditorStyles.miniLabel, GUILayout.Width(90f));
+                        GUI.color = defaultColor;
+                    }
+                    GUILayout.FlexibleSpace();
+                    if (GUILayout.Button(new GUIContent("戻す", "削除指定を解除します(プレビューの一覧に戻ります)"), GUILayout.Width(52f)))
+                        restoreIndex = i;
+                }
+            }
+
+            if (restoreIndex >= 0)
+            {
+                removePaths.RemoveAt(restoreIndex);
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// 削除指定パスが現在のアバター上で実在するか(旧ウィンドウの PhysBoneIdentityPathExists と同一規則)。
+        /// GetPhysBoneIdentityPath は 対象GameObjectのPhysBoneが1個なら "#序数" 無しの素のパス、
+        /// 2個以上なら "パス#序数" を返す。RemoveSelectedPhysBones が素の文字列で厳密照合するため、
+        /// ここでも同じ規則で判定する(緩い一致だと変換で削除されないのに「解決可能」と過大報告してしまう)。
+        /// </summary>
+        private static bool PhysBoneIdentityPathExists(GameObject avatarRoot, string identityPath)
+        {
+            if (avatarRoot == null || identityPath == null) return false;
+
+            Transform whole = QuestCompat.FindByPath(avatarRoot.transform, identityPath);
+            if (whole != null)
+            {
+                // パス全体が解決できた = "#序数" 無しの識別パス。PhysBoneがちょうど1個のときのみ一致する。
+                return whole.GetComponents<VRC.Dynamics.VRCPhysBoneBase>().Length == 1;
+            }
+
+            int hash = identityPath.LastIndexOf('#');
+            if (hash < 0) return false;
+            if (!int.TryParse(identityPath.Substring(hash + 1), out int pbIndex) || pbIndex < 0) return false;
+            Transform target = QuestCompat.FindByPath(avatarRoot.transform, identityPath.Substring(0, hash));
+            if (target == null) return false;
+            // "#序数" 付きは PhysBoneが2個以上のときにのみ生成される
+            int count = target.GetComponents<VRC.Dynamics.VRCPhysBoneBase>().Length;
+            return count > 1 && pbIndex < count;
+        }
+
+        /// <summary>PhysBone識別パス(グループは親パス、単独は識別パス)を解決してTransformをPing表示するボタン。</summary>
+        private static void DrawPhysBonePingButton(GameObject avatarRoot, string identityPath)
+        {
+            Transform resolved = ResolvePhysBoneIdentityTransform(avatarRoot, identityPath);
+            using (new EditorGUI.DisabledScope(resolved == null))
+            {
+                if (GUILayout.Button(new GUIContent("ピン", "シーン上の該当オブジェクトをハイライト表示します"), GUILayout.Width(36f)))
+                    EditorGUIUtility.PingObject(resolved.gameObject);
+            }
+        }
+
+        /// <summary>識別パス(相対パス。同一GameObjectに複数ある場合は "#序数" 付き)からTransformを解決する(見つからなければnull)。</summary>
+        private static Transform ResolvePhysBoneIdentityTransform(GameObject avatarRoot, string identityPath)
+        {
+            if (avatarRoot == null || string.IsNullOrEmpty(identityPath)) return null;
+            Transform direct = QuestCompat.FindByPath(avatarRoot.transform, identityPath);
+            if (direct != null) return direct;
+            int hash = identityPath.LastIndexOf('#');
+            if (hash < 0) return null;
+            return QuestCompat.FindByPath(avatarRoot.transform, identityPath.Substring(0, hash));
+        }
+
+        /// <summary>
+        /// 選択後コンポーネント数 n を対象の上限とあわせて色付き表示する
+        /// (目標以下=緑 / 上限以下=黄 / 上限超過=赤)。
+        /// </summary>
+        private static void DrawPhysBoneCapLine(string label, int n, int goalMax, int hardMax)
+        {
+            Color color = n <= goalMax ? new Color(0.6f, 0.9f, 0.6f)
+                : n <= hardMax ? new Color(1f, 0.85f, 0.35f)
+                : AvatarStudioDiagnostics.OverLimitColor;
+            Color prev = GUI.color;
+            GUI.color = color;
+            EditorGUILayout.LabelField(
+                string.Format("{0}: 選択後コンポーネント数 {1} 個 / {0}上限 {2}(目標 {3})", label, n, hardMax, goalMax),
+                EditorStyles.miniBoldLabel);
+            GUI.color = prev;
+        }
+
+        /// <summary>
+        /// 選択後コンポーネント数 n を、対象のランク別コンポーネント上限ラダー(1行)と、
+        /// 次のランクまでの削減目安つきで色付き表示する。到達ランクで色分けする
+        /// (Excellent/Good=緑 / Medium/Poor=黄 / Poor超過=赤)。ceilings は昇順(excellent≤good≤medium≤poor)。
+        /// </summary>
+        private static void DrawPhysBoneRankLadder(string label, int n, int excellent, int good, int medium, int poor)
+        {
+            EditorGUILayout.LabelField(
+                string.Format("{0} ランク別コンポーネント上限: Excellent {1} / Good {2} / Medium {3} / Poor {4}",
+                    label, excellent, good, medium, poor),
+                EditorStyles.miniLabel);
+
+            int[] ceil = { excellent, good, medium, poor };
+            string[] names = { "Excellent", "Good", "Medium", "Poor" };
+            int achieved = 4; // Poor 超過
+            for (int i = 0; i < 4; i++) { if (n <= ceil[i]) { achieved = i; break; } }
+
+            string guidance;
+            Color color;
+            if (achieved == 0)
+            {
+                guidance = string.Format("{0}: {1} 圏内({2}個以下)", label, names[0], ceil[0]);
+                color = new Color(0.6f, 0.9f, 0.6f);
+            }
+            else
+            {
+                int next = achieved == 4 ? 3 : achieved - 1; // 一つ上のランク(超過時は Poor 復帰)
+                guidance = string.Format("{0}: 現在{1}個 → {2}({3}個以下)まであと{4}個削減",
+                    label, n, names[next], ceil[next], n - ceil[next]);
+                color = achieved <= 1 ? new Color(0.6f, 0.9f, 0.6f)
+                    : achieved == 4 ? AvatarStudioDiagnostics.OverLimitColor
+                    : new Color(1f, 0.85f, 0.35f);
+            }
+
+            Color prevGuide = GUI.color;
+            GUI.color = color;
+            EditorGUILayout.LabelField(guidance, EditorStyles.miniBoldLabel);
+            GUI.color = prevGuide;
+        }
+
+        /// <summary>Quest(Android)PhysBoneコンポーネントのランク別上限を1行にまとめた文字列(Medium/Poorは公開定数)。</summary>
+        private static string QuestPhysBoneLadderText()
+        {
+            return string.Format("Quest ランク別コンポーネント上限: Excellent {0} / Good {1} / Medium {2} / Poor {3}",
+                QuestExcellentPhysBoneComponents, QuestGoodPhysBoneComponents,
+                QuestLimits.MediumPhysBoneComponents, QuestLimits.PoorPhysBoneComponents);
+        }
+
+        /// <summary>
+        /// 名前の優先度(髪・胸など)が高い順に、Quest上限(Poor=8本)内で残すPhysBoneを自動選択する。
+        /// 本ツールはKeepAll方式のため、選ばれなかったPhysBoneを physBoneRemovePaths へ登録して削除にする
+        /// (= 上位8本の「まとまり」だけが残るように削除リストを作り直す)。変更があれば true。
+        /// </summary>
+        private static bool AutoSelectPhysBonesForQuestCap(GameObject avatarRoot, AvatarStudioSettings s)
+        {
+            if (avatarRoot == null || s == null) return false;
+            EnsureList(ref s.physBoneRemovePaths);
+
+            // 全PhysBoneを採点対象にするため、削除指定を空にしたプレビューを取り直す
+            // (削除済みは行に現れないため、削除選択の入ったキャッシュ済みプレビューは使わない)。
+            PhysBonePreview full;
+            try
+            {
+                // 変換時と同じ入力(マージ除外パス・Quest除外サブツリー)で採点する。
+                // 空/nullにすると、変換では別扱い/除外されるPhysBoneが行構成に反映されず、
+                // 「上位8本」の残し集合が実際の変換結果と一致しなくなる(誤ったPhysBoneが残る)。
+                full = ComponentRemover.PreviewPhysBoneMerge(
+                    avatarRoot,
+                    ComponentRemover.CollectPhysBoneTogglePaths(avatarRoot),
+                    new List<string>(),
+                    s.questPhysBoneNoMergePaths,
+                    s.physBoneLooseMerge,
+                    ResolveExcludedRoots(avatarRoot, s.questExcludePaths));
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError("[RARA AvatarStudio] PhysBone自動選択の計算に失敗しました: " + ex);
+                return false;
+            }
+            if (full == null || full.rows == null || full.rows.Count == 0)
+            {
+                EditorUtility.DisplayDialog("優先度で自動選択", "対象となるPhysBoneが見つかりませんでした。", "OK");
+                return false;
+            }
+
+            // 優先度昇順(小さいほど高優先)。同点はグループ優先、さらにメンバー数が多い順(QuestConverterと同一)。
+            var sorted = new List<PhysBonePreviewRow>();
+            foreach (PhysBonePreviewRow row in full.rows) if (row != null) sorted.Add(row);
+            sorted.Sort((a, b) =>
+            {
+                int c = a.priorityScore.CompareTo(b.priorityScore);
+                if (c != 0) return c;
+                if (a.isGroup != b.isGroup) return a.isGroup ? -1 : 1;
+                int ac = a.memberPaths != null ? a.memberPaths.Count : 0;
+                int bc = b.memberPaths != null ? b.memberPaths.Count : 0;
+                return bc.CompareTo(ac);
+            });
+
+            // Quest上限内で残す行を貪欲に選ぶ。マージ無効時はグループの各メンバーが個別に残るため本数で数える。
+            var keepPaths = new HashSet<string>(StringComparer.Ordinal);
+            int kept = 0;
+            foreach (PhysBonePreviewRow row in sorted)
+            {
+                int rowCost = 1;
+                if (!s.mergePhysBones && row.isGroup && row.memberPaths != null)
+                    rowCost = Mathf.Max(1, row.memberPaths.Count);
+                // 上限を超える行は選ばず、後続のより小さい行が入る余地を残す(best-fit)。
+                // マージ有効時は rowCost が常に1なので prefix と同じ結果になる。
+                if (kept + rowCost > QuestLimits.PoorPhysBoneComponents) continue;
+                AddRowPaths(row, keepPaths);
+                kept += rowCost;
+            }
+
+            // 残す集合に入らなかった全PhysBoneを削除指定にする(= physBoneRemovePaths を作り直す)。
+            var newRemove = new List<string>();
+            foreach (PhysBonePreviewRow row in sorted)
+            {
+                var rowPaths = new List<string>();
+                AddRowPaths(row, rowPaths);
+                foreach (string p in rowPaths)
+                    if (!keepPaths.Contains(p) && !newRemove.Contains(p)) newRemove.Add(p);
+            }
+
+            if (SamePathSet(s.physBoneRemovePaths, newRemove))
+            {
+                EditorUtility.DisplayDialog("優先度で自動選択",
+                    "既に上限内の選択になっています(変更はありません)。", "OK");
+                return false;
+            }
+
+            bool ok = EditorUtility.DisplayDialog("優先度で自動選択",
+                "名前の優先度が高い順に、Quest上限(" + QuestLimits.PoorPhysBoneComponents +
+                "本)内で残すPhysBoneを選び、残りを「削除」に設定します(現在の削除選択は置き換えられます)。\n\n" +
+                "残す本数(概算): " + kept + " 本\n\n設定しますか?",
+                "設定する", "キャンセル");
+            if (!ok) return false;
+
+            s.physBoneRemovePaths.Clear();
+            s.physBoneRemovePaths.AddRange(newRemove);
+            return true;
+        }
+
+        /// <summary>
+        /// Quest除外パス(questExcludePaths)を元アバター上で解決した除外サブツリーのルート集合。
+        /// AvatarQuestConverter は変換時に該当サブツリーを EditorOnly 化してPhysBone処理から外すため、
+        /// 元アバターに対するプレビューを変換結果に一致させるには excludedRoots として渡す必要がある
+        /// (AvatarQuestConverter.ResolveExcludedRoots と同じ規則。ルート自身を指すパスは無視)。
+        /// </summary>
+        private static List<Transform> ResolveExcludedRoots(GameObject avatarRoot, List<string> excludePaths)
+        {
+            var excluded = new List<Transform>();
+            if (avatarRoot == null || excludePaths == null) return excluded;
+            foreach (string path in excludePaths)
+            {
+                if (string.IsNullOrEmpty(path)) continue;
+                Transform target = QuestCompat.FindByPath(avatarRoot.transform, path);
+                if (target != null && target != avatarRoot.transform) excluded.Add(target);
+            }
+            return excluded;
+        }
+
+        /// <summary>プレビュー行のPhysBone識別パス(グループは全メンバー、単独は1本)を into へ追加する。</summary>
+        private static void AddRowPaths(PhysBonePreviewRow row, ICollection<string> into)
+        {
+            if (row == null) return;
+            if (row.isGroup)
+            {
+                if (row.memberPaths != null)
+                    foreach (string p in row.memberPaths) if (!string.IsNullOrEmpty(p)) into.Add(p);
+            }
+            else if (!string.IsNullOrEmpty(row.singlePath)) into.Add(row.singlePath);
+        }
+
+        /// <summary>2つのパスリストが(順序を無視して)同じ集合かどうか。変更検出に使う。</summary>
+        private static bool SamePathSet(List<string> a, List<string> b)
+        {
+            int ac = a != null ? a.Count : 0;
+            int bc = b != null ? b.Count : 0;
+            if (ac != bc) return false;
+            if (ac == 0) return true;
+            var set = new HashSet<string>(a, StringComparer.Ordinal);
+            foreach (string x in b) if (!set.Contains(x)) return false;
+            return true;
+        }
+
+        // ================================================================
+        // 4a. PCテクスチャ(PCTexturePlanner.BuildSuggestions)
+        // ================================================================
+        public static bool DrawPCTexturePanel(GameObject avatarRoot, AvatarStudioSettings s, AvatarStudioPreviewCache cache)
+        {
+            if (avatarRoot == null || s == null) { EditorGUILayout.HelpBox("アバターを選択してください。", MessageType.Info); return false; }
+
+            bool changed = false;
+            EnsureList(ref s.pcTexturePlan);
+
+            float currentMB = cache.GetOrBuild("pctexmem", avatarRoot.GetInstanceID().ToString(),
+                () => new float[] { PCTexturePlanner.EstimateTextureMemoryMB(avatarRoot) })?[0] ?? 0f;
+            int limit = PCRankLimits.GetLimit(s.pcTargetRank, PCRankLimits.PCStat.TextureMemoryMB);
+
+            using (new EditorGUILayout.HorizontalScope(EditorStyles.helpBox))
+            {
+                Color prev = GUI.color;
+                if (currentMB > limit) GUI.color = AvatarStudioDiagnostics.OverLimitColor;
+                EditorGUILayout.LabelField(string.Format("PCテクスチャメモリ: 約 {0:F1} MB / {1}目標上限 {2} MB",
+                    currentMB, AvatarStudioDiagnostics.GoalRankNames[Mathf.Clamp((int)s.pcTargetRank, 0, 3)], limit), EditorStyles.boldLabel);
+                GUI.color = prev;
+                GUILayout.FlexibleSpace();
+            }
+
+            List<PCTexturePlanner.PCTextureSuggestion> suggestions = cache.GetOrBuild(
+                "pctex", avatarRoot.GetInstanceID() + "|" + (int)s.pcTargetRank,
+                () => PCTexturePlanner.BuildSuggestions(avatarRoot, s.pcTargetRank));
+
+            if (suggestions == null || suggestions.Count == 0)
+            {
+                EditorGUILayout.LabelField("目標に対する縮小提案はありません(または既に十分小さいです)。", EditorStyles.miniLabel);
+                return changed;
+            }
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                EditorGUILayout.LabelField(string.Format("縮小提案 {0} 件", suggestions.Count), EditorStyles.miniLabel);
+                GUILayout.FlexibleSpace();
+                if (GUILayout.Button("全て縮小計画へ追加", GUILayout.Width(160f)))
+                {
+                    int applied = PCTexturePlanner.ApplySuggestionsToPlan(suggestions, s.pcTexturePlan);
+                    if (applied > 0) changed = true;
+                }
+                if (currentMB > limit)
+                {
+                    if (GUILayout.Button(new GUIContent("目標まで自動調整",
+                        "目標(" + limit + "MB)を下回るよう、削減効果の大きいテクスチャから順に縮小計画へ登録します(概算・元テクスチャは変更しません)"),
+                        GUILayout.Width(140f)))
+                    {
+                        if (RunPCTextureBudgetFit(suggestions, s.pcTexturePlan, currentMB, limit)) changed = true;
+                    }
+                }
+                using (new EditorGUI.DisabledScope(s.pcTexturePlan.Count == 0))
+                {
+                    if (GUILayout.Button(new GUIContent("縮小計画をクリア", "登録済みの縮小計画をすべて削除します"), GUILayout.Width(120f)))
+                    {
+                        s.pcTexturePlan.Clear();
+                        changed = true;
+                    }
+                }
+            }
+
+            changed |= DrawTextureSuggestionRows(suggestions, s.pcTexturePlan);
+            EditorGUILayout.LabelField("※ VRAM は概算です(SDKのテクスチャメモリ値へアンカー)。元テクスチャは変更せず、縮小コピーを生成します。", EditorStyles.miniLabel);
+            return changed;
+        }
+
+        /// <summary>
+        /// 削減効果の大きい順に、目標MBを下回る見込みになるまで縮小計画へ登録する(概算。旧 PCOptimizer の RunTextureBudgetFit を移植)。
+        /// 元テクスチャは変更しない。1件以上登録できたら true。
+        /// </summary>
+        private static bool RunPCTextureBudgetFit(List<PCTexturePlanner.PCTextureSuggestion> suggestions, List<TextureSizePlanEntry> plan, float currentMB, int targetMB)
+        {
+            var sorted = new List<PCTexturePlanner.PCTextureSuggestion>();
+            foreach (PCTexturePlanner.PCTextureSuggestion sug in suggestions)
+                if (sug != null && sug.texture != null && sug.suggestedSize > 0) sorted.Add(sug);
+            sorted.Sort((a, b) => b.saveMB.CompareTo(a.saveMB));
+
+            float remaining = currentMB;
+            int applied = 0;
+            foreach (PCTexturePlanner.PCTextureSuggestion sug in sorted)
+            {
+                if (remaining <= targetMB) break;
+                if (UpsertTexturePlan(plan, sug.texture, sug.suggestedSize)) { remaining -= sug.saveMB; applied++; }
+            }
+            if (applied > 0)
+            {
+                EditorUtility.DisplayDialog("目標まで自動調整",
+                    applied + " 件のテクスチャを縮小計画に登録しました(概算で約 " + remaining.ToString("F1") + " MB 見込み)。\n" +
+                    "元テクスチャは変更しません。", "OK");
+            }
+            return applied > 0;
+        }
+
+        private static bool DrawTextureSuggestionRows(List<PCTexturePlanner.PCTextureSuggestion> suggestions, List<TextureSizePlanEntry> plan)
+        {
+            bool changed = false;
+            int shown = 0;
+            foreach (PCTexturePlanner.PCTextureSuggestion sug in suggestions)
+            {
+                if (sug == null || sug.texture == null) continue;
+                if (shown++ >= MaxRows) { EditorGUILayout.LabelField("...(以下省略)", EditorStyles.miniLabel); break; }
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    using (new EditorGUI.DisabledScope(true))
+                        EditorGUILayout.ObjectField(sug.texture, typeof(Texture2D), false, GUILayout.MinWidth(120f), GUILayout.MaxWidth(200f));
+                    GUILayout.Label(string.Format("{0}→{1}px  -{2:F1}MB", sug.currentSize, sug.suggestedSize, sug.saveMB),
+                        EditorStyles.miniLabel, GUILayout.Width(160f));
+                    bool planned = IsPlanned(plan, sug.texture, sug.suggestedSize);
+                    using (new EditorGUI.DisabledScope(planned))
+                    {
+                        if (GUILayout.Button(planned ? "追加済" : "追加", GUILayout.Width(64f)))
+                        {
+                            if (UpsertTexturePlan(plan, sug.texture, sug.suggestedSize)) changed = true;
+                        }
+                    }
+                    GUILayout.FlexibleSpace();
+                }
+            }
+            return changed;
+        }
+
+        // ================================================================
+        // 4b. Questテクスチャ / ダウンロードサイズ(QuestSizeEstimator.Estimate)
+        // ================================================================
+        public static bool DrawQuestTexturePanel(GameObject avatarRoot, AvatarStudioSettings s, QuestConvertSettings quest, AvatarStudioPreviewCache cache)
+        {
+            if (avatarRoot == null || s == null) { EditorGUILayout.HelpBox("アバターを選択してください。", MessageType.Info); return false; }
+            if (quest == null) quest = new QuestConvertSettings();
+
+            bool changed = false;
+            EnsureList(ref s.questTextureSizePlan);
+
+            string sig = avatarRoot.GetInstanceID() + "|" + HashTexturePlan(s.questTextureSizePlan);
+            SizeEstimateResult est = cache.GetOrBuild("questsize", sig, () => QuestSizeEstimator.Estimate(avatarRoot, quest));
+            if (est == null) { EditorGUILayout.HelpBox("Questサイズ推定に失敗しました。", MessageType.Warning); return changed; }
+
+            using (new EditorGUILayout.HorizontalScope(EditorStyles.helpBox))
+            {
+                Color prev = GUI.color;
+                if (est.overCap) GUI.color = AvatarStudioDiagnostics.OverLimitColor;
+                EditorGUILayout.LabelField(string.Format("ダウンロード(概算) 約 {0:F1} MB / 上限 {1} MB(テクスチャ {2:F1} / メッシュ {3:F1} / アニメ {4:F1})",
+                    est.estimatedDownloadMB, QuestLimits.HardDownloadSizeCapMB, est.textureDownloadMB, est.meshDownloadMB, est.animationDownloadMB),
+                    EditorStyles.boldLabel);
+                GUI.color = prev;
+                GUILayout.FlexibleSpace();
+            }
+
+            // 一括操作: 10MB以下まで自動調整(上限超過見込み時のみ) / 縮小計画をクリア。
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                bool showBudgetFit = est.overCap || est.estimatedDownloadMB > QuestLimits.HardDownloadSizeCapMB;
+                using (new EditorGUI.DisabledScope(!showBudgetFit))
+                {
+                    if (GUILayout.Button(new GUIContent("10MB以下まで自動調整",
+                        "推定ダウンロードサイズが上限(" + QuestLimits.HardDownloadSizeCapMB + "MB)以下になるよう、テクスチャの縮小計画を自動で作成します(元テクスチャは変更しません)"),
+                        GUILayout.Width(160f)))
+                    {
+                        if (RunQuestBudgetFit(avatarRoot, quest, s.questTextureSizePlan)) changed = true;
+                    }
+                }
+                GUILayout.FlexibleSpace();
+                using (new EditorGUI.DisabledScope(s.questTextureSizePlan.Count == 0))
+                {
+                    if (GUILayout.Button(new GUIContent("縮小計画をクリア", "登録済みの縮小計画をすべて削除します"), GUILayout.Width(120f)))
+                    {
+                        s.questTextureSizePlan.Clear();
+                        changed = true;
+                    }
+                }
+            }
+
+            DrawQuestTopTextures(est);
+
+            if (est.suggestions != null && est.suggestions.Count > 0)
+            {
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    EditorGUILayout.LabelField("縮小・削減提案", EditorStyles.miniLabel);
+                    GUILayout.FlexibleSpace();
+                    if (GUILayout.Button("テクスチャ縮小提案を全て追加", GUILayout.Width(200f)))
+                    {
+                        int applied = 0;
+                        foreach (SizeSuggestion sug in est.suggestions)
+                        {
+                            if (sug == null || sug.texture == null || sug.recommendedMaxSize <= 0) continue;
+                            if (UpsertTexturePlan(s.questTextureSizePlan, sug.texture, sug.recommendedMaxSize)) applied++;
+                        }
+                        if (applied > 0) changed = true;
+                    }
+                }
+
+                int shown = 0;
+                foreach (SizeSuggestion sug in est.suggestions)
+                {
+                    if (sug == null) continue;
+                    if (shown++ >= MaxRows) { EditorGUILayout.LabelField("...(以下省略)", EditorStyles.miniLabel); break; }
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        if (sug.texture != null)
+                        {
+                            using (new EditorGUI.DisabledScope(true))
+                                EditorGUILayout.ObjectField(sug.texture, typeof(Texture), false, GUILayout.MinWidth(110f), GUILayout.MaxWidth(180f));
+                        }
+                        GUILayout.Label(new GUIContent(Trunc(sug.description ?? "", 60), sug.description), EditorStyles.miniLabel, GUILayout.MinWidth(160f));
+                        if (sug.savingMB > 0f) GUILayout.Label(string.Format("-{0:F1}MB", sug.savingMB), EditorStyles.miniLabel, GUILayout.Width(64f));
+                        if (sug.texture != null && sug.recommendedMaxSize > 0)
+                        {
+                            bool planned = IsPlanned(s.questTextureSizePlan, sug.texture, sug.recommendedMaxSize);
+                            using (new EditorGUI.DisabledScope(planned))
+                                if (GUILayout.Button(planned ? "追加済" : sug.recommendedMaxSize + "pxへ", GUILayout.Width(80f)))
+                                    if (UpsertTexturePlan(s.questTextureSizePlan, sug.texture, sug.recommendedMaxSize)) changed = true;
+                        }
+                        GUILayout.FlexibleSpace();
+                    }
+                }
+            }
+
+            EditorGUILayout.LabelField("※ すべて概算の目安値です。元テクスチャは変更せず、変換時に縮小コピーを生成します。", EditorStyles.miniLabel);
+            return changed;
+        }
+
+        /// <summary>ダウンロードサイズの大きいテクスチャ上位を一覧表示する(Android上書きなしは黄色バッジ)。est.textures は降順ソート済み。</summary>
+        private static void DrawQuestTopTextures(SizeEstimateResult est)
+        {
+            List<TextureSizeInfo> textures = est != null ? est.textures : null;
+            int total = textures != null ? textures.Count : 0;
+            if (total == 0) return;
+
+            int shown = Mathf.Min(total, 12);
+            EditorGUILayout.LabelField(string.Format("ダウンロードサイズの大きいテクスチャ 上位 {0}/{1}", shown, total), EditorStyles.miniBoldLabel);
+
+            Color defaultColor = GUI.color;
+            for (int i = 0; i < shown; i++)
+            {
+                TextureSizeInfo info = textures[i];
+                if (info == null) continue;
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    using (new EditorGUI.DisabledScope(true))
+                        EditorGUILayout.ObjectField(info.texture, typeof(Texture), false, GUILayout.MinWidth(110f), GUILayout.MaxWidth(180f));
+                    GUILayout.Label(string.Format("{0:F2} MB / {1} / 最大{2}px", info.downloadMB, info.formatLabel, info.currentAndroidMaxSize),
+                        EditorStyles.miniLabel, GUILayout.MinWidth(140f));
+                    GUILayout.FlexibleSpace();
+                    if (!info.hasAndroidOverride)
+                    {
+                        GUI.color = AvatarStudioUI.NoteYellowColor;
+                        GUILayout.Label(new GUIContent("Android上書きなし", "このテクスチャにはAndroid向けインポート上書きが無く、ASTC 6x6相当として見積もっています"),
+                            EditorStyles.miniLabel, GUILayout.Width(105f));
+                        GUI.color = defaultColor;
+                    }
+                    else
+                    {
+                        GUILayout.Label(new GUIContent("Android上書きあり",
+                            "元アセットにAndroid向けインポート上書きが設定されています(見積もりは反映済み)。本ツールは元インポート設定を変更しません。"),
+                            EditorStyles.miniLabel, GUILayout.Width(105f));
+                    }
+                }
+            }
+            GUI.color = defaultColor;
+        }
+
+        /// <summary>
+        /// 推定ダウンロードサイズが10MB上限に収まるよう、テクスチャ縮小計画を自動作成する(旧QuestConverterウィンドウの RunBudgetFit を移植)。
+        /// PlanBudgetFit で計画→確認ダイアログ→studioPlan(s.questTextureSizePlan)へ登録する。元テクスチャは変更しない。1件以上登録できたら true。
+        /// 上限ちょうどを狙うと見積もり誤差で超えやすいため、5%のマージンを取った目標で計画する。
+        /// </summary>
+        private static bool RunQuestBudgetFit(GameObject avatarRoot, QuestConvertSettings quest, List<TextureSizePlanEntry> studioPlan)
+        {
+            if (avatarRoot == null || studioPlan == null) return false;
+            if (quest == null) quest = new QuestConvertSettings();
+
+            float targetMB = QuestLimits.HardDownloadSizeCapMB * 0.95f;
+            List<BudgetFitStep> plan;
+            try
+            {
+                EditorUtility.DisplayProgressBar("10MB以下まで自動調整", "縮小プランを計算しています...", 0.2f);
+                plan = QuestSizeEstimator.PlanBudgetFit(avatarRoot, quest, targetMB);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError("[RARA AvatarStudio] 自動調整プランの作成に失敗しました: " + ex);
+                EditorUtility.DisplayDialog("10MB以下まで自動調整", "縮小プランの作成中にエラーが発生しました:\n" + ex.Message, "OK");
+                return false;
+            }
+            finally
+            {
+                EditorUtility.ClearProgressBar();
+            }
+
+            if (plan == null || plan.Count == 0)
+            {
+                EditorUtility.DisplayDialog("10MB以下まで自動調整",
+                    "これ以上自動で下げられるテクスチャがありません。\n『縮小・削減提案』のQuest除外や、メッシュ・ブレンドシェイプの削減も検討してください。", "OK");
+                return false;
+            }
+
+            const int dialogStepMax = 12;
+            float totalSavingMB = 0f;
+            var steps = new System.Text.StringBuilder();
+            for (int i = 0; i < plan.Count; i++)
+            {
+                BudgetFitStep step = plan[i];
+                if (step == null) continue;
+                totalSavingMB += step.savingMB;
+                if (i < dialogStepMax)
+                    steps.AppendLine("・" + (step.texture != null ? step.texture.name : "(不明)") + " " +
+                        step.fromSize + "px→" + step.toSize + "px (-" + step.savingMB.ToString("F1") + "MB)");
+            }
+            if (plan.Count > dialogStepMax) steps.AppendLine("・他 " + (plan.Count - dialogStepMax) + " 件");
+
+            bool ok = EditorUtility.DisplayDialog("10MB以下まで自動調整",
+                "推定ダウンロードサイズが上限(" + QuestLimits.HardDownloadSizeCapMB + "MB)以下になるよう、次の " + plan.Count +
+                " 件のテクスチャを縮小計画に登録します:\n\n" + steps +
+                "\n合計削減見込み: 約" + totalSavingMB.ToString("F1") + "MB\n\n" +
+                "元テクスチャは変更しません(変換時に縮小コピーを生成します)。「縮小計画をクリア」でいつでも取り消せます。\n\n登録しますか?",
+                "登録する", "キャンセル");
+            if (!ok) return false;
+
+            int applied = 0;
+            foreach (BudgetFitStep step in plan)
+            {
+                if (step == null || step.texture == null || step.toSize <= 0) continue;
+                if (UpsertTexturePlan(studioPlan, step.texture, step.toSize)) applied++;
+            }
+            EditorUtility.DisplayDialog("10MB以下まで自動調整",
+                applied + " 件のテクスチャを縮小計画に登録しました(削減見込み 約" + totalSavingMB.ToString("F1") + "MB)。\n元テクスチャは変更されません。", "OK");
+            return applied > 0;
+        }
+
+        // ================================================================
+        // 5. ポリゴン削減(Decimation.PolygonBudgetPlanner.BuildPlan)
+        // ================================================================
+        public static bool DrawPolygonPanel(GameObject avatarRoot, AvatarStudioSettings s, QuestConvertSettings quest, AvatarStudioPreviewCache cache)
+        {
+            if (avatarRoot == null || s == null) { EditorGUILayout.HelpBox("アバターを選択してください。", MessageType.Info); return false; }
+            if (quest == null) quest = new QuestConvertSettings();
+
+            bool changed = false;
+            EnsureList(ref s.questDecimationPlan);
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                bool enable = GUILayout.Toggle(s.questEnableDecimation, "ポリゴン削減を有効化", "Button", GUILayout.Width(170f));
+                if (enable != s.questEnableDecimation) { s.questEnableDecimation = enable; changed = true; }
+            }
+
+            using (new EditorGUI.DisabledScope(!s.questEnableDecimation))
+            {
+                // 目標ランクのプリセットトグル(カスタム値のときは選択なし=-1)。
+                int presetIndex = GetDecimationPresetIndex(s.questDecimationTargetTriangles);
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    EditorGUILayout.LabelField(new GUIContent("目標ランク", "到達したいポリゴン数の目安。ボタンで目標三角形数が設定されます"), GUILayout.Width(72f));
+                    int newIndex = GUILayout.Toolbar(presetIndex, DecimationRankLabels);
+                    if (newIndex != presetIndex && newIndex >= 0 && newIndex < DecimationRankPresets.Length)
+                    {
+                        s.questDecimationTargetTriangles = DecimationRankPresets[newIndex];
+                        changed = true;
+                    }
+                }
+
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    EditorGUILayout.LabelField("目標三角形数", GUILayout.Width(84f));
+                    int newTarget = EditorGUILayout.IntField(s.questDecimationTargetTriangles, GUILayout.Width(90f));
+                    if (newTarget < 1) newTarget = 1;
+                    if (newTarget != s.questDecimationTargetTriangles) { s.questDecimationTargetTriangles = newTarget; changed = true; }
+                    if (GUILayout.Button("自動で配分計画を作成", GUILayout.Width(170f)))
+                    {
+                        List<PolygonPlanEntry> built = PolygonBudgetPlanner.BuildPlan(avatarRoot, s.questDecimationTargetTriangles, quest);
+                        s.questDecimationPlan.Clear();
+                        if (built != null)
+                        {
+                            foreach (PolygonPlanEntry e in built)
+                            {
+                                if (e == null) continue;
+                                s.questDecimationPlan.Add(new PolygonPlanEntryData { rendererPath = e.rendererPath, targetTris = e.targetTris });
+                            }
+                        }
+                        changed = true;
+                        cache.Bump();
+                    }
+                    using (new EditorGUI.DisabledScope(s.questDecimationPlan.Count == 0))
+                    {
+                        if (GUILayout.Button(new GUIContent("計画クリア", "保存済みの配分計画をすべて破棄します"), GUILayout.Width(90f)))
+                        {
+                            s.questDecimationPlan.Clear();
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
+            if (!s.questEnableDecimation)
+            {
+                EditorGUILayout.LabelField("ポリゴン削減は既定でオフです(顔・髪は強く保護されます)。", EditorStyles.miniLabel);
+
+                // 現在の三角形数が目標ランクの予算を超えているのに削減がオフなら、必要性を琥珀で知らせ有効化ボタンを出す
+                // (発見しやすいが、有効化はあくまでユーザーの明示操作にする)。
+                int currentTris = cache.GetOrBuild("polytris", avatarRoot.GetInstanceID().ToString(),
+                    () => new int[] { PolygonBudgetPlanner.CountCurrentTriangles(avatarRoot, quest) })?[0] ?? 0;
+                int budget = s.questDecimationTargetTriangles;
+                if (currentTris > budget)
+                {
+                    Color prevHint = GUI.color;
+                    GUI.color = AvatarStudioUI.NoteYellowColor;
+                    EditorGUILayout.LabelField(
+                        string.Format("目標ランク到達にはポリゴン削減の有効化が必要です(現在 {0:N0} / 目標 {1:N0})。", currentTris, budget),
+                        EditorStyles.wordWrappedMiniLabel);
+                    GUI.color = prevHint;
+                    if (GUILayout.Button(new GUIContent("ポリゴン削減を有効にする",
+                        "ポリゴン削減を有効化します(既定はオフ。顔・髪は強く保護されます)"), GUILayout.Height(24f)))
+                    {
+                        s.questEnableDecimation = true;
+                        changed = true;
+                        cache.Bump(); // 有効化で以降のプレビュー/配分を作り直す
+                    }
+                }
+                return changed;
+            }
+
+            // プレビュー配分(現在計画を表示、無ければ提案を概算表示)
+            List<PolygonPlanEntry> plan = cache.GetOrBuild(
+                "polygon", avatarRoot.GetInstanceID() + "|" + s.questDecimationTargetTriangles,
+                () => PolygonBudgetPlanner.BuildPlan(avatarRoot, s.questDecimationTargetTriangles, quest));
+
+            if (plan == null) { EditorGUILayout.HelpBox("ポリゴン配分の計算に失敗しました。", MessageType.Warning); return changed; }
+
+            if (plan.Count == 0)
+            {
+                EditorGUILayout.LabelField("現在のポリゴン数は目標以下です(削減不要)。", EditorStyles.miniLabel);
+            }
+            else
+            {
+                EditorGUILayout.LabelField(string.Format("削減対象 {0} 件(現在の保存済み計画: {1} 件)。各行の目標三角形数は編集できます。", plan.Count, s.questDecimationPlan.Count), EditorStyles.miniLabel);
+                int shown = 0;
+                foreach (PolygonPlanEntry e in plan)
+                {
+                    if (e == null || string.IsNullOrEmpty(e.rendererPath)) continue;
+                    if (shown++ >= MaxRows) { EditorGUILayout.LabelField("...(以下省略)", EditorStyles.miniLabel); break; }
+                    changed |= DrawPolygonPlanRow(avatarRoot, e, s.questDecimationPlan);
+                }
+            }
+
+            EditorGUILayout.LabelField("※ 現在の数え方は診断と同一(EditorOnly/除外を反映)。顔・髪は品質下限で保護されます。概算です。", EditorStyles.miniLabel);
+            return changed;
+        }
+
+        /// <summary>
+        /// ポリゴン削減の配分1行を編集可能に描画する。カテゴリバッジ・現在→目標(編集可能なIntField)・
+        /// 「戻す」(自動配分値=BuildPlanのtargetTrisへ復元)・ピンを出す。目標は品質下限〜現在数でクランプし、
+        /// s.questDecimationPlan(rendererPath→targetTris)へ upsert する。変更があれば true。
+        /// </summary>
+        private static bool DrawPolygonPlanRow(GameObject avatarRoot, PolygonPlanEntry e, List<PolygonPlanEntryData> savedPlan)
+        {
+            bool changed = false;
+            int current = Mathf.Max(1, e.currentTris);
+            // 自動配分値(BuildPlanの提案)。「戻す」の復元先・スライダー下限の基準にする。
+            int suggested = Mathf.Clamp(e.targetTris, 1, current);
+            int saved = GetSavedPolyTarget(savedPlan, e.rendererPath, suggested);
+            // 品質下限。予算超過時は自動配分が下限を下回ることがあるため、実際の値を隠さないよう下限も引き下げる。
+            int qualityMin = Mathf.Clamp(Mathf.CeilToInt(current * Mathf.Clamp01(e.qualityFloor)), 1, current);
+            int rowMin = Mathf.Clamp(Mathf.Min(qualityMin, Mathf.Min(suggested, saved)), 1, current);
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                DrawCategoryBadge(e.category);
+                GUILayout.Label(new GUIContent(Trunc(e.rendererPath, 36), e.rendererPath), EditorStyles.miniLabel, GUILayout.MinWidth(100f), GUILayout.MaxWidth(240f));
+                GUILayout.Label(string.Format("{0:N0} →", current), EditorStyles.miniLabel, GUILayout.Width(78f));
+
+                if (rowMin >= current)
+                {
+                    GUILayout.Label("保護のため削減なし", EditorStyles.miniLabel, GUILayout.Width(120f));
+                }
+                else
+                {
+                    int newTarget = EditorGUILayout.IntField(Mathf.Clamp(saved, rowMin, current), GUILayout.Width(84f));
+                    newTarget = Mathf.Clamp(newTarget, rowMin, current);
+                    if (newTarget != saved) { UpsertPolyTarget(savedPlan, e.rendererPath, newTarget); changed = true; }
+                    GUILayout.Label("三角", EditorStyles.miniLabel, GUILayout.Width(28f));
+                    using (new EditorGUI.DisabledScope(saved == suggested))
+                    {
+                        if (GUILayout.Button(new GUIContent("戻す", "自動配分の目標値(" + suggested.ToString("N0") + ")へ戻します"), GUILayout.Width(44f)))
+                        {
+                            UpsertPolyTarget(savedPlan, e.rendererPath, suggested);
+                            changed = true;
+                        }
+                    }
+                }
+                GUILayout.FlexibleSpace();
+                DrawPolygonPingButton(avatarRoot, e.rendererPath);
+            }
+            return changed;
+        }
+
+        /// <summary>保存済み配分計画から rendererPath の目標三角形数を返す(無ければ fallback)。</summary>
+        private static int GetSavedPolyTarget(List<PolygonPlanEntryData> plan, string rendererPath, int fallback)
+        {
+            if (plan == null || string.IsNullOrEmpty(rendererPath)) return fallback;
+            foreach (PolygonPlanEntryData d in plan)
+                if (d != null && d.rendererPath == rendererPath) return d.targetTris;
+            return fallback;
+        }
+
+        /// <summary>保存済み配分計画へ rendererPath の目標三角形数を追加/更新する。</summary>
+        private static void UpsertPolyTarget(List<PolygonPlanEntryData> plan, string rendererPath, int target)
+        {
+            if (plan == null || string.IsNullOrEmpty(rendererPath)) return;
+            foreach (PolygonPlanEntryData d in plan)
+                if (d != null && d.rendererPath == rendererPath) { d.targetTris = target; return; }
+            plan.Add(new PolygonPlanEntryData { rendererPath = rendererPath, targetTris = target });
+        }
+
+        /// <summary>カテゴリ名(顔/髪/素体/衣装/その他)に応じた色付きバッジを描画する。</summary>
+        private static void DrawCategoryBadge(string category)
+        {
+            string label = string.IsNullOrEmpty(category) ? PolygonBudgetPlanner.CategoryOther : category;
+            Color color;
+            if (label == PolygonBudgetPlanner.CategoryFace) color = CategoryFaceColor;
+            else if (label == PolygonBudgetPlanner.CategoryHair) color = CategoryHairColor;
+            else if (label == PolygonBudgetPlanner.CategoryBody) color = CategoryBodyColor;
+            else if (label == PolygonBudgetPlanner.CategoryClothes) color = CategoryClothesColor;
+            else color = CategoryOtherColor;
+            DrawBadge(label, color, "保護カテゴリ: " + label + "(顔・髪ほど強く保護されます)");
+        }
+
+        /// <summary>レンダラーパスの指すGameObjectをシーンでPing表示するボタン。</summary>
+        private static void DrawPolygonPingButton(GameObject avatarRoot, string rendererPath)
+        {
+            Transform resolved = avatarRoot != null ? QuestCompat.FindByPath(avatarRoot.transform, rendererPath) : null;
+            using (new EditorGUI.DisabledScope(resolved == null))
+            {
+                if (GUILayout.Button(new GUIContent("ピン", "シーン上の該当メッシュをハイライト表示します"), GUILayout.Width(36f)))
+                    EditorGUIUtility.PingObject(resolved.gameObject);
+            }
+        }
+
+        /// <summary>目標三角形数がプリセット(7500/10000/15000/20000)のどれかなら添字、なければ-1(カスタム)。</summary>
+        private static int GetDecimationPresetIndex(int target)
+        {
+            for (int i = 0; i < DecimationRankPresets.Length; i++)
+                if (DecimationRankPresets[i] == target) return i;
+            return -1;
+        }
+
+        // ================================================================
+        // 6a. PCマテリアルアトラス(PCMaterialAtlasser.PreviewPlan)
+        // ================================================================
+
+        /// <summary>アウトライン統合モードの選択肢(OutlineUnifyMode の並び 0=しない / 1=外して統合 / 2=付きに統一 と一致)。</summary>
+        private static readonly GUIContent[] PcAtlasOutlineModeLabels =
+        {
+            new GUIContent("統合しない", "アウトライン有無が異なるマテリアルは統合しません"),
+            new GUIContent("外して統合(推奨)", "プレーンlilToonへ揃えます。外す=服の輪郭線が消えますが、瞳・顔に黒縁は付きません"),
+            new GUIContent("付きに統一", "アウトライン付き側へ揃えます。付き=輪郭の無かった部分に付きます(瞳・顔は自動回避)"),
+        };
+
+        private static readonly GUIContent[] PcAtlasSizeLabels = { new GUIContent("1024"), new GUIContent("2048(推奨)") };
+        private static readonly int[] PcAtlasSizeValues = { 1024, 2048 };
+
+        public static bool DrawPCAtlasPanel(GameObject avatarRoot, AvatarStudioSettings s, PCOptimizeSettings pc, AvatarStudioPreviewCache cache)
+        {
+            if (avatarRoot == null || s == null) { EditorGUILayout.HelpBox("アバターを選択してください。", MessageType.Info); return false; }
+
+            bool changed = false;
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                bool enable = GUILayout.Toggle(s.pcEnableAtlas, "PCマテリアルをアトラス統合", "Button", GUILayout.Width(200f));
+                if (enable != s.pcEnableAtlas) { s.pcEnableAtlas = enable; changed = true; }
+            }
+
+            if (!s.pcEnableAtlas || pc == null)
+            {
+                EditorGUILayout.LabelField("互換マテリアルを1枚のアトラスへ統合し、スロット数・テクスチャメモリを削減します。", EditorStyles.miniLabel);
+                return changed;
+            }
+
+            EnsureList(ref s.pcAtlasExcludeGuids);
+
+            // アトラス最大サイズ + 統合オプション。いずれも変更で統合プレビューを作り直す。
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                int newMax = EditorGUILayout.IntPopup(new GUIContent("アトラス最大サイズ", "統合後のアトラステクスチャの最大サイズ(px)"),
+                    s.pcAtlasMaxSize, PcAtlasSizeLabels, PcAtlasSizeValues, GUILayout.Width(280f));
+                if (newMax != s.pcAtlasMaxSize) { s.pcAtlasMaxSize = newMax; changed = true; cache.Bump(); }
+                GUILayout.FlexibleSpace();
+            }
+
+            bool newColorOnly = EditorGUILayout.ToggleLeft(
+                new GUIContent("テクスチャ無し(色だけ)の材質も統合", "メインテクスチャを持たない単色マテリアルも、その色をアトラスのセルへ焼き込んで統合対象にします(見た目は近似)"),
+                s.pcAtlasColorOnlyMaterials);
+            if (newColorOnly != s.pcAtlasColorOnlyMaterials) { s.pcAtlasColorOnlyMaterials = newColorOnly; changed = true; cache.Bump(); }
+
+            bool newBakeEmission = EditorGUILayout.ToggleLeft(
+                new GUIContent("エミッションをアトラスへ焼き込む", "エミッション色/マップをエミッション用アトラスのセルへ焼き込みます(発光を維持)"),
+                s.pcAtlasBakeEmissionMask);
+            if (newBakeEmission != s.pcAtlasBakeEmissionMask) { s.pcAtlasBakeEmissionMask = newBakeEmission; changed = true; cache.Bump(); }
+
+            bool newIgnoreCull = EditorGUILayout.ToggleLeft(
+                new GUIContent("カリング差を無視", "カリング(片面/両面)の違いを無視して統合します。統合後は両面描画(Cull Off)になります"),
+                s.pcAtlasIgnoreCull);
+            if (newIgnoreCull != s.pcAtlasIgnoreCull) { s.pcAtlasIgnoreCull = newIgnoreCull; changed = true; cache.Bump(); }
+
+            // アウトライン(輪郭線)の扱い: しない / 外して統合(推奨) / 付きに統一。
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                EditorGUILayout.LabelField(new GUIContent("アウトライン",
+                    "アトラス統合時のアウトライン(輪郭線)の扱い。外す=服の輪郭線が消える / 付き=輪郭の無かった部分に付く(瞳・顔は自動回避)"),
+                    GUILayout.Width(110f));
+                int cur = Mathf.Clamp((int)s.pcAtlasOutlineUnifyMode, 0, PcAtlasOutlineModeLabels.Length - 1);
+                int next = EditorGUILayout.Popup(cur, PcAtlasOutlineModeLabels, GUILayout.Width(230f));
+                if (next != cur)
+                {
+                    s.pcAtlasOutlineUnifyMode = (OutlineUnifyMode)next;
+                    changed = true;
+                    cache.Bump(); // モード変更で統合プレビューを作り直す
+                }
+                GUILayout.FlexibleSpace();
+            }
+
+            // 統合プレビューのキャッシュキーには、プランに影響する全設定(サイズ・単色/エミッション焼き込み・
+            // カリング無視・アウトライン・除外GUID)を含める。いずれかの変更で再計算される。
+            string atlasSig = avatarRoot.GetInstanceID() + "|" + s.pcEnableAtlas + "|" + s.pcAtlasMaxSize
+                + "|" + s.pcAtlasColorOnlyMaterials + "|" + s.pcAtlasBakeEmissionMask + "|" + s.pcAtlasIgnoreCull
+                + "|" + (int)s.pcAtlasOutlineUnifyMode + "|" + HashPaths(s.pcAtlasExcludeGuids);
+            PCMaterialAtlasser.AtlasPlan plan = cache.GetOrBuild(
+                "pcatlas", atlasSig,
+                () => PCMaterialAtlasser.PreviewPlan(avatarRoot, pc));
+
+            if (plan == null) { EditorGUILayout.HelpBox("アトラス統合プレビューの計算に失敗しました。", MessageType.Warning); return changed; }
+
+            using (new EditorGUILayout.HorizontalScope(EditorStyles.helpBox))
+            {
+                EditorGUILayout.LabelField(string.Format("候補マテリアル {0} → 統合後(概算) {1}", plan.candidateMaterialCount, plan.projectedMaterialCount), EditorStyles.boldLabel);
+                GUILayout.FlexibleSpace();
+            }
+
+            if (plan.groups.Count > 0)
+            {
+                EditorGUILayout.LabelField(string.Format("統合予定グループ {0} 件", plan.groups.Count), EditorStyles.miniBoldLabel);
+                int shown = 0;
+                foreach (PCMaterialAtlasser.AtlasPlanGroup g in plan.groups)
+                {
+                    if (g == null) continue;
+                    if (shown++ >= MaxRows) { EditorGUILayout.LabelField("...(以下省略)", EditorStyles.miniLabel); break; }
+                    string members = g.memberNames != null ? string.Join(", ", g.memberNames) : "";
+                    string extra = "";
+                    if (g.twoSided) extra += " [両面化]";
+                    if (g.outlineAdded != null && g.outlineAdded.Count > 0) extra += " [アウトライン付与:" + g.outlineAdded.Count + "]";
+                    if (g.outlineRemoved != null && g.outlineRemoved.Count > 0) extra += " [アウトライン除去:" + g.outlineRemoved.Count + "]";
+                    EditorGUILayout.LabelField(new GUIContent("・" + Trunc(members, 70) + extra, members), EditorStyles.wordWrappedMiniLabel);
+                }
+            }
+
+            if (plan.blocked.Count > 0)
+            {
+                EditorGUILayout.LabelField(string.Format("統合できない/単独 {0} 件", plan.blocked.Count), EditorStyles.miniBoldLabel);
+                int shown = 0;
+                foreach (PCMaterialAtlasser.AtlasPlanBlocked b in plan.blocked)
+                {
+                    if (b == null) continue;
+                    if (shown++ >= MaxRows) { EditorGUILayout.LabelField("...(以下省略)", EditorStyles.miniLabel); break; }
+                    string text = "・" + b.name + " — " + b.reason + (string.IsNullOrEmpty(b.hint) ? "" : "(" + b.hint + ")");
+                    EditorGUILayout.LabelField(new GUIContent(Trunc(text, 90), text), EditorStyles.wordWrappedMiniLabel);
+                }
+            }
+
+            changed |= DrawPcAtlasExcludeList(avatarRoot, s, cache);
+
+            EditorGUILayout.LabelField("※ トグル固定・AAO結合の前段のため概算です(最終スロット数はレンダラー結合にも依存)。", EditorStyles.miniLabel);
+            return changed;
+        }
+
+        /// <summary>
+        /// アバターが使うマテリアルごとにアトラス除外を切り替えるリスト(旧 PCOptimizer の DrawAtlasExcludeList を移植)。
+        /// 除外指定は s.pcAtlasExcludeGuids(アセットGUID)へ書き、変更時は統合プレビューを作り直す。変更があれば true。
+        /// </summary>
+        private static bool DrawPcAtlasExcludeList(GameObject avatarRoot, AvatarStudioSettings s, AvatarStudioPreviewCache cache)
+        {
+            List<Material> materials = cache.GetOrBuild("pcatlasmats", avatarRoot.GetInstanceID().ToString(),
+                () => CollectAvatarMaterials(avatarRoot));
+            if (materials == null || materials.Count == 0) return false;
+
+            bool changed = false;
+            EditorGUILayout.Space(2f);
+            EditorGUILayout.LabelField("アトラスから除外するマテリアル", EditorStyles.miniBoldLabel);
+            int shown = 0;
+            foreach (Material mat in materials)
+            {
+                if (mat == null) continue;
+                if (shown++ >= MaxRows) { EditorGUILayout.LabelField("...(以下省略)", EditorStyles.miniLabel); break; }
+                string guid = GetAssetGuid(mat);
+                bool hasGuid = !string.IsNullOrEmpty(guid);
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    using (new EditorGUI.DisabledScope(true))
+                        EditorGUILayout.ObjectField(mat, typeof(Material), false, GUILayout.MinWidth(120f), GUILayout.MaxWidth(200f));
+                    using (new EditorGUI.DisabledScope(!hasGuid))
+                    {
+                        bool excluded = hasGuid && s.pcAtlasExcludeGuids.Contains(guid);
+                        bool newExcluded = EditorGUILayout.ToggleLeft(new GUIContent("除外", "このマテリアルをアトラス統合の対象から外します"), excluded, GUILayout.Width(60f));
+                        if (hasGuid && newExcluded != excluded)
+                        {
+                            if (newExcluded) s.pcAtlasExcludeGuids.Add(guid);
+                            else s.pcAtlasExcludeGuids.Remove(guid);
+                            changed = true;
+                            cache.Bump(); // 除外指定の変更で統合プレビューを作り直す
+                        }
+                    }
+                    string reason = PcAtlasIneligibleReason(mat);
+                    if (!string.IsNullOrEmpty(reason))
+                    {
+                        Color prev = GUI.color;
+                        GUI.color = AvatarStudioUI.NoteYellowColor;
+                        EditorGUILayout.LabelField(reason, EditorStyles.miniLabel);
+                        GUI.color = prev;
+                    }
+                    else GUILayout.FlexibleSpace();
+                }
+            }
+            return changed;
+        }
+
+        /// <summary>アバターが使用するマテリアル一覧(重複なし)を集める(アトラス除外指定用。READ-ONLY)。</summary>
+        private static List<Material> CollectAvatarMaterials(GameObject avatarRoot)
+        {
+            var seen = new HashSet<Material>();
+            var list = new List<Material>();
+            if (avatarRoot == null) return list;
+            foreach (Renderer r in avatarRoot.GetComponentsInChildren<Renderer>(true))
+            {
+                if (r == null) continue;
+                foreach (Material m in r.sharedMaterials)
+                    if (m != null && seen.Add(m)) list.Add(m);
+            }
+            return list;
+        }
+
+        /// <summary>マテリアルがアトラス統合に向かない理由の簡易プレビュー(安価に分かる範囲だけ)。無ければnull。</summary>
+        private static string PcAtlasIneligibleReason(Material mat)
+        {
+            if (mat == null || mat.shader == null) return "シェーダー欠落";
+            if (mat.shader.name.IndexOf("TextMeshPro", StringComparison.OrdinalIgnoreCase) >= 0) return "TMP(統合不可)";
+            return null;
+        }
+
+        // ================================================================
+        // 6b. Questマテリアル変換プレビュー(AvatarQuestConverter.PreviewMaterials)
+        // ================================================================
+        private static readonly string[] OverrideLabels =
+        {
+            "自動", "Toon Standard", "Toon Lit", "加算(半透明)", "乗算(半透明)", "非表示", "変換しない",
+        };
+
+        public static bool DrawQuestMaterialPanel(VRCAvatarDescriptor avatar, AvatarStudioSettings s, QuestConvertSettings quest, AvatarStudioPreviewCache cache)
+        {
+            if (avatar == null || s == null) { EditorGUILayout.HelpBox("アバターを選択してください。", MessageType.Info); return false; }
+            if (quest == null) quest = new QuestConvertSettings();
+
+            bool changed = false;
+            EnsureList(ref s.materialOverrides);
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                EditorGUILayout.LabelField(new GUIContent("変換先シェーダー", "Toon Standard=影ランプ等対応 / Toon Lit=最軽量"), GUILayout.Width(110f));
+                var newTarget = (QuestShaderTarget)EditorGUILayout.EnumPopup(s.shaderTarget, GUILayout.Width(140f));
+                if (!Equals(newTarget, s.shaderTarget)) { s.shaderTarget = newTarget; changed = true; }
+
+                EditorGUILayout.LabelField(new GUIContent("半透明", "半透明マテリアルのQuest版での扱い"), GUILayout.Width(48f));
+                var newTr = (TransparentHandling)EditorGUILayout.EnumPopup(s.transparentHandling, GUILayout.Width(120f));
+                if (!Equals(newTr, s.transparentHandling)) { s.transparentHandling = newTr; changed = true; }
+            }
+
+            string sig = avatar.GetInstanceID() + "|" + (int)s.shaderTarget + "|" + (int)s.transparentHandling + "|" + HashOverrides(s.materialOverrides);
+            List<MaterialPreviewRow> rows = cache.GetOrBuild("questmat", sig, () => AvatarQuestConverter.PreviewMaterials(avatar, quest));
+
+            if (rows == null) { EditorGUILayout.HelpBox("マテリアルプレビューの計算に失敗しました。", MessageType.Warning); return changed; }
+            if (rows.Count == 0) { EditorGUILayout.LabelField("マテリアルが見つかりませんでした。", EditorStyles.miniLabel); return changed; }
+
+            int shown = 0;
+            foreach (MaterialPreviewRow row in rows)
+            {
+                if (row == null || row.material == null) continue;
+                if (shown++ >= MaxRows) { EditorGUILayout.LabelField(string.Format("...他 {0} 件", rows.Count - MaxRows), EditorStyles.miniLabel); break; }
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    using (new EditorGUI.DisabledScope(true))
+                        EditorGUILayout.ObjectField(row.material, typeof(Material), false, GUILayout.MinWidth(110f), GUILayout.MaxWidth(180f));
+
+                    // 変換方法上書き
+                    string guid = GetAssetGuid(row.material);
+                    int cur = (int)GetOverrideMode(s.materialOverrides, guid);
+                    int next = EditorGUILayout.Popup(cur, OverrideLabels, GUILayout.Width(120f));
+                    if (next != cur && !string.IsNullOrEmpty(guid))
+                    {
+                        SetOverrideMode(s.materialOverrides, guid, (MaterialOverride)next);
+                        changed = true;
+                    }
+
+                    Color prev = GUI.color;
+                    if (row.isBrokenShader) GUI.color = AvatarStudioDiagnostics.OverLimitColor;
+                    else if (row.isMobileAlready) GUI.color = new Color(0.6f, 0.9f, 0.6f);
+                    GUILayout.Label(new GUIContent(Trunc(row.plannedAction ?? "", 40), row.plannedAction), EditorStyles.miniLabel, GUILayout.MinWidth(130f), GUILayout.MaxWidth(210f));
+                    GUI.color = prev;
+
+                    DrawQuestMaterialBadges(row);
+                    GUILayout.FlexibleSpace();
+                }
+            }
+
+            EditorGUILayout.LabelField("※ 実変換前のプレビューです。「自動」以外を選ぶと自動判定より優先されます。", EditorStyles.miniLabel);
+            return changed;
+        }
+
+        /// <summary>
+        /// マテリアルの状態を短い色付きバッジで表示する(透過/カットアウト/パーティクル/アニメ使用/
+        /// メニュー・ギミック参照/TMP/破損/対応済)。旧QuestConverterウィンドウの DrawMaterialBadges と同一分類。
+        /// </summary>
+        private static void DrawQuestMaterialBadges(MaterialPreviewRow row)
+        {
+            if (row.transparency == QuestCompat.TransparencyClass.Transparent)
+                DrawBadge(row.suppressTransparentHide ? "透過(保護)" : "透過", BadgeTransparentColor,
+                    "アルファブレンド透過。Questのメッシュでは透過表示できません(パーティクル系か非表示で対応)");
+            else if (row.transparency == QuestCompat.TransparencyClass.Cutout)
+                DrawBadge("カットアウト", BadgeCutoutColor,
+                    "アルファ抜き。Questでは不透明として変換されます(Toon Standardにカットアウトはありません)");
+
+            if (row.usedByParticle) DrawBadge("パーティクル", BadgeParticleColor, "パーティクル系レンダラーが使用しています");
+            if (row.usedByAnimation) DrawBadge("アニメ使用", BadgeAnimationColor, "アニメーションのマテリアル差し替えで参照されています");
+            if (row.usedByComponent)
+            {
+                string tip = "Renderer以外のコンポーネント(MA Material Setter等)から参照されているマテリアル。メニューで切り替わる衣装・目・表情差分など";
+                if (!string.IsNullOrEmpty(row.componentSource)) tip += "\n参照元: " + row.componentSource;
+                DrawBadge("メニュー・ギミック参照", BadgeComponentColor, tip);
+            }
+            if (row.isTMP) DrawBadge("TMP", BadgeTmpColor, "TextMeshPro用マテリアル(変換不可。Quest除外を推奨)");
+            if (row.isBrokenShader) DrawBadge("破損", BadgeBrokenColor, "シェーダーが欠落または壊れています(修正してから再変換してください)");
+            if (row.isMobileAlready) DrawBadge("対応済", BadgeMobileColor, "既にQuest対応シェーダーです(変換不要)");
+        }
+
+        // ================================================================
+        // 共有ヘルパ
+        // ================================================================
+        private static void EnsureList<T>(ref List<T> list) { if (list == null) list = new List<T>(); }
+
+        private static bool IsOptedOut(List<string> list, string path)
+        {
+            if (list == null || string.IsNullOrEmpty(path)) return false;
+            return list.Contains(path);
+        }
+
+        private static void TogglePath(List<string> list, string path, bool present)
+        {
+            if (string.IsNullOrEmpty(path)) return;
+            bool has = list.Contains(path);
+            if (present && !has) list.Add(path);
+            else if (!present && has) list.Remove(path);
+        }
+
+        private static bool AllRemoved(List<string> removeList, List<string> paths)
+        {
+            if (paths == null || paths.Count == 0) return false;
+            foreach (string p in paths) if (!removeList.Contains(p)) return false;
+            return true;
+        }
+
+        private static void SetAllRemoved(List<string> removeList, List<string> paths, bool removed)
+        {
+            if (paths == null) return;
+            foreach (string p in paths) TogglePath(removeList, p, removed);
+        }
+
+        private static string GetAssetGuid(UnityEngine.Object obj)
+        {
+            if (obj == null) return null;
+            string path = AssetDatabase.GetAssetPath(obj);
+            return string.IsNullOrEmpty(path) ? null : AssetDatabase.AssetPathToGUID(path);
+        }
+
+        private static MaterialOverride GetOverrideMode(List<MaterialOverrideEntry> list, string guid)
+        {
+            if (string.IsNullOrEmpty(guid)) return MaterialOverride.Auto;
+            foreach (MaterialOverrideEntry e in list)
+                if (e != null && e.materialGuid == guid) return e.mode;
+            return MaterialOverride.Auto;
+        }
+
+        private static void SetOverrideMode(List<MaterialOverrideEntry> list, string guid, MaterialOverride mode)
+        {
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (list[i] != null && list[i].materialGuid == guid)
+                {
+                    // excludeFromAtlas 等の他フラグが立っていなければ Auto はエントリ削除。
+                    if (mode == MaterialOverride.Auto && !list[i].excludeFromAtlas) { list.RemoveAt(i); return; }
+                    list[i].mode = mode;
+                    return;
+                }
+            }
+            if (mode != MaterialOverride.Auto)
+                list.Add(new MaterialOverrideEntry { materialGuid = guid, mode = mode });
+        }
+
+        // ---- テクスチャ縮小計画(GUID参照。より小さい目標を優先) ----
+        private static bool UpsertTexturePlan(List<TextureSizePlanEntry> plan, Texture texture, int targetSize)
+        {
+            if (texture == null || targetSize <= 0) return false;
+            string guid = GetAssetGuid(texture);
+            if (string.IsNullOrEmpty(guid)) return false;
+            foreach (TextureSizePlanEntry e in plan)
+            {
+                if (e != null && e.textureGuid == guid)
+                {
+                    if (e.targetSize <= 0 || targetSize < e.targetSize) { e.targetSize = targetSize; return true; }
+                    return false;
+                }
+            }
+            plan.Add(new TextureSizePlanEntry { textureGuid = guid, targetSize = targetSize });
+            return true;
+        }
+
+        private static bool IsPlanned(List<TextureSizePlanEntry> plan, Texture texture, int targetSize)
+        {
+            if (texture == null || plan == null) return false;
+            string guid = GetAssetGuid(texture);
+            if (string.IsNullOrEmpty(guid)) return false;
+            foreach (TextureSizePlanEntry e in plan)
+                if (e != null && e.textureGuid == guid && e.targetSize > 0 && e.targetSize <= targetSize) return true;
+            return false;
+        }
+
+        // ---- シグネチャ用の軽量ハッシュ ----
+        private static int HashPaths(List<string> list)
+        {
+            if (list == null) return 0;
+            int h = 17;
+            foreach (string x in list) h = h * 31 + (x != null ? x.GetHashCode() : 0);
+            return h;
+        }
+
+        private static int HashTexturePlan(List<TextureSizePlanEntry> list)
+        {
+            if (list == null) return 0;
+            int h = 17;
+            foreach (TextureSizePlanEntry e in list)
+            {
+                if (e == null) { h = h * 31; continue; }
+                h = h * 31 + (e.textureGuid != null ? e.textureGuid.GetHashCode() : 0);
+                h = h * 31 + e.targetSize;
+            }
+            return h;
+        }
+
+        private static int HashOverrides(List<MaterialOverrideEntry> list)
+        {
+            if (list == null) return 0;
+            int h = 17;
+            foreach (MaterialOverrideEntry e in list)
+            {
+                if (e == null) { h = h * 31; continue; }
+                h = h * 31 + (e.materialGuid != null ? e.materialGuid.GetHashCode() : 0);
+                h = h * 31 + (int)e.mode;
+            }
+            return h;
+        }
+
+        private static string Trunc(string text, int max)
+        {
+            if (string.IsNullOrEmpty(text)) return string.Empty;
+            return text.Length <= max ? text : text.Substring(0, max - 1) + "…";
+        }
+    }
+}
+#endif

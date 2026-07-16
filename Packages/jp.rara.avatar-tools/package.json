@@ -1,0 +1,22 @@
+{
+  "name": "jp.rara.avatar-tools",
+  "displayName": "RARA Avatar Tools (アバター軽量化・Quest/iOS対応)",
+  "version": "1.0.0",
+  "unity": "2022.3",
+  "description": "VRChatアバターの軽量化とQuest/iOS対応を支援するエディタ拡張ツール群です。Quest Converter・PC Optimizer・Avatar Studio を収録しています。",
+  "author": {
+    "name": "RARA"
+  },
+  "license": "MIT",
+  "documentationUrl": "https://github.com/RARA-vrc/rara-avatar-tools",
+  "changelogUrl": "https://github.com/RARA-vrc/rara-avatar-tools",
+  "vpmDependencies": {
+    "com.vrchat.avatars": ">=3.8.1"
+  },
+  "legacyFolders": {
+    "Assets\\RARA\\QuestConverter\\Editor": "bb6d39ad9324cf3448857fcc243f8eec",
+    "Assets\\RARA\\QuestConverter\\Shaders": "d4350c93bd47bc841a273651b8922d7e",
+    "Assets\\RARA\\PCOptimizer\\Editor": "eff7a07a240b52140b2b143d978b183a",
+    "Assets\\RARA\\AvatarStudio\\Editor": "fb9c5b14cfef8c74f9214adedb67ad9b"
+  }
+}
