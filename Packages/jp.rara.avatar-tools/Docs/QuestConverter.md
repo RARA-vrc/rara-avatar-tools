@@ -2,10 +2,9 @@
 
 移行のお知らせ
 
-操作は統合ウィンドウ『RARA アバター軽量化・Quest/iOS対応ツール』へ移行しました。旧UIは メニュー RARA > 旧ツール から引き続き使えます。メニューの RARA > Quest対応コンバーター を選ぶと、統合ウィンドウが Quest 対象で開きます(変換エンジンは同じものを共有しています)。
+操作は統合ウィンドウへ移行しました。メニューの RARA > Quest対応ツール を選ぶと、統合ウィンドウが Quest 対象で開きます(変換エンジンは同じものを共有しています)。この単体UI(QuestConverterWindow)はメニューからは外しましたが、クラスと Open() API はコード互換のために残しています。
 
 VRChat の PC 用アバターを Quest / スマホ(Android・iOS)対応に変換する Unity Editor 拡張。
-旧UIは、メニューの RARA > 旧ツール > Quest対応コンバーター(旧UI) から開く。
 
 本ツールは Quest / スマホ対応への変換専用。シェーダーを Mobile 系へ変換し、テクスチャに質感をベイクして Android / iOS で使える形にする。PC のまま性能ランクを上げたい(Very Poor を避けたい、Good を狙いたい)場合は、変換ではなく PC 基準のランク改善を行う姉妹ツール RARA PC軽量化ツール を使うこと。両ツールは共通エンジンを持ち、PC 軽量化の結果をそのまま本ツールの Quest 変換へ引き継げる。
 
@@ -32,15 +31,12 @@ VRChat の PC 用アバターを Quest / スマホ(Android・iOS)対応に変換
 
 ## 導入方法
 
-1. 配布の unitypackage をプロジェクトにインポートする(Assets > Import Package > Custom Package)
-2. ファイル一式が Assets/RARA/QuestConverter/ 以下に展開される
-3. スクリプトのコンパイルが終わると、メニューバーに RARA > Quest対応コンバーター が追加される
+VCC / ALCOM から VPM パッケージ(jp.rara.avatar-tools)として導入する。詳しい手順は
+リポジトリ直下の README.md「導入(VCC / ALCOM)」を参照。パッケージは
+Packages/jp.rara.avatar-tools/ 以下に配置され、コンパイルが終わるとメニューバーに
+RARA > Quest対応ツール(および RARA > PC軽量化ツール)が追加される。
 
-追加の設定は不要。asmdef を使っていないため、SDK や lilToon への参照設定なしでそのまま動く。
-アンインストールは Assets/RARA/QuestConverter フォルダを削除するだけでよい。
-
-unitypackage を作る場合は、Assets/RARA/QuestConverter を右クリック > Export Package でエクスポートする。
-このとき Generated フォルダ(変換結果の出力先)が含まれていれば、チェックを外して除外すること。
+追加の設定は不要。アンインストールは VCC / ALCOM の Manage Project からパッケージを外すだけでよい。
 
 ## 使い方
 

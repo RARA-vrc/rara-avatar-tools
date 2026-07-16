@@ -2,11 +2,10 @@
 
 移行のお知らせ
 
-操作は統合ウィンドウ『RARA アバター軽量化・Quest/iOS対応ツール』へ移行しました。旧UIは メニュー RARA > 旧ツール から引き続き使えます。メニューの RARA > PC軽量化ツール を選ぶと、統合ウィンドウが PC 対象で開きます(最適化エンジンは同じものを共有しています)。
+操作は統合ウィンドウへ移行しました。メニューの RARA > PC軽量化ツール を選ぶと、統合ウィンドウが PC 対象で開きます(最適化エンジンは同じものを共有しています)。この単体UI(PCOptimizerWindow)はメニューからは外しましたが、クラスと Open() API はコード互換のために残しています。
 
 VRChat の PC(Windows)用アバターの性能ランクを PC 基準で引き上げる Unity Editor 拡張。
 元のアバターは一切変更しない非破壊方式で、「アバター名_Opt」の複製と、同じ内容のプレファブアセットを新しく生成する。
-旧UIは、メニューの RARA > 旧ツール > PC軽量化ツール(旧UI) から開く。
 
 ## 概要
 
@@ -40,15 +39,12 @@ RARA のアバター軽量化ツールは対象ユーザーで役割を分けて
 
 ## 導入方法
 
-1. 配布の unitypackage をプロジェクトにインポートする(Assets > Import Package > Custom Package)
-2. ファイル一式が Assets/RARA/ 以下に展開される(QuestConverter と PCOptimizer の両方が必要)
-3. スクリプトのコンパイルが終わると、メニューバーに RARA > PC軽量化ツール が追加される
+VCC / ALCOM から VPM パッケージ(jp.rara.avatar-tools)として導入する。詳しい手順は
+リポジトリ直下の README.md「導入(VCC / ALCOM)」を参照。パッケージは
+Packages/jp.rara.avatar-tools/ 以下に配置され、コンパイルが終わるとメニューバーに
+RARA > PC軽量化ツール が追加される。
 
-追加の設定は不要。asmdef を使っていないため、SDK への参照設定なしでそのまま動く。
-アンインストールは Assets/RARA フォルダを削除するだけでよい。
-
-unitypackage を作る場合は、Assets/RARA を右クリック > Export Package でエクスポートする(QuestConverter を含めること)。
-このとき Generated フォルダ(生成物の出力先)が含まれていれば、チェックを外して除外すること。
+追加の設定は不要。アンインストールは VCC / ALCOM の Manage Project からパッケージを外すだけでよい。
 
 ## 想定フロー
 

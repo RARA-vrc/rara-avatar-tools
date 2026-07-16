@@ -110,8 +110,8 @@ namespace RARA.PCOptimizer
             new GUIContent("Poor", "重いランク。これを超えると Very Poor になり、既定の表示設定では他ユーザーに非表示になりやすくなります(PCではアップロード自体は可能)"),
         };
 
-        // Phase 2: 操作は統合ウィンドウへ移行。旧UIは「RARA/旧ツール」配下へ退避(引き続き利用可能)。
-        [MenuItem("RARA/旧ツール/PC軽量化ツール(旧UI)", priority = 1000)]
+        // Phase 3: RARA メニューは統合ウィンドウの2項目のみへ整理。旧UIはメニューから外したが、
+        // 互換のため Open() API は残す(統合ウィンドウ側や他コードから直接呼べる)。
         public static void Open()
         {
             var window = GetWindow<PCOptimizerWindow>();
@@ -210,7 +210,7 @@ namespace RARA.PCOptimizer
                     EditorGUILayout.Space(2f);
                     EditorGUILayout.LabelField("あなたはどのタイプ?", EditorStyles.miniBoldLabel);
                     EditorGUILayout.HelpBox(
-                        "(a) 雑にQuest対応したい → このツールではなく「RARA/Quest対応コンバーター」を使ってください。\n" +
+                        "(a) 雑にQuest対応したい → このツールではなく「RARA/Quest対応ツール」を使ってください。\n" +
                         "(b) PCのランクをまず Poor 以上にしたい → このツールの対象です。\n" +
                         "(c) PCで Good を目指したい → このツールの対象です。目標ランクで Good を選んでください。",
                         MessageType.Info);
@@ -218,7 +218,7 @@ namespace RARA.PCOptimizer
                     {
                         GUILayout.FlexibleSpace();
                         if (GUILayout.Button(new GUIContent("Quest対応コンバーターを開く",
-                            "雑にQuest対応したい場合はこちら。RARA/Quest対応コンバーターを開きます"), GUILayout.Height(20f)))
+                            "雑にQuest対応したい場合はこちら。RARA/Quest対応ツールを開きます"), GUILayout.Height(20f)))
                         {
                             OpenQuestConverter(null);
                         }

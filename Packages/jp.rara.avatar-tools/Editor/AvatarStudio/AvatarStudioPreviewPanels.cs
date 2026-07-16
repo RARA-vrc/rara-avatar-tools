@@ -1607,11 +1607,31 @@ namespace RARA.AvatarStudio
                 if (!Equals(newTr, s.transparentHandling)) { s.transparentHandling = newTr; changed = true; }
             }
 
+            // quest は OnGUI 冒頭で s から値コピー済みのスナップショット。上のドロップダウンで
+            // s.shaderTarget / s.transparentHandling を変えても quest 側は旧値のままなので、sig が
+            // 新値へ動く一方 PreviewMaterials が旧 quest を読み、プレビューが1フレーム前の設定で
+            // 作られてしまう。同フレームで最新設定を quest へ反映してから rows を組む。
+            quest.shaderTarget = s.shaderTarget;
+            quest.transparentHandling = s.transparentHandling;
+
             string sig = avatar.GetInstanceID() + "|" + (int)s.shaderTarget + "|" + (int)s.transparentHandling + "|" + HashOverrides(s.materialOverrides);
             List<MaterialPreviewRow> rows = cache.GetOrBuild("questmat", sig, () => AvatarQuestConverter.PreviewMaterials(avatar, quest));
 
             if (rows == null) { EditorGUILayout.HelpBox("マテリアルプレビューの計算に失敗しました。", MessageType.Warning); return changed; }
             if (rows.Count == 0) { EditorGUILayout.LabelField("マテリアルが見つかりませんでした。", EditorStyles.miniLabel); return changed; }
+
+            // 非表示(不可視マテリアル)になる予定の件数を数え、あれば透過ドロップダウン直下に案内を出す。
+            // 件数は同一OnGUIサイクル内で不変なキャッシュ済み rows から算出するため、Layout/Repaint で
+            // コントロール数は食い違わない(該当行の個別ボタンは下のループで出す)。
+            int hiddenCount = 0;
+            foreach (MaterialPreviewRow r in rows) if (IsPlannedHidden(r)) hiddenCount++;
+            if (hiddenCount > 0)
+            {
+                EditorGUILayout.HelpBox(
+                    "Quest版で非表示(不可視)になる予定のマテリアルが " + hiddenCount + " 件あります。" +
+                    "非表示になった衣類(ストッキング等)は、下の一覧の「不透明にする」/「乗算で再現」から個別に表示方法を選べます。",
+                    MessageType.Info);
+            }
 
             int shown = 0;
             foreach (MaterialPreviewRow row in rows)
@@ -1641,6 +1661,28 @@ namespace RARA.AvatarStudio
 
                     DrawQuestMaterialBadges(row);
                     GUILayout.FlexibleSpace();
+
+                    // 非表示(不可視)になる予定の行には、その場で表示方法を選べるショートカットを出す。
+                    // ストッキング等が「雑にQuest対応」等で不可視化された場合に、不透明/乗算で見えるよう戻せる。
+                    // 押下は上書き(materialOverrides)を書き込むだけ。sig(HashOverrides)が変わり次回OnGUIで
+                    // プレビューが再計算される(=非表示解消で次サイクルからボタンは消える)。
+                    if (!string.IsNullOrEmpty(guid) && IsPlannedHidden(row))
+                    {
+                        if (GUILayout.Button(new GUIContent("不透明にする",
+                            "このマテリアルを Toon Standard へ変換して不透明で表示します(透過は失われますが確実に見えます)"),
+                            GUILayout.Width(92f)))
+                        {
+                            SetOverrideMode(s.materialOverrides, guid, MaterialOverride.ToonStandard);
+                            changed = true;
+                        }
+                        if (GUILayout.Button(new GUIContent("乗算で再現",
+                            "このマテリアルを乗算パーティクルへ変換します(ストッキング等の薄い透け感を近似再現します)"),
+                            GUILayout.Width(84f)))
+                        {
+                            SetOverrideMode(s.materialOverrides, guid, MaterialOverride.ParticleMultiply);
+                            changed = true;
+                        }
+                    }
                 }
             }
 
@@ -1672,6 +1714,20 @@ namespace RARA.AvatarStudio
             if (row.isTMP) DrawBadge("TMP", BadgeTmpColor, "TextMeshPro用マテリアル(変換不可。Quest除外を推奨)");
             if (row.isBrokenShader) DrawBadge("破損", BadgeBrokenColor, "シェーダーが欠落または壊れています(修正してから再変換してください)");
             if (row.isMobileAlready) DrawBadge("対応済", BadgeMobileColor, "既にQuest対応シェーダーです(変換不要)");
+        }
+
+        /// <summary>
+        /// 予定処理(plannedAction)がこのマテリアルを Quest 版で「非表示(不可視マテリアル)」にするか。
+        /// AvatarQuestConverter.BuildPlannedAction の非表示分岐はいずれも「非表示化」で始まる文字列を返す
+        /// (手動指定 / 表情デカール / アウトライン / 疑似影 / 透過Hide)。唯一まぎらわしい非該当
+        /// 「不透明として変換(…非表示化しない)」は「不透明」で始まるため誤検出しない。メッシュ用途は
+        /// 非表示だがパーティクル用途は変換される複合(「非表示化 / パーティクル用: …」)も、メッシュが
+        /// 不可視のため非表示として扱う。plannedAction を単一の真実として参照する(判定ロジックは複製しない)。
+        /// </summary>
+        private static bool IsPlannedHidden(MaterialPreviewRow row)
+        {
+            return row != null && row.plannedAction != null
+                && row.plannedAction.StartsWith("非表示化", StringComparison.Ordinal);
         }
 
         // ================================================================

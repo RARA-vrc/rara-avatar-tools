@@ -149,8 +149,8 @@ namespace RARA.QuestConverter
             (int)TextureImporterFormat.ASTC_8x8,
         };
 
-        // Phase 2: 操作は統合ウィンドウへ移行。旧UIは「RARA/旧ツール」配下へ退避(引き続き利用可能)。
-        [MenuItem("RARA/旧ツール/Quest対応コンバーター(旧UI)", priority = 1001)]
+        // Phase 3: RARA メニューは統合ウィンドウの2項目のみへ整理。旧UIはメニューから外したが、
+        // 互換のため Open() API は残す(統合ウィンドウ側や他コードから直接呼べる)。
         public static void Open()
         {
             var window = GetWindow<QuestConverterWindow>();

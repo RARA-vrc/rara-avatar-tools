@@ -86,6 +86,13 @@ namespace RARA.AvatarStudio
 
             bool changed = false;
 
+            // 検証エラー表示の有無を「このOnGUIパスの開始時点の値」で固定する。下の ObjectField への
+            // ドロップ(DragPerform イベント)は AddExcludePath を呼んで _excludeAddError を null↔非null に
+            // 変えるが、その新しい値でこの下の HelpBox の有無を決めると、同一パスの Layout が確保した
+            // コントロール数と食い違い「control N in a group with only M controls」例外になる。
+            // 捕捉値で描画すれば、失敗ドロップで生じたエラーは(ドロップで走る再描画の)次パスから表示される。
+            string pendingExcludeError = _excludeAddError;
+
             if (AvatarStudioUI.ExplainFold("QuestExclude", "説明(Quest除外の効果とボーン誤登録の注意)"))
             {
                 EditorGUILayout.HelpBox(
@@ -111,9 +118,9 @@ namespace RARA.AvatarStudio
             {
                 EditorGUILayout.LabelField("対象アバターを指定すると登録できます。", EditorStyles.miniLabel);
             }
-            if (!string.IsNullOrEmpty(_excludeAddError))
+            if (!string.IsNullOrEmpty(pendingExcludeError))
             {
-                EditorGUILayout.HelpBox(_excludeAddError, MessageType.Error);
+                EditorGUILayout.HelpBox(pendingExcludeError, MessageType.Error);
             }
 
             changed |= DrawExcludePathList(s, avatar);

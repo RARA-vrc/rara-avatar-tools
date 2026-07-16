@@ -55,8 +55,9 @@ namespace RARA.AvatarStudio
         private Vector2 _pcReportScroll;
         private Vector2 _questReportScroll;
 
-        // 統合メニュー: 本体(100) → PC/Quest エイリアス(101/102) → 旧ツールは submenu(1000番台)で最後。
-        [MenuItem("RARA/アバター軽量化・Quest・iOS対応ツール", priority = 100)]
+        // RARA メニューは2項目だけ: 「PC軽量化ツール」と「Quest対応ツール」。どちらも同じ統合ウィンドウを
+        // 対象(PC / Quest)を絞って開くだけで、ウィンドウ内でいつでも対象を切り替えられる。
+        // 引数なし Open() はメニューには出さず、他コードからの互換用エントリとして残す。
         public static void Open()
         {
             var window = GetWindow<AvatarStudioWindow>();
@@ -65,18 +66,11 @@ namespace RARA.AvatarStudio
             window.Show();
         }
 
-        /// <summary>PC軽量化エイリアス。統合ウィンドウをPC対象のみで開く(旧「RARA/PC軽量化ツール」の入口を継承)。</summary>
-        [MenuItem("RARA/PC軽量化ツール", priority = 101)]
-        public static void OpenPcAlias()
+        /// <summary>統合ウィンドウを開く(唯一のメニュー項目。PC/Quest の対象はウィンドウ内のチップで切替)。</summary>
+        [MenuItem("RARA/アバター軽量化・Quest・iOS対応ツール", priority = 100)]
+        public static void OpenFromMenu()
         {
-            Open(null, true, false);
-        }
-
-        /// <summary>Quest対応エイリアス。統合ウィンドウをQuest対象のみで開く(旧「RARA/Quest対応コンバーター」の入口を継承)。</summary>
-        [MenuItem("RARA/Quest対応コンバーター", priority = 102)]
-        public static void OpenQuestAlias()
-        {
-            Open(null, false, true);
+            OpenInternal(null, null, null);
         }
 
         /// <summary>指定アバターを対象にウィンドウを開く(他ツールからの遷移用。対象は保存済みの設定に従う)。</summary>
@@ -186,16 +180,25 @@ namespace RARA.AvatarStudio
                     ApplyPendingTargets(); // アバターを先に選んだ状態でエイリアスから開いた場合の保険。
                 }
 
+                // プレビューパネルへ渡すエンジン設定を現在の設定から毎フレーム作り直す(実装者Bの要求どおり)。
+                GameObject root = _avatar.gameObject;
+                PCOptimizeSettings pc = AvatarStudioMapping.BuildPCOptimizeSettings(_settings);
+                QuestConvertSettings quest = AvatarStudioMapping.BuildQuestConvertSettings(_settings);
+
+                // 診断は要約行(DrawSummaryLine)を描く前に確定させる。診断ステップ内で遅延計算すると、
+                // 同一フレームの Layout(_diag==null で少ないコントロール)と Repaint(計算後 _diag!=null で
+                // 多いコントロール)で要約行のコントロール数が食い違い、「Getting control N's position in a
+                // group with only N controls」の IMGUI 例外が出る。ここで先に埋めれば毎フレーム一貫する。
+                if (_diag == null)
+                {
+                    _diag = AvatarStudioDiagnostics.Analyze(_avatar, _settings.targetPC, _settings.targetQuest, quest);
+                }
+
                 DrawSummaryLine();
                 DrawTargetChips();
                 DrawPresets();
 
                 EditorGUILayout.Space(6f);
-
-                // プレビューパネルへ渡すエンジン設定を現在の設定から毎フレーム作り直す(実装者Bの要求どおり)。
-                GameObject root = _avatar.gameObject;
-                PCOptimizeSettings pc = AvatarStudioMapping.BuildPCOptimizeSettings(_settings);
-                QuestConvertSettings quest = AvatarStudioMapping.BuildQuestConvertSettings(_settings);
 
                 Step(1, "診断(PC / Quest 現在値と目標)", "Diagnose", true, () => DrawDiagnoseSection(quest));
                 Step(2, "構成整理(トグル / SkinnedMesh統合)", "Structure", false, () => DrawStructureSection(root));
@@ -362,7 +365,7 @@ namespace RARA.AvatarStudio
             EditorGUILayout.LabelField("プリセット", EditorStyles.miniBoldLabel);
             using (new EditorGUILayout.HorizontalScope())
             {
-                if (GUILayout.Button(new GUIContent("雑にQuest対応", "Questのみ / 目標Poor / 透過は自動再現(ポリゴン削減は既定オフ・必要なときにパネルで有効化)"), GUILayout.Height(24f)))
+                if (GUILayout.Button(new GUIContent("雑にQuest対応", "Questのみ / 目標Poor / 透過は乗算・加算で近似(ストッキング等の透けも保持)。完全に消したいマテリアルは⑥マテリアルの各行で『非表示』を選択。ポリゴン削減は既定オフ・必要なときにパネルで有効化"), GUILayout.Height(24f)))
                 {
                     ApplyPreset(Preset.RoughQuest);
                 }
@@ -396,6 +399,8 @@ namespace RARA.AvatarStudio
                     // (超過時はポリゴンパネルの琥珀ヒントから明示的に有効化してもらう)。
                     _settings.questEnableDecimation = false;
                     _settings.questDecimationTargetTriangles = QuestRankToTriangles(QuestTargetRank.Poor);
+                    // 透過は既定で「近似(乗算/加算のParticlesシェーダー)」。ストッキング等の透けも保持され、
+                    // 意図せず不可視化されない。完全に消したい場合は⑥マテリアルの各行で「非表示」を個別選択する。
                     _settings.transparentHandling = TransparentHandling.Emulate;
                     break;
 
@@ -446,12 +451,8 @@ namespace RARA.AvatarStudio
 
         private void DrawDiagnoseSection(QuestConvertSettings quest)
         {
-            // 初回(または対象変更後)は自動で計測する。診断ステップは既定で開いているため、
-            // ボタン描画より前に計測して同一フレーム内のラベルを一貫させる。
-            if (_diag == null)
-            {
-                _diag = AvatarStudioDiagnostics.Analyze(_avatar, _settings.targetPC, _settings.targetQuest, quest);
-            }
+            // 初回(または対象変更後)の自動計測は OnGUI が要約行より前に済ませている(_diag は基本 non-null)。
+            // ここでは計測せず、下の「再診断」ボタンで明示的に再計測できるようにする。
 
             using (new EditorGUILayout.HorizontalScope())
             {
@@ -810,35 +811,55 @@ namespace RARA.AvatarStudio
 
         private void DrawHelpSection()
         {
-            EditorGUILayout.LabelField("このツールでできること / できないこと / 諦めること を先に把握しておくと、設定で迷いにくくなります。",
-                AvatarStudioUI.MiniWrapLabel);
-
-            EditorGUILayout.Space(2f);
+            // (a) ツール概要(3行)
+            EditorGUILayout.LabelField("かんたんな説明", EditorStyles.miniBoldLabel);
             using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
-                EditorGUILayout.LabelField("できること", EditorStyles.miniBoldLabel);
                 EditorGUILayout.LabelField(
-                    "・PC(Windows): テクスチャ縮小・マテリアルのアトラス統合・トグル固定・SkinnedMesh統合・PhysBone整理・AAO付与でランクを改善\n"
-                    + "・Quest/iOS: シェーダーのMobile変換(質感をテクスチャへベイク)・影ランプ生成・エミッション変換・半透明の自動再現\n"
-                    + "・Quest/iOS: 隠面メッシュ削減・ポリゴン削減・不要オブジェクトのQuest除外・表情デカール(チーク/涙/ハイライト)の再現/非表示\n"
-                    + "・元アバターは非破壊。PC用『_Opt』とQuest用『_Quest』の複製を生成(繰り返し再生成しても複製は蓄積しない)",
+                    "・元アバターは壊さず、軽量なPC用『_Opt』とQuest/iOS用『_Quest』の複製を自動で作るツールです。\n"
+                    + "・診断で今の重さを見て、テクスチャ・メッシュ・マテリアル・PhysBone・ポリゴンを減らして重さを下げます。\n"
+                    + "・アップロードするのは生成された複製です。何度でも作り直せます(複製は増え続けません)。",
                     AvatarStudioUI.WrapLabel);
+            }
 
-                EditorGUILayout.Space(4f);
-                EditorGUILayout.LabelField("できないこと(Quest/iOS)", EditorStyles.miniBoldLabel);
+            // (b) 軽くなる仕組み(処理 → 効果。ビルド時に効くもの・要AAOのものは明記)
+            EditorGUILayout.Space(4f);
+            EditorGUILayout.LabelField("軽くなる仕組み(何をすると何が減るか)", EditorStyles.miniBoldLabel);
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
                 EditorGUILayout.LabelField(
-                    "・メッシュの半透明(Quest仕様: 透過はParticles系のみ)・カットアウト(アルファ抜き)\n"
-                    + "・アウトライン・ファー・ラメ・屈折などの特殊効果\n"
-                    + "・リムライト/マットキャップ等の質感の完全再現(リムは変換設定で近似のみ)\n"
-                    + "・ダウンロードサイズ10MB超の回避・Very Poor アバターのアップロード",
+                    "・トグル固定(常時表示に固定): 表示アニメを常時ONに固定 → AAOがビルド時に同一メッシュへ結合でき、SkinnedMesh数が減る(要AAO)\n"
+                    + "・トグル固定(非表示に固定): 使わない衣装をEditorOnly化して除去 → ビルドから外れSkinnedMesh数が減る(AAO不要)\n"
+                    + "・SkinnedMesh統合: 顔(ビセーム/まばたき)以外を1つにまとめる → SkinnedMesh数が減る(Questの上限2に対応。結合はビルド時にAAOが実施)\n"
+                    + "・アトラス統合: 複数マテリアルのテクスチャを1枚にまとめる → マテリアルスロット数が減る(同一メッシュ内は変換時、メッシュをまたぐ統合はビルド時にAAOが実施)\n"
+                    + "・テクスチャ縮小: 解像度を下げる → テクスチャメモリ(VRAM)とダウンロードサイズが減る\n"
+                    + "・ポリゴン削減: 頂点を間引く(表情のブレンドシェイプとUVは保持) → 三角数が減る\n"
+                    + "・PhysBone整理: 揺れもの設定を選別・マージ → PhysBoneコンポーネント数が減る\n"
+                    + "・透過処理: Questには半透明シェーダーが無いため、乗算/加算のParticlesシェーダーで見た目を近似(ランク削減ではなくQuest対応のための処理)",
                     AvatarStudioUI.WrapLabel);
+            }
 
-                EditorGUILayout.Space(4f);
-                EditorGUILayout.LabelField("諦めること(割り切り)", EditorStyles.miniBoldLabel);
+            // Quest/iOS版の割り切り(短く)
+            EditorGUILayout.Space(4f);
+            EditorGUILayout.LabelField("Quest/iOS版の割り切り", EditorStyles.miniBoldLabel);
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
                 EditorGUILayout.LabelField(
-                    "・Quest版はPC版と完全に同じ見た目にはならない(質感の簡略化は前提)\n"
-                    + "・透過を多用したデザインは不透明化/非表示のいずれかへ割り切る\n"
-                    + "・目標ランクを厳しくするほど、削るメッシュ・機能は増える(見た目とのトレードオフ)",
+                    "・半透明・アウトライン・ファー・屈折・マットキャップ等は完全再現できません(質感は簡略化されます)。\n"
+                    + "・透過の多いデザインは『乗算/加算で近似』か『非表示』に割り切ります(⑥マテリアルの各行で選べます)。\n"
+                    + "・目標ランクを厳しくするほど削るメッシュ・機能が増えます(見た目とのトレードオフ)。",
+                    AvatarStudioUI.WrapLabel);
+            }
+
+            // (c) 迷ったら(3ステップ)
+            EditorGUILayout.Space(4f);
+            EditorGUILayout.LabelField("迷ったら(3ステップ)", EditorStyles.miniBoldLabel);
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                EditorGUILayout.LabelField(
+                    "1. プリセットを押す(Questだけなら『雑にQuest対応』、PCとQuest両方なら『フル両対応』)。\n"
+                    + "2. ⑦ 実行で複製を生成する。\n"
+                    + "3. 生成された複製を VRChat SDK の Build & Test で確認する(最終的なランクと見た目はSDKで確認)。",
                     AvatarStudioUI.WrapLabel);
             }
 
