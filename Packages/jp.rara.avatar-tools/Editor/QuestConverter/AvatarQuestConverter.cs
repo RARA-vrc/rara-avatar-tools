@@ -449,6 +449,14 @@ namespace RARA.QuestConverter
                 // RemapMeshesAndMergeSlots は元マテリアル基準でUV再配置・スロット統合を行える。
                 // その後 materialMap をアトラスマテリアルで上書きすることで、以降の
                 // アニメーション変換(step5)とスロット差し替え(step6)がアトラスマテリアルを参照する。
+                // 非表示化(不可視)へ変換された元マテリアルを集める。アトラス段へ渡し、最終サブメッシュの
+                // 上描き(多重描画)スロットが不可視なら複製も温存もせず削除させる(ポリゴン増を防ぐ)。
+                var hiddenOriginals = new HashSet<Material>();
+                foreach (var kv in materialMap)
+                {
+                    if (MaterialQuestConverter.IsHiddenConvertedMaterial(kv.Value)) hiddenOriginals.Add(kv.Key);
+                }
+
                 bool atlasApplied = false;
                 if (settings.enableAtlas)
                 {
@@ -460,7 +468,7 @@ namespace RARA.QuestConverter
                         {
                             // スロットはまだ元マテリアルを保持している(統合後のスロットには先頭メンバーの
                             // 元マテリアルが残り、それが下のmap上書きでアトラスマテリアルへ解決される)
-                            MaterialAtlasser.RemapMeshesAndMergeSlots(clone, atlas, outputDir, report, assets);
+                            MaterialAtlasser.RemapMeshesAndMergeSlots(clone, atlas, outputDir, report, assets, hiddenOriginals);
                             foreach (var kv in atlas.atlasMap) materialMap[kv.Key] = kv.Value;
                             atlasApplied = true; // アトラス統合が実際に行われた(コンポーネント参照差し替え時の整合警告に使う)
                         }

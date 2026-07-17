@@ -22,6 +22,16 @@ namespace RARA.QuestConverter
     /// <summary>アトラス構築の結果一式。</summary>
     public class AtlasBuildResult
     {
+        /// <summary>
+        /// 上描き(多重描画)スロットの処理スキームのバージョン。1.0.8(=スキーム未畳み込み)は
+        /// 余剰スロットを実サブメッシュへ複製し最終サブメッシュのUVも再配置していたため、生成メッシュの
+        /// 内容が 1.0.9(=スキーム2: 非表示スロットは削除・可視スロットはネイティブ多重描画のまま温存・
+        /// 三角形の複製なし)と非互換になる。レイアウトハッシュへこの定数を畳み込むことで、同一アトラス配置でも
+        /// 1.0.9 は別名のメッシュ/アトラスを出力し、旧複製が参照する同一GUIDメッシュを非互換内容で
+        /// 上書きして見た目を壊すことを防ぐ(旧複製は旧メッシュ+旧アトラスのまま整合した孤立物として残る)。
+        /// </summary>
+        public const int kOverdrawScheme = 2;
+
         /// <summary>元(PC)マテリアル → 統合後アトラスマテリアル。</summary>
         public Dictionary<Material, Material> atlasMap;
         /// <summary>元(PC)マテリアル → アトラス内UV矩形(0..1、0.5テクセル内側インセット済み)。</summary>
@@ -90,6 +100,9 @@ namespace RARA.QuestConverter
             }
             matNames.Sort(StringComparer.Ordinal);
             foreach (string n in matNames) hash = FoldString(hash, n);
+
+            // 上描き処理スキームのバージョンを畳み込む(1.0.9で別名メッシュを出力し旧複製の上書き破壊を防ぐ)。
+            hash = FoldString(hash, "overdraw-scheme:" + kOverdrawScheme);
 
             layoutHash = hash.ToString("x8");
             return layoutHash;
@@ -572,6 +585,7 @@ namespace RARA.QuestConverter
             uint hash = 2166136261u; // FNV-1a 32bit
             hash = FoldLayoutInt(hash, atlasW);
             hash = FoldLayoutInt(hash, atlasH);
+            hash = FoldLayoutInt(hash, AtlasBuildResult.kOverdrawScheme); // 上描き処理スキーム(1.0.9で別名アトラスを出力)
             foreach (KeyValuePair<string, RectInt> e in entries)
             {
                 foreach (char c in e.Key) hash = (hash ^ c) * 16777619u;
@@ -607,7 +621,12 @@ namespace RARA.QuestConverter
         /// 元マテリアルを残す(後段の ApplyMaterialMap がアトラスマテリアルへ差し替える)。
         /// レンダラー単位で失敗しても据え置いて続行する(全体は中断しない)。
         /// </summary>
-        public static void RemapMeshesAndMergeSlots(GameObject questRoot, AtlasBuildResult atlas, string outputDir, ConversionReport report, ConversionAssetContext assets = null)
+        /// <param name="hiddenMaterials">
+        /// Quest変換で「非表示化(不可視)」へ変換された元(PC)マテリアルの集合(任意)。最終サブメッシュの
+        /// 上描き(多重描画)スロットがこの集合に含まれる場合、そのスロットは何も描かないため複製も温存もせず
+        /// 削除する(ポリゴン増ゼロ)。PC最適化経路は null を渡す(非表示化を行わないため)。
+        /// </param>
+        public static void RemapMeshesAndMergeSlots(GameObject questRoot, AtlasBuildResult atlas, string outputDir, ConversionReport report, ConversionAssetContext assets = null, ISet<Material> hiddenMaterials = null)
         {
             if (report == null) report = new ConversionReport();
             if (questRoot == null || atlas == null || atlas.atlasMap == null || atlas.atlasMap.Count == 0 || atlas.cellRects == null)
@@ -638,6 +657,20 @@ namespace RARA.QuestConverter
                 targets.Add(renderer);
             }
 
+            // ---- 事前パス: 可視の上描き(ネイティブ温存)を持つレンダラーの基底マテリアルを非アトラス化する ----
+            // 可視の余剰スロットは最終サブメッシュの重ね描き。三角形を複製せずネイティブ多重描画のまま温存するには、
+            // 上描きスロットと基底スロットが「同一の頂点UV」を共有する必要がある。よって基底サブメッシュのUV0を
+            // アトラスセルへ再配置してはならない。基底マテリアル(と、アトラス化されている上描きマテリアル)を
+            // アトラス割り当て(atlasMap)から外し、元UVのまま・非アトラスの変換済みマテリアルで描く。
+            // cellRects は残す(後段の冗長スロット判定=同一セル比較で元のセルを参照するため)。
+            // 全レンダラーを処理する前に一括で外すため、同じ基底マテリアルを使う他レンダラーとも整合する
+            // (共有マテリアルは全レンダラーで一貫して非アトラス化=最適化が僅かに減るのみで見た目は不変)。
+            HashSet<Material> unAtlas = CollectNativeKeepUnAtlasMaterials(targets, atlas, animatedSlotPaths, questRoot, hiddenMaterials);
+            foreach (Material m in unAtlas)
+            {
+                atlas.atlasMap.Remove(m);
+            }
+
             var meshCache = new List<MeshCacheEntry>();
             try
             {
@@ -651,7 +684,7 @@ namespace RARA.QuestConverter
                     {
                         bool allowSlotMerge = !animatedSlotPaths.Contains(
                             AnimationUtility.CalculateTransformPath(renderer.transform, questRoot.transform));
-                        ProcessRenderer(renderer, atlas, outputDir, assets, meshCache, allowSlotMerge, report);
+                        ProcessRenderer(renderer, atlas, outputDir, assets, meshCache, allowSlotMerge, hiddenMaterials, report);
                     }
                     catch (Exception ex)
                     {
@@ -664,6 +697,70 @@ namespace RARA.QuestConverter
             {
                 EditorUtility.ClearProgressBar();
             }
+        }
+
+        /// <summary>
+        /// 可視の上描き(ネイティブ温存)を持つレンダラーについて、非アトラス化すべきマテリアルを集める。
+        /// 対象は「基底(最終サブメッシュ担当)マテリアル」と「アトラス化されている可視の上描きマテリアル」。
+        /// これらを atlasMap から外すことで、基底サブメッシュのUV0が再配置されず(元UVのまま)、上描きスロットと
+        /// 同一UVを共有できるようになる(=三角形を複製せずネイティブ多重描画のまま温存できる)。
+        /// 統合不可レンダラー(allowSlotMerge=false)は従来どおりネイティブ温存かつ基底も再配置するため対象外。
+        /// hidden/冗長/null の余剰スロットは削除対象で非アトラス化は不要(温存しないため)。
+        /// </summary>
+        private static HashSet<Material> CollectNativeKeepUnAtlasMaterials(List<Renderer> targets, AtlasBuildResult atlas, HashSet<string> animatedSlotPaths, GameObject questRoot, ISet<Material> hiddenMaterials)
+        {
+            var result = new HashSet<Material>();
+            foreach (Renderer renderer in targets)
+            {
+                bool allowSlotMerge = !animatedSlotPaths.Contains(
+                    AnimationUtility.CalculateTransformPath(renderer.transform, questRoot.transform));
+                if (!allowSlotMerge) continue; // 統合不可は従来どおり(基底も再配置=対象外)
+
+                Mesh mesh = GetRendererMesh(renderer);
+                if (mesh == null) continue;
+                Material[] mats = renderer.sharedMaterials;
+                if (mats == null) continue;
+                int subMeshCount = mesh.subMeshCount;
+                int slotCount = mats.Length;
+                if (subMeshCount == 0 || slotCount <= subMeshCount) continue;
+
+                int overdrawnSubmesh = subMeshCount - 1;
+                Material baseSlotMat = mats[overdrawnSubmesh];
+                Rect baseCell = default(Rect);
+                bool baseAtlased = baseSlotMat != null && atlas.cellRects.TryGetValue(baseSlotMat, out baseCell);
+
+                for (int i = subMeshCount; i < slotCount; i++)
+                {
+                    Material om = mats[i];
+                    if (om == null) continue;                              // 削除対象(温存しない)
+                    if (IsHiddenMaterial(om, hiddenMaterials)) continue;   // 非表示 = 削除対象(温存しない)
+                    bool redundant = ReferenceEquals(om, baseSlotMat);
+                    if (!redundant && baseAtlased)
+                    {
+                        Rect oc;
+                        if (atlas.cellRects.TryGetValue(om, out oc) && oc == baseCell) redundant = true;
+                    }
+                    if (redundant) continue;                               // 冗長 = 削除対象(温存しない)
+
+                    // 可視の上描き = ネイティブ温存 → 基底とこの上描き(アトラス化されていれば)を非アトラス化する
+                    if (baseSlotMat != null) result.Add(baseSlotMat);
+                    if (atlas.atlasMap.ContainsKey(om)) result.Add(om);
+                }
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// マテリアル(元マテリアル)がQuest変換で「非表示化(不可視)」へ変換されるものかを判定する。
+        /// 主判定は変換パイプラインから渡される集合(hiddenMaterials)への所属。集合が渡されない経路や
+        /// 取りこぼしに備え、名前接尾辞 "_QuestHidden"(FinalizeMaterialが不可視マテリアルへ付与)も安全網とする。
+        /// </summary>
+        private static bool IsHiddenMaterial(Material m, ISet<Material> hiddenMaterials)
+        {
+            if (m == null) return false;
+            if (hiddenMaterials != null && hiddenMaterials.Contains(m)) return true;
+            string n = m.name; // 安全網: スロットが既に変換済み不可視マテリアルを指す経路向け
+            return n != null && n.EndsWith("_QuestHidden", StringComparison.Ordinal);
         }
 
         /// <summary>同一メッシュ+同一マテリアル配列のレンダラーで編集済みメッシュを再利用するためのキャッシュ。</summary>
@@ -759,8 +856,10 @@ namespace RARA.QuestConverter
         /// <summary>
         /// レンダラー1つぶんのUV再配置・サブメッシュ結合・アセット保存・差し替えを行う。
         /// allowSlotMerge が false の場合、UV再配置のみ行いスロット統合(スロット番号の変化)は行わない。
+        /// hiddenMaterials は非表示化(不可視)へ変換される元マテリアルの集合(任意)。最終サブメッシュの
+        /// 上描きスロットがこれに含まれる場合は削除する(何も描かないため。ポリゴン増ゼロ)。
         /// </summary>
-        private static void ProcessRenderer(Renderer renderer, AtlasBuildResult atlas, string outputDir, ConversionAssetContext assets, List<MeshCacheEntry> meshCache, bool allowSlotMerge, ConversionReport report)
+        private static void ProcessRenderer(Renderer renderer, AtlasBuildResult atlas, string outputDir, ConversionAssetContext assets, List<MeshCacheEntry> meshCache, bool allowSlotMerge, ISet<Material> hiddenMaterials, ConversionReport report)
         {
             Mesh mesh = GetRendererMesh(renderer);
             if (mesh == null) return;
@@ -798,9 +897,10 @@ namespace RARA.QuestConverter
             int subMeshCount = mesh.subMeshCount;
             int slotCount = mats.Length;
 
-            // ---- 処理スロット構築(実サブメッシュに対応するスロット + 実体化する余剰スロット) ----
+            // ---- 処理スロット構築(実サブメッシュに対応するスロット) ----
             // procMats/procIndices/procTopology は「独自の出力サブメッシュを持ち、UVをアトラスセルへ
-            // 再配置する」スロット群。まず実サブメッシュと1対1のスロット([0..realSlotCount))を積む。
+            // 再配置する」スロット群。実サブメッシュと1対1のスロット([0..realSlotCount))を積む
+            // (余剰=多重描画スロットは複製せず、下の方針決定で削除またはネイティブ温存する)。
             int realSlotCount = Mathf.Min(slotCount, subMeshCount);
             var procMats = new List<Material>(slotCount);
             var procIndices = new List<int[]>(slotCount);       // GetIndicesは毎回新しい配列を返す(安全に書き換え可能)
@@ -813,17 +913,16 @@ namespace RARA.QuestConverter
             }
 
             // ---- 多重描画スロット(slotCount > subMeshCount)の方針決定 ----
-            // 余剰スロットは「最終サブメッシュ(subMeshCount-1)の重ね描き」。旧実装は全ての余剰を実サブメッシュへ
-            // 複製していたが、それは冗長な重ね描き(基底と同一セルへ写像される Kei-Hair 型)まで水増しした。
-            //   ・基底(最終サブメッシュ担当スロット)と同一マテリアル/同一セルへ写像される余剰 = 冗長。
-            //     統合可能レンダラーでは削除する(ポリゴン数は増えない)。
-            //   ・異なるセル(別アトラスマテリアル/別セル/未アトラス)へ写像される真の重ね描き = 見た目に
-            //     効く上描き。基底サブメッシュのUV0は基底セルへ再配置されるため、その頂点UVを共有する
-            //     ネイティブ重ね描きでは誤ったセル(基底セル)を参照してしまう。よって専用サブメッシュへ
-            //     実体化し、自分のセル(未アトラスなら元の0..1)のUVを持たせる(ポリゴン増は真の上描きのみ)。
+            // 余剰スロットは「最終サブメッシュ(subMeshCount-1)の重ね描き」。三角形を絶対に複製しない方針:
+            //   ・null / 非表示化(不可視)へ変換される余剰 = 何も描かない。削除する(温存も複製もしない)。
+            //   ・基底(最終サブメッシュ担当スロット)と同一マテリアル/同一セルへ写像される冗長な余剰 = 削除する。
+            //   ・それ以外の可視の重ね描き = 元アバターと同じネイティブ多重描画のまま温存する(複製しない)。
+            //     事前パス(CollectNativeKeepUnAtlasMaterials)で基底マテリアルを非アトラス化済みのため、基底
+            //     サブメッシュのUV0は再配置されず(元UVのまま)、温存した上描きスロットと同一UVを共有して正しく描ける。
+            //     ポリゴン増ゼロ・スロット数は元アバターと同じ(実体化していた旧実装の三角形水増しを全廃)。
             // なお統合不可レンダラー(allowSlotMerge=false: マテリアル差し替えアニメのスロット番号維持が必要)は
-            // スロット番号を変えられないため、従来どおり実体化も削除もせずネイティブ重ね描きとして温存する。
-            var overdrawMats = new List<Material>();                 // 温存する余剰(統合不可レンダラーのネイティブ重ね描き)
+            // スロット番号を変えられないため、従来どおり全余剰を削除も温存判定もせずネイティブ重ね描きとして温存する。
+            var overdrawMats = new List<Material>();                 // 温存する余剰(ネイティブ重ね描き)
             if (slotCount > subMeshCount)
             {
                 int overdrawnSubmesh = subMeshCount - 1;
@@ -838,33 +937,28 @@ namespace RARA.QuestConverter
                     Rect baseCell = default(Rect);
                     bool baseAtlased = baseSlotMat != null && atlas.cellRects.TryGetValue(baseSlotMat, out baseCell);
                     int droppedCount = 0;
-                    int materializedCount = 0;
+                    int keptCount = 0;
                     for (int i = subMeshCount; i < slotCount; i++)
                     {
                         Material om = mats[i];
-                        // 冗長判定: 基底と同一マテリアル、または(両者アトラスで)同一セルへ写像される場合のみ削除可。
+                        if (om == null) { droppedCount++; continue; }                    // 何も描かない → 削除
+                        if (IsHiddenMaterial(om, hiddenMaterials)) { droppedCount++; continue; } // 非表示 → 削除
+                        // 冗長判定: 基底と同一マテリアル、または(両者アトラスで)同一セルへ写像される場合は削除可。
                         bool redundant = ReferenceEquals(om, baseSlotMat);
-                        if (!redundant && om != null && baseAtlased)
+                        if (!redundant && baseAtlased)
                         {
                             Rect oc;
                             if (atlas.cellRects.TryGetValue(om, out oc) && oc == baseCell) redundant = true;
                         }
-                        if (redundant)
-                        {
-                            droppedCount++;
-                            continue; // 同一写像 = 冗長。削除(ポリゴン数は増えない)。
-                        }
-                        // 真の重ね描き: 重ね描き先サブメッシュのジオメトリを複製した専用スロットとして実体化。
-                        // 未アトラスなら後段のクローンループが再配置をスキップし元の0..1 UVのまま独立サブメッシュになる。
-                        procMats.Add(om);
-                        procIndices.Add(mesh.GetIndices(overdrawnSubmesh));
-                        procTopology.Add(mesh.GetTopology(overdrawnSubmesh));
-                        materializedCount++;
+                        if (redundant) { droppedCount++; continue; }                    // 冗長 → 削除
+                        // 可視の重ね描き = ネイティブ多重描画のまま温存(複製しない)。基底は事前に非アトラス化済み。
+                        overdrawMats.Add(om);
+                        keptCount++;
                     }
-                    if (droppedCount > 0 && materializedCount == 0)
-                        report.Info(string.Format("'{0}': 冗長な多重描画スロットを統合しました(ポリゴン数は増えません)。", renderer.name));
-                    else if (materializedCount > 0)
-                        report.Info(string.Format("'{0}': 上描きスロット{1}件を専用サブメッシュ化しました(見た目維持のため。冗長{2}件は統合)。", renderer.name, materializedCount, droppedCount));
+                    if (keptCount > 0)
+                        report.Info(string.Format("'{0}': 可視の上描きスロット{1}件を元と同じ多重描画のまま保持しました(複製せずポリゴン増ゼロ。冗長・非表示{2}件は削除)。", renderer.name, keptCount, droppedCount));
+                    else if (droppedCount > 0)
+                        report.Info(string.Format("'{0}': 冗長・非表示の多重描画スロット{1}件を削除しました(ポリゴン数は増えません)。", renderer.name, droppedCount));
                 }
             }
 
@@ -1022,10 +1116,11 @@ namespace RARA.QuestConverter
             }
             if (savedMesh == null) savedMesh = copy;
 
-            // 統合不可レンダラー(allowSlotMerge=false)で温存した余剰(多重描画)マテリアルを後ろに付け足す。
+            // 温存した余剰(多重描画)マテリアルを最終サブメッシュ担当スロットの後ろに付け足す。
             // Unity はマテリアル数 > サブメッシュ数のとき最終サブメッシュを追加マテリアルで重ね描きするため、
-            // スロット番号を維持したまま元の多重描画構成を保てる(統合可能レンダラーでは overdrawMats は空で、
-            // 真の上描きは専用サブメッシュへ実体化済み)。
+            // 三角形を複製せず元アバターと同じネイティブ多重描画構成を再現できる。overdrawMats に入るのは
+            // 統合不可レンダラー(allowSlotMerge=false)の全余剰と、統合可能レンダラーで温存した可視の上描き
+            // (事前パスで基底を非アトラス化し元UVを共有させたもの)。冗長・非表示の余剰は既に削除済み。
             var newMats = new Material[slotEntryCount + overdrawMats.Count];
             for (int i = 0; i < slotEntryCount; i++) newMats[i] = outMats[i];
             for (int i = 0; i < overdrawMats.Count; i++) newMats[slotEntryCount + i] = overdrawMats[i];

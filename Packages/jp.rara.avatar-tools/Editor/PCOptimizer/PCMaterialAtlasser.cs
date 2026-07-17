@@ -706,6 +706,7 @@ namespace RARA.PCOptimizer
             hash = FoldLayoutInt(hash, atlasW);
             hash = FoldLayoutInt(hash, atlasH);
             hash = FoldLayoutInt(hash, binDiscriminator);
+            hash = FoldLayoutInt(hash, AtlasBuildResult.kOverdrawScheme); // 上描き処理スキーム(1.0.9で別名アトラスを出力)
             foreach (KeyValuePair<string, RectInt> e in entries)
             {
                 foreach (char c in e.Key) hash = (hash ^ c) * 16777619u;

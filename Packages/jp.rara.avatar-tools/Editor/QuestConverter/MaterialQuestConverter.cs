@@ -1196,6 +1196,26 @@ namespace RARA.QuestConverter
             return FinalizeMaterial(mat, src, outputDir, assets, report, "_QuestHidden");
         }
 
+        /// <summary>
+        /// 変換結果が「非表示化(不可視)」マテリアルかを判定する。ConvertToHidden が生成する不可視マテリアルは
+        /// VRChat/Mobile/Particles/Multiply シェーダーかつ _MainTex 未割り当て(乗算の単位元=白テクスチャで
+        /// 背景そのまま=何も描かない)で、名前接尾辞は "_QuestHidden"。乗算での半透明再現(ConvertTransparentEmulated)は
+        /// 同じシェーダーだが _MainTex を割り当てるため区別できる。アトラス段(MaterialAtlasser)が最終サブメッシュの
+        /// 不可視な上描きスロットを複製せず削除するために使う。
+        /// </summary>
+        public static bool IsHiddenConvertedMaterial(Material converted)
+        {
+            if (converted == null) return false;
+            if (converted.shader != null && converted.shader.name == ParticleMultiplyShaderName &&
+                converted.HasProperty("_MainTex") && converted.GetTexture("_MainTex") == null)
+            {
+                return true;
+            }
+            // 安全網: 何らかの経路でシェーダー判定を取りこぼしても、命名接尾辞で不可視マテリアルを拾う。
+            string n = converted.name;
+            return n != null && n.EndsWith("_QuestHidden", StringComparison.Ordinal);
+        }
+
         // ================================================================
         // 透過マテリアルの半透明再現(transparentHandling == Emulate)
         // ================================================================
