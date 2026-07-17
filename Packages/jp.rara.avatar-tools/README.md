@@ -9,6 +9,23 @@ VRChatアバターの軽量化とQuest/iOS対応を支援するUnityエディタ
 
 内部的には PC最適化エンジン(PC Optimizer)と Quest/iOS変換エンジン(Quest Converter)を共有しています。各機能の詳細は Docs フォルダを参照してください。
 
+## AAO（Avatar Optimizer）との連携について
+
+本ツールは anatawa12 氏の AAO: Avatar Optimizer と処理を分業する設計です。実行時は、生成した複製にのみ次のAAOコンポーネントを自動で追加・設定します（元アバターには一切追加しません）。
+
+- Trace and Optimize … アバターを走査して自動でできる限りの最適化を行うコンポーネント（未使用ボーンの削減や自動マージなど）。追加の自動最適化のために付与します（下記の Merge Skinned Mesh / Remove Mesh By BlendShape は Trace and Optimize が無くてもビルド時にAAOが適用します）。
+- Merge Skinned Mesh … 顔以外の複数の SkinnedMeshRenderer を1つの SkinnedMeshRenderer へ統合します（「SkinnedMesh統合」の実体）。統合時は BlendShape 名を自動変更して重複を避けます。
+- Remove Mesh By BlendShape … 指定した BlendShape で動く頂点とポリゴンを削除します（服の下に隠れる肌などを消す「隠れメッシュ削減」の実体）。
+
+適用タイミング: これらの統合・削除は、アップロード/Play時のビルド（NDMF）で実行されます。そのため、生成直後の複製やエディタ上の診断値には反映されず、実際のアップロード後にさらに軽くなります。最終的な数値は VRChat SDK のビルド結果で確認してください。
+
+AAO未導入時の挙動: AAO が無くても本ツール自体は動作します。AAO を使う機能（SkinnedMesh統合・隠れメッシュ削減など）は自動でスキップされ、ウィンドウ内に導入の案内が表示されます。導入は次のリポジトリを VCC / ALCOM に追加して行います。
+
+- 導入リポジトリ: https://vpm.anatawa12.com/add-repo
+- 公式ドキュメント: https://vpm.anatawa12.com/avatar-optimizer/ja/
+
+謝辞: AAO: Avatar Optimizer（MIT License / anatawa12 氏）に感謝します。あわせて VRChat SDK・lilToon・NonToon・Poiyomi・Modular Avatar / NDMF にも感謝します。
+
 ## 導入（VCC / ALCOM）
 
 1. 追加ページ https://rara-vrc.github.io/rara-avatar-tools/ を開き、「VCC / ALCOM に追加」ボタンを押します。VCC（VRChat Creator Companion）または ALCOM が起動し、リポジトリの追加確認画面が開きます。

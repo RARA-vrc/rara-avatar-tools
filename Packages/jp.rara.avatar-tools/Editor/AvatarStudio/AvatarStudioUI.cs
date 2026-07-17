@@ -204,6 +204,9 @@ namespace RARA.AvatarStudio
         /// <summary>VCC/ALCOM のリポジトリ追加ページ(AvatarOptimizer を含む anatawa12 VPM リポジトリ)。</summary>
         internal const string AAOAddRepoUrl = "https://vpm.anatawa12.com/add-repo";
 
+        /// <summary>AAO(Avatar Optimizer)の公式ドキュメント(日本語)。</summary>
+        internal const string AAODocsUrl = "https://vpm.anatawa12.com/avatar-optimizer/ja/";
+
         /// <summary>
         /// AAO 未導入ガードの直後に置く導入CTA(ボタン + 1行の手順)。押すと VCC/ALCOM のリポジトリ追加ページを開く。
         /// </summary>

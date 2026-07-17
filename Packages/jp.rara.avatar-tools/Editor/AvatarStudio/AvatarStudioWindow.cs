@@ -839,6 +839,23 @@ namespace RARA.AvatarStudio
                     AvatarStudioUI.WrapLabel);
             }
 
+            // (b') AAO(Avatar Optimizer)との連携。統合・削除の実体はビルド(NDMF)時にAAOが担当する分業設計。
+            EditorGUILayout.Space(4f);
+            EditorGUILayout.LabelField("AAO(Avatar Optimizer)との連携", EditorStyles.miniBoldLabel);
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                EditorGUILayout.LabelField(
+                    "・本ツールは anatawa12 氏の AAO と分業し、生成した複製にのみ Trace and Optimize / Merge Skinned Mesh / Remove Mesh By BlendShape を自動で追加・設定します(元アバターには追加しません)。\n"
+                    + "・SkinnedMesh統合と隠れメッシュ削減の実体はアップロード/Play時のビルド(NDMF)で実行されるため、生成直後の複製やエディタ上の数値には反映されません。\n"
+                    + "・AAO未導入でも本ツールは動作し、該当機能はスキップして導入案内を表示します。感謝: AAO(MIT License / anatawa12 氏)。",
+                    AvatarStudioUI.WrapLabel);
+                if (GUILayout.Button(new GUIContent("AAOの公式ドキュメントを開く",
+                    "AAO(Avatar Optimizer)の公式ドキュメントを開きます: " + AvatarStudioUI.AAODocsUrl)))
+                {
+                    Application.OpenURL(AvatarStudioUI.AAODocsUrl);
+                }
+            }
+
             // Quest/iOS版の割り切り(短く)
             EditorGUILayout.Space(4f);
             EditorGUILayout.LabelField("Quest/iOS版の割り切り", EditorStyles.miniBoldLabel);
