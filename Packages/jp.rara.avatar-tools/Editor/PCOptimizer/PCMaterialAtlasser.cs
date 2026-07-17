@@ -752,6 +752,7 @@ namespace RARA.PCOptimizer
             public string reason;   // !eligible 時の除外文言(実行の excluded 用)
             public BlockKind kind;  // プレビューの理由分類
             public string key;      // eligible 時のグループキー
+            public string matcapKey; // マットキャップ同一性サブキー(lilToon _UseMatCap=1 用。ComposeKey 再計算と共有)
             public Shader shader;   // 実シェーダー(理由・系統判定用)
             public int? cull;       // カリング値(混在検出用。プロパティ無しは null)
             public bool isOutline;  // アウトライン系メンバーか(代表選定用)
@@ -869,6 +870,7 @@ namespace RARA.PCOptimizer
             c.isOutline = isOutline;
             c.eyeName = IsEyeOrFaceSensitiveName(src.name);
             c.eyeGuarded = ShouldEyeGuard(src, settings.atlasOutlineUnifyMode);
+            c.matcapKey = MatcapKeyFor(src);
             c.key = GroupKeyFor(src, settings);
             return c;
         }
@@ -943,7 +945,35 @@ namespace RARA.PCOptimizer
         {
             bool eyeGuard = ShouldEyeGuard(src, settings.atlasOutlineUnifyMode);
             string shaderKey = ShaderFamilyKey(src.shader, settings.atlasOutlineUnifyMode, eyeGuard);
-            return settings.atlasIgnoreCull ? shaderKey : shaderKey + "|" + ReadCull(src);
+            string baseKey = settings.atlasIgnoreCull ? shaderKey : shaderKey + "|" + ReadCull(src);
+            return baseKey + MatcapKeyFor(src);
+        }
+
+        /// <summary>
+        /// lilToon で _UseMatCap=1 のマテリアルのマットキャップ同一性サブキー(それ以外は空文字)。
+        /// 統合時にマットキャップテクスチャは代表1枚へ統一される(代表プロパティ)ため、異なるマットキャップを
+        /// 1グループへ混ぜて片方を失わないよう、マットキャップテクスチャの同一性をキーへ折り込む。
+        /// マットキャップ無しのマテリアルは空文字を返し、従来どおりのグループ化を維持する。
+        /// </summary>
+        private static string MatcapKeyFor(Material src)
+        {
+            if (src == null || src.shader == null || !QuestCompat.IsLilToonShader(src.shader)) return string.Empty;
+            if (!(src.HasProperty("_UseMatCap") && src.GetFloat("_UseMatCap") > 0.5f)) return string.Empty;
+            Texture tex = src.HasProperty("_MatCapTex") ? src.GetTexture("_MatCapTex") : null;
+            string texId;
+            if (tex == null)
+            {
+                texId = "none";
+            }
+            else
+            {
+                string guid;
+                long localId;
+                texId = AssetDatabase.TryGetGUIDAndLocalFileIdentifier(tex, out guid, out localId) && !string.IsNullOrEmpty(guid)
+                    ? guid + ":" + localId
+                    : "iid:" + tex.GetInstanceID();
+            }
+            return "|mc:" + texId;
         }
 
         /// <summary>
@@ -1301,7 +1331,8 @@ namespace RARA.PCOptimizer
         {
             bool eyeGuard = mode == OutlineUnifyMode.アウトライン付きに統一 && c.eyeName && IsPlainFamily(c.shader);
             string shaderKey = ShaderFamilyKey(c.shader, mode, eyeGuard);
-            return ignoreCull ? shaderKey : shaderKey + "|" + (c.cull.HasValue ? c.cull.Value.ToString() : "n");
+            string baseKey = ignoreCull ? shaderKey : shaderKey + "|" + (c.cull.HasValue ? c.cull.Value.ToString() : "n");
+            return baseKey + (c.matcapKey ?? string.Empty);
         }
 
         /// <summary>シェーダーがアウトライン系統の plain(アウトライン版でない)メンバーか。</summary>

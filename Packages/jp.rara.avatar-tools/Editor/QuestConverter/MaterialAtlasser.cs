@@ -328,9 +328,28 @@ namespace RARA.QuestConverter
                     else if (converted.HasProperty("_Cull")) cull = Mathf.RoundToInt(converted.GetFloat("_Cull"));
                     Texture ramp = (isToonStandard && converted.HasProperty("_Ramp")) ? converted.GetTexture("_Ramp") : null;
                     string rampKey = GetRampGroupKey(ramp, rampKeyCache);
+
+                    // マットキャップ(USE_MATCAP)を持つ Toon Standard は、マットキャップの同一性を
+                    // グループキーへ折り込む。マットキャップは法線ベースのUVで統合セルに依らず全面へ適用される
+                    // ため、異なるマットキャップを1マテリアルへ統合すると別々の映り込みが誤って混ざる
+                    // (統合マテリアルは先頭メンバーの _Matcap/_MatcapType/_MatcapStrength を引き継ぐ)。
+                    // 一方 マットキャップマスク(_MatcapMask)はUV0サンプルのため、統合でUV0がセルへ再配置
+                    // されるとマスクがずれる。マスク付きマットキャップは誤ったマスクを黙って生成しないよう
+                    // 統合対象から除外する(圧縮より正しさを優先)。
+                    string matcapKey = string.Empty;
+                    if (isToonStandard && converted.IsKeywordEnabled("USE_MATCAP"))
+                    {
+                        if (GetTexture(converted, "_MatcapMask") != null)
+                        {
+                            result.excluded.Add(src.name + ": マットキャップマスクがあるため(アトラス統合対象外)");
+                            continue;
+                        }
+                        matcapKey = "|mc:" + GetMatcapGroupKey(converted);
+                    }
+
                     string key = settings.atlasUnifyRamps
-                        ? shaderName + "|" + cull
-                        : shaderName + "|" + cull + "|" + rampKey;
+                        ? shaderName + "|" + cull + matcapKey
+                        : shaderName + "|" + cull + "|" + rampKey + matcapKey;
 
                     AtlasGroup group;
                     if (!groups.TryGetValue(key, out group))
@@ -1422,6 +1441,34 @@ namespace RARA.QuestConverter
             }
             cache.Add(ramp, key);
             return key;
+        }
+
+        /// <summary>
+        /// マットキャップ(USE_MATCAP)を持つ Toon Standard のグループキー用サブキーを返す。
+        /// マットキャップテクスチャの同一性 + 合成タイプ(_MatcapType) + 量子化した強度(_MatcapStrength、0.05刻み)。
+        /// 同一マットキャップのメンバーだけが同一グループになり、統合マテリアルが引き継ぐ先頭メンバーの
+        /// マットキャップが全メンバーで妥当になる。
+        /// </summary>
+        private static string GetMatcapGroupKey(Material converted)
+        {
+            string texId = GetTextureIdentityKey(GetTexture(converted, "_Matcap"));
+            int type = converted.HasProperty("_MatcapType") ? Mathf.RoundToInt(converted.GetFloat("_MatcapType")) : 0;
+            float strength = converted.HasProperty("_MatcapStrength") ? converted.GetFloat("_MatcapStrength") : 1f;
+            int strengthBucket = Mathf.RoundToInt(Mathf.Clamp01(strength) * 20f); // 0.05刻みで量子化
+            return texId + ":" + type + ":" + strengthBucket;
+        }
+
+        /// <summary>テクスチャの安定した同一性キー(GUID:localId。取得不能なら instanceID)。null は "none"。</summary>
+        private static string GetTextureIdentityKey(Texture tex)
+        {
+            if (tex == null) return "none";
+            string guid;
+            long localId;
+            if (AssetDatabase.TryGetGUIDAndLocalFileIdentifier(tex, out guid, out localId) && !string.IsNullOrEmpty(guid))
+            {
+                return guid + ":" + localId;
+            }
+            return "iid:" + tex.GetInstanceID();
         }
 
         /// <summary>マテリアルの全使用箇所でUV0が0..1(許容誤差付き)に収まっているか。</summary>

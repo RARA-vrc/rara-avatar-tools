@@ -176,6 +176,12 @@ namespace RARA.QuestConverter
                         result = ConvertGeneric(src, settings, outputDir, assets, report, true);
                     }
                 }
+                else if (overrideMode == MaterialOverride.MatCapLit)
+                {
+                    // ---- (8.5) 上書き: VRChat/Mobile/MatCap Lit へ強制変換(金属パーツ向け)----
+                    // 不透明のみ・アトラス統合外。透過→不透明化の警告は変換内で報告される。
+                    result = ConvertToMatCapLit(src, settings, outputDir, assets, report);
+                }
                 // ---- (9) 自動判定(従来どおりの変換)----
                 else if (usage == MaterialUsage.Particle)
                 {
@@ -279,7 +285,10 @@ namespace RARA.QuestConverter
 
             if (result != null)
             {
-                WarnUnsupportedLilToonFeatures(src, shaderName, hasOutline, report);
+                // マットキャップは Toon Standard 変換時のみ自動引き継ぎ対象。引き継いだ場合は
+                // ConvertLilToonMatCap が Info 報告済みのため「変換されません」警告は出さない。
+                bool matcapCarried = ShouldCarryLilMatCap(src, settings, target);
+                WarnUnsupportedLilToonFeatures(src, shaderName, hasOutline, matcapCarried, report);
             }
             return result;
         }
@@ -459,6 +468,9 @@ namespace RARA.QuestConverter
             // ---- リムライト ----
             ConvertRimLighting(src, mat, settings, report);
 
+            // ---- マットキャップ(金属・宝石等の映り込み)----
+            ConvertLilToonMatCap(src, mat, settings, outputDir, assets, report);
+
             return FinalizeMaterial(mat, src, outputDir, assets, report);
         }
 
@@ -566,13 +578,16 @@ namespace RARA.QuestConverter
         }
 
         /// <summary>変換先で失われる lilToon 機能を警告として明示する。</summary>
-        private static void WarnUnsupportedLilToonFeatures(Material src, string shaderName, bool hasOutline, ConversionReport report)
+        /// <param name="matcapCarried">マットキャップを Toon Standard へ引き継いだ場合 true(このとき「変換されません」警告は出さない)。</param>
+        private static void WarnUnsupportedLilToonFeatures(Material src, string shaderName, bool hasOutline, bool matcapCarried, ConversionReport report)
         {
             if (hasOutline)
             {
                 report.Warn(string.Format("'{0}': アウトラインは失われます(Toon Standard (Outline)はPC専用)。", src.name));
             }
-            if (IsFeatureOn(src, "_UseMatCap"))
+            // マットキャップを引き継いだ場合(Toon Standard・設定オン・テクスチャあり)は警告しない。
+            // 引き継がない場合(Toon Lit変換・設定オフ・テクスチャ無し)のみ「変換されません」を出す。
+            if (!matcapCarried && IsFeatureOn(src, QuestCompat.LilMatCapEnableProp))
             {
                 report.Warn(string.Format("'{0}': マットキャップは変換されません。", src.name));
             }
@@ -597,6 +612,74 @@ namespace RARA.QuestConverter
             {
                 report.Warn(string.Format("'{0}': 宝石・屈折表現は変換されません。", src.name));
             }
+        }
+
+        /// <summary>
+        /// lilToon のマットキャップを Toon Standard のネイティブマットキャップ(USE_MATCAP)へ引き継ぐ(mat は Toon Standard マテリアル)。
+        /// settings.convertMatCap がオン・_UseMatCap が有効・_MatCapTex がある場合のみ引き継ぐ。
+        /// ・_Matcap: lilToonのマットキャップテクスチャ(sRGBのルックアップ画像=ノーマルではない)を流用(縮小計画があれば縮小コピー)。
+        /// ・_MatcapType: lilToonの合成モード(0=通常/1=加算/2=スクリーン/3=乗算)のうち乗算のみ Multiplicative(1)、それ以外は Additive(0)近似。
+        /// ・_MatcapStrength: lilToonの合成量 = _MatCapColor の最大チャンネル × アルファ × _MatCapBlend を clamp01(実合成 _MatCapBlend×アルファ×マスク に対応。RGBは色味スロットの無いToon Standard向けの強度近似)。
+        /// ・_MatcapMask: _MatCapBlendMask があれば流用し、_MatcapMaskChannel は Red(lilToonマスクはRGB均一想定)。
+        /// マットキャップ独自UV・視差・ディテール法線・その2(2nd)マットキャップは Toon Standard に無いため再現しない。
+        /// </summary>
+        private static void ConvertLilToonMatCap(Material src, Material mat, QuestConvertSettings settings, string outputDir, ConversionAssetContext assets, ConversionReport report)
+        {
+            if (!settings.convertMatCap) return;
+            if (!IsFeatureOn(src, QuestCompat.LilMatCapEnableProp)) return;
+            Texture matcapTex = GetLilMatCapTexture(src);
+            if (matcapTex == null) return;
+
+            // マットキャップは映り込み用のルックアップ画像。sRGBで扱い、ノーマルマップ変換はしない。
+            mat.SetTexture("_Matcap", ResolveReusedTexture(matcapTex, src.name, "マットキャップ", false, true, true, settings, outputDir, assets, report));
+
+            // 合成モード → Toon Standard の _MatcapType(NonToon経路と同じ規則: 乗算系のみ Multiplicative)
+            int blendMode = src.HasProperty(QuestCompat.LilMatCapBlendModeProp) ? Mathf.RoundToInt(src.GetFloat(QuestCompat.LilMatCapBlendModeProp)) : 1;
+            int matcapType = blendMode == 3 ? 1 : 0; // 3=乗算 → Multiplicative / それ以外 → Additive
+            mat.SetInt("_MatcapType", matcapType);
+
+            // 強度: 色の最大チャンネル × 色アルファ(不透明度) × ブレンド量(clamp01)。
+            // lilToonの実合成は _MatCapBlend × _MatCapColor.a × マスク で、アルファが不透明度の主係数。
+            // RGBはToon Standardに色味スロットが無いための近似(最大チャンネルを強度へ畳み込む)。
+            Color mcColor = src.HasProperty(QuestCompat.LilMatCapColorProp) ? src.GetColor(QuestCompat.LilMatCapColorProp) : Color.white;
+            float blend = src.HasProperty(QuestCompat.LilMatCapBlendProp) ? src.GetFloat(QuestCompat.LilMatCapBlendProp) : 1f;
+            float colorMax = Mathf.Max(mcColor.r, Mathf.Max(mcColor.g, mcColor.b));
+            float strength = Mathf.Clamp01(colorMax * mcColor.a * blend);
+            mat.SetFloat("_MatcapStrength", strength);
+
+            // マスク: _MatCapBlendMask → _MatcapMask(Redチャンネル)。lilToonマスクはRGB均一のグレースケール想定。
+            Texture mask = src.HasProperty(QuestCompat.LilMatCapBlendMaskProp) ? src.GetTexture(QuestCompat.LilMatCapBlendMaskProp) : null;
+            if (mask != null)
+            {
+                mat.SetTexture("_MatcapMask", ResolveReusedTexture(mask, src.name, "マットキャップマスク", false, true, false, settings, outputDir, assets, report));
+                mat.SetInt("_MatcapMaskChannel", 0); // Red
+            }
+
+            mat.EnableKeyword(KeywordMatcap);
+            report.Info(string.Format("'{0}': マットキャップをToon Standardへ引き継ぎました({1}、強度{2:F2})。独自UV・視差・ディテール法線は再現されません。", src.name, matcapType == 1 ? "乗算" : "加算", strength));
+
+            if (IsFeatureOn(src, QuestCompat.LilMatCap2ndEnableProp))
+            {
+                report.Warn(string.Format("'{0}': その2(2nd)マットキャップは変換されません(Toon Standardは1枠のみ)。", src.name));
+            }
+        }
+
+        /// <summary>
+        /// lilToon のマットキャップを Toon Standard へ引き継ぐ条件を満たすか
+        /// (Toon Standard 変換・設定オン・_UseMatCap 有効・_MatCapTex あり)。警告抑制の判定と共通化する。
+        /// </summary>
+        private static bool ShouldCarryLilMatCap(Material src, QuestConvertSettings settings, QuestShaderTarget target)
+        {
+            return target == QuestShaderTarget.ToonStandard
+                && settings.convertMatCap
+                && IsFeatureOn(src, QuestCompat.LilMatCapEnableProp)
+                && GetLilMatCapTexture(src) != null;
+        }
+
+        /// <summary>lilToon の1枚目マットキャップテクスチャ(_MatCapTex)を返す(無ければ null)。</summary>
+        private static Texture GetLilMatCapTexture(Material src)
+        {
+            return src.HasProperty(QuestCompat.LilMatCapTexProp) ? src.GetTexture(QuestCompat.LilMatCapTexProp) : null;
         }
 
         // ================================================================
@@ -1084,6 +1167,108 @@ namespace RARA.QuestConverter
         private static void WarnUnsupportedPoiyomiFeatures(Material src, ConversionReport report)
         {
             report.Info(string.Format("Poiyomi: 『{0}』のアウトライン・マットキャップ・リム・シャドウ調整・ラメ等の追加表現はQuestでは非対応のため反映されません(アルベド・ノーマル・エミッション・カリングのみ対応)。", src.name));
+        }
+
+        // ================================================================
+        // MatCap Lit(金属パーツ向け。VRChat/Mobile/MatCap Lit)
+        // ================================================================
+
+        /// <summary>
+        /// マテリアルを VRChat/Mobile/MatCap Lit へ変換する(マテリアル別の変換方法指定 MatCapLit 用)。
+        /// ・_MainTex: 通常のベイク経路(lilToon色調ベイク / Poiyomiベイク / NonToonの_BaseTexture / 汎用ベイク)で得たアルベド。
+        /// ・_MatCap: 元マテリアルのマットキャップテクスチャ(lilToon _MatCapTex / NonToon 乗算・加算枠)。無ければシェーダー既定の白
+        ///   (白マットキャップ=素のライティング)で残し、マットキャップの割り当てを促す。
+        /// MatCap Lit は不透明のみ・乗算合成のマットキャップ。エミッション・ノーマル・リムは非対応(追加プロパティ無し)。
+        /// アトラス統合外(マットキャップUVは法線ベースのため)= 各マテリアルが自分のスロットを保持する(+1スロット)。
+        /// </summary>
+        private static Material ConvertToMatCapLit(Material src, QuestConvertSettings settings, string outputDir, ConversionAssetContext assets, ConversionReport report)
+        {
+            Shader shader = Shader.Find(QuestCompat.MatCapLitShaderName);
+            if (shader == null)
+            {
+                report.Error(string.Format("シェーダー '{0}' が見つかりません。VRChat SDKのインポート状態を確認してください。", QuestCompat.MatCapLitShaderName));
+                return null;
+            }
+
+            // MatCap Lit は不透明のみ。透過・カットアウトは塗りつぶして変換する旨を警告する。
+            if (QuestCompat.ClassifyTransparency(src) != QuestCompat.TransparencyClass.Opaque)
+            {
+                report.Warn(string.Format("MatCap Lit: 『{0}』は透過/カットアウト設定ですが、MatCap Lit は不透明のみ対応のため不透明として変換します(透過部が板状に見える可能性があります)。", src.name));
+            }
+
+            var mat = new Material(shader);
+
+            // ---- メインテクスチャ(Toon Lit / Toon Standard と同じベイク経路) ----
+            if (QuestCompat.IsLilToonShader(src.shader))
+            {
+                Texture2D baked = TextureBaker.BakeLilToonMain(src, GetBakeMaxSize(src, settings, report), report);
+                Texture2D mainTex = PersistBakedOrFallback(baked, src, "_main", true, settings, outputDir, assets, report);
+                if (mainTex != null) mat.SetTexture("_MainTex", mainTex);
+                CopyTextureST(src, "_MainTex", mat, "_MainTex");
+            }
+            else if (QuestCompat.IsNonToonShader(src.shader))
+            {
+                // NonToon はメインティント色を持たず _BaseTexture がそのままアルベド(ST非適用)。
+                Texture baseTex = src.HasProperty(QuestCompat.NonToonBaseTextureProp) ? src.GetTexture(QuestCompat.NonToonBaseTextureProp) : src.mainTexture;
+                if (baseTex != null)
+                {
+                    mat.SetTexture("_MainTex", ResolveReusedTexture(baseTex, src.name, "メインテクスチャ", false, true, true, settings, outputDir, assets, report));
+                }
+                else
+                {
+                    report.Warn(string.Format("MatCap Lit: 『{0}』はメインテクスチャ(_BaseTexture)が未設定のため白テクスチャで変換します。", src.name));
+                }
+            }
+            else if (QuestCompat.IsPoiyomiShader(src.shader))
+            {
+                Texture2D baked = TextureBaker.BakePoiyomiMain(src, GetBakeMaxSize(src, settings, report), report);
+                Texture2D mainTex = PersistBakedOrFallback(baked, src, "_main", true, settings, outputDir, assets, report);
+                if (mainTex != null) mat.SetTexture("_MainTex", mainTex);
+                CopyTextureST(src, QuestCompat.PoiyomiMainTexProp, mat, "_MainTex");
+            }
+            else
+            {
+                // 汎用: メインテクスチャ × _Color をベイク(エミッションはMatCap Lit非対応のため合成しない)
+                Texture2D baked = TextureBaker.BakeGeneric(src, GetBakeMaxSize(src, settings, report), false, report);
+                Texture2D mainTex = PersistBakedOrFallback(baked, src, "_main", true, settings, outputDir, assets, report);
+                if (mainTex != null) mat.SetTexture("_MainTex", mainTex);
+                CopyTextureST(src, "_MainTex", mat, "_MainTex");
+            }
+
+            // ---- マットキャップテクスチャ(無ければシェーダー既定の白のまま=素のライティング) ----
+            Texture matcapTex = GetSourceMatcapTexture(src);
+            if (matcapTex != null)
+            {
+                mat.SetTexture("_MatCap", ResolveReusedTexture(matcapTex, src.name, "マットキャップ", false, true, true, settings, outputDir, assets, report));
+            }
+            else
+            {
+                report.Info(string.Format("MatCap Lit: 『{0}』はマットキャップテクスチャが見つからないため白(素のライティング相当)で変換しました。金属感を出すには生成マテリアルの _MatCap にマットキャップ画像を割り当ててください。", src.name));
+            }
+
+            report.Info(string.Format("MatCap Lit: 『{0}』を MatCap Lit(金属向け・乗算マットキャップ)へ変換しました。アトラス統合外のためスロットを1つ使います。", src.name));
+            return FinalizeMaterial(mat, src, outputDir, assets, report);
+        }
+
+        /// <summary>
+        /// 元マテリアルからマットキャップテクスチャを解決する(MatCap Lit変換用)。
+        /// lilToon は _MatCapTex、NonToon は乗算枠優先(無ければ加算枠)。いずれも「割り当てがあれば」採用する
+        /// (MatCap Lit はユーザーが金属表現を明示選択した変換先のため、_UseMatCap トグルの有効/無効では絞らない)。
+        /// 無ければ null(白マットキャップで変換)。MatCap Lit は乗算合成のみのため合成モードは問わない。
+        /// </summary>
+        private static Texture GetSourceMatcapTexture(Material src)
+        {
+            if (QuestCompat.IsLilToonShader(src.shader))
+            {
+                return GetLilMatCapTexture(src);
+            }
+            if (QuestCompat.IsNonToonShader(src.shader))
+            {
+                Texture multiplyTex = src.HasProperty(QuestCompat.NonToonMatCapMultiplyProp) ? src.GetTexture(QuestCompat.NonToonMatCapMultiplyProp) : null;
+                if (multiplyTex != null) return multiplyTex;
+                return src.HasProperty(QuestCompat.NonToonMatCapAddProp) ? src.GetTexture(QuestCompat.NonToonMatCapAddProp) : null;
+            }
+            return null;
         }
 
         // ================================================================

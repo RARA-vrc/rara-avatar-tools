@@ -37,6 +37,9 @@ namespace RARA.QuestConverter
         Hide = 5,
         /// <summary>変換せず元のマテリアルのまま残す(アップロード時にSDK警告が出る)。</summary>
         Keep = 6,
+        /// <summary>VRChat/Mobile/MatCap Lit へ変換(金属パーツ向け。乗算合成のマットキャップ・不透明のみ・アトラス統合外)。</summary>
+        // 【重要】列挙値は保存JSONにシリアライズされるため、追加は必ず末尾のみ。途中に挿入すると既存ユーザーの保存済み指定がずれる。
+        MatCapLit = 7,
     }
 
     /// <summary>
@@ -194,6 +197,9 @@ namespace RARA.QuestConverter
 
         [Tooltip("lilToonのリムライトをToon Standardのリムへ近似変換する(挙動が異なるため、まぶた等に想定外のハイライトが出ることがある。既定はオフ)")]
         public bool mapRimLighting = false;
+
+        [Tooltip("lilToonのマットキャップをToon Standardのマットキャップへ自動で引き継ぐ(金属・宝石等の映り込み表現を維持。既定はオン)")]
+        public bool convertMatCap = true;
 
         [Tooltip("半透明(アルファブレンド)マテリアルのQuest版での扱い。Emulate=乗算/加算で半透明を自動再現(推奨・既定。ユーザー設定不要でチーク・涙・レンズ等を近似再現) / Hide=非表示(最軽量) / Opaque=不透明化(従来のスキップ相当)。個別のマテリアルはマテリアル設定で変換方法を上書きできる")]
         public TransparentHandling transparentHandling = TransparentHandling.Emulate;
@@ -403,6 +409,25 @@ namespace RARA.QuestConverter
 
         public const string ToonStandardShaderName = "VRChat/Mobile/Toon Standard";
         public const string ToonLitShaderName = "VRChat/Mobile/Toon Lit";
+        /// <summary>VRChat/Mobile/MatCap Lit(金属パーツ向け。_MainTex + _MatCap のみの乗算マットキャップ)。</summary>
+        public const string MatCapLitShaderName = "VRChat/Mobile/MatCap Lit";
+
+        // ---- lilToon マットキャップ プロパティ名(lts.shader Properties + lil_common_input.hlsl で検証済み) ----
+        // マットキャップは金属・宝石等の映り込み表現。Toon Standard もネイティブ対応(USE_MATCAP)のため引き継げる。
+        /// <summary>マットキャップ有効フラグ(Int トグル。1=有効)。</summary>
+        public const string LilMatCapEnableProp = "_UseMatCap";
+        /// <summary>マットキャップテクスチャ(sRGBのルックアップ画像。ノーマルマップではない)。</summary>
+        public const string LilMatCapTexProp = "_MatCapTex";
+        /// <summary>マットキャップ色([lilHDR] Color。既定 (1,1,1,1))。</summary>
+        public const string LilMatCapColorProp = "_MatCapColor";
+        /// <summary>マットキャップの合成強度(Range 0..1。既定 1)。</summary>
+        public const string LilMatCapBlendProp = "_MatCapBlend";
+        /// <summary>マットキャップの合成マスク([NoScaleOffset] 2D。既定 white)。</summary>
+        public const string LilMatCapBlendMaskProp = "_MatCapBlendMask";
+        /// <summary>マットキャップの合成モード(Int。0=通常/1=加算/2=スクリーン/3=乗算)。</summary>
+        public const string LilMatCapBlendModeProp = "_MatCapBlendMode";
+        /// <summary>その2(2nd)マットキャップの有効フラグ(Toon Standard は1枠のみのため非対応)。</summary>
+        public const string LilMatCap2ndEnableProp = "_UseMatCap2nd";
         public const string LilToonBakerShaderName = "Hidden/ltsother_baker";
         public const string BakeShaderName = "Hidden/RARA/QuestBake";
 

@@ -2139,6 +2139,7 @@ namespace RARA.QuestConverter
                 case MaterialOverride.ToonLit: return "Toon Litへ変換(手動指定" + opaqueNote + ")";
                 case MaterialOverride.ParticleAdditive: return "パーティクル(加算)へ変換(手動指定)";
                 case MaterialOverride.ParticleMultiply: return "パーティクル(乗算)へ変換(手動指定)";
+                case MaterialOverride.MatCapLit: return "MatCap Litへ変換(手動指定・金属向け" + opaqueNote + ")";
             }
 
             // Auto: MaterialQuestConverter のラダー(透過の扱い → lilToon → 汎用)をなぞる
@@ -2191,6 +2192,7 @@ namespace RARA.QuestConverter
                 // ToonStandard/ToonLit の強制指定はそのまま変換器へ渡され、ラダーが最終判断する
                 case MaterialOverride.ToonStandard: return "Toon Standardへ変換(手動指定・パーティクル用途)";
                 case MaterialOverride.ToonLit: return "Toon Litへ変換(手動指定・パーティクル用途)";
+                case MaterialOverride.MatCapLit: return "MatCap Litへ変換(手動指定・金属向け)";
             }
             return IsMultiplyParticleMaterial(src) ? "パーティクル(乗算)へ変換" : "パーティクル(加算)へ変換";
         }
@@ -2217,6 +2219,8 @@ namespace RARA.QuestConverter
             if (isMobileAlready || isTMP || isBrokenShader || mode == MaterialOverride.Keep) return "変換対象外";
             if (mode == MaterialOverride.Hide) return "非表示化されるため";
             if (mode == MaterialOverride.ParticleAdditive || mode == MaterialOverride.ParticleMultiply) return "パーティクル用";
+            // MatCap Lit は Toon Standard/Lit 以外へ変換されるためアトラス統合の対象外(各マテリアルが自分のスロットを保持)
+            if (mode == MaterialOverride.MatCapLit) return "MatCap Lit(アトラス統合外)";
 
             // 効果専用シェーダー(疑似影/アウトライン)は Auto で常に非表示化され(Convert step 6.5)、
             // 変換後シェーダーが乗算(Toon Standard/Lit ではない)ためアトラス対象から外れる

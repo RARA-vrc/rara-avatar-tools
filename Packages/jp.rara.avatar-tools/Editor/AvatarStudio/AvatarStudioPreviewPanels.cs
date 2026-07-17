@@ -1727,9 +1727,10 @@ namespace RARA.AvatarStudio
         // ================================================================
         // 6b. Questマテリアル変換プレビュー(AvatarQuestConverter.PreviewMaterials)
         // ================================================================
+        // MaterialOverride の並び順(Auto..MatCapLit)と一致させること(index を (MaterialOverride) へキャストして使う)
         private static readonly string[] OverrideLabels =
         {
-            "自動", "Toon Standard", "Toon Lit", "加算(半透明)", "乗算(半透明)", "非表示", "変換しない",
+            "自動", "Toon Standard", "Toon Lit", "加算(半透明)", "乗算(半透明)", "非表示", "変換しない", "MatCap Lit(金属向け)",
         };
 
         public static bool DrawQuestMaterialPanel(VRCAvatarDescriptor avatar, AvatarStudioSettings s, QuestConvertSettings quest, AvatarStudioPreviewCache cache)

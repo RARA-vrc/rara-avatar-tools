@@ -37,6 +37,7 @@ namespace RARA.QuestConverter
             new GUIContent("パーティクル乗算", "Particles/Multiply へ変換。白が透明になる乗算合成(チーク・頬染め向け)"),
             new GUIContent("非表示", "Quest版では不可視マテリアルに差し替えて見えなくします"),
             new GUIContent("変換しない", "元のマテリアルのまま残します(非対応シェーダーのままだと Quest では正しく表示されない原因になります)"),
+            new GUIContent("MatCap Lit(金属向け)", "VRChat/Mobile/MatCap Lit へ変換。金属パーツ向け(乗算合成のマットキャップ・不透明のみ・アトラス統合外でスロットを1つ使います)"),
         };
 
         // 透過マテリアルの既定処理ドロップダウンの表示名(TransparentHandlingの並び順 Emulate, Hide, Opaque と一致させること)
@@ -429,6 +430,7 @@ namespace RARA.QuestConverter
                 case MaterialOverride.ParticleMultiply: return "パーティクル乗算へ変換(手動指定)";
                 case MaterialOverride.Hide: return "非表示化(手動指定)";
                 case MaterialOverride.Keep: return "変換しない(手動指定)";
+                case MaterialOverride.MatCapLit: return "MatCap Lit へ変換(手動指定・金属向け)";
                 default: return "自動判定(再診断で更新されます)";
             }
         }
@@ -2664,6 +2666,16 @@ namespace RARA.QuestConverter
                                 "マテリアル差し替えアニメーション(FX等)も変換後マテリアルを参照するよう複製・差し替える"),
                             _settings.convertAnimations);
 
+                        // マットキャップ引き継ぎは Toon Standard 変換時のみ意味を持つため、対象時だけ表示する
+                        if (_settings.shaderTarget == QuestShaderTarget.ToonStandard)
+                        {
+                            _settings.convertMatCap = EditorGUILayout.ToggleLeft(
+                                new GUIContent("マットキャップを引き継ぐ",
+                                    "Toon Standard時: lilToonのマットキャップ(金属・宝石等の映り込み)をToon Standardのマットキャップへ自動で引き継ぐ(既定はオン)。" +
+                                    "合成モードは乗算のみ乗算・それ以外は加算近似。その2(2nd)マットキャップ・独自UV・視差は再現されません"),
+                                _settings.convertMatCap);
+                        }
+
                         _settings.removeUnsupportedComponents = EditorGUILayout.ToggleLeft(
                             new GUIContent("⚠ 非対応コンポーネントを削除",
                                 "生成される_Quest複製から、Android非対応コンポーネント(Cloth/Camera/Light/AudioSource等)を削除する(元アバターは変更されません)"),
@@ -3399,7 +3411,7 @@ namespace RARA.QuestConverter
             }
             else if (_materialPreview != null)
             {
-                int toonStandard = 0, toonLit = 0, particle = 0, hide = 0, keep = 0, atlasTargets = 0;
+                int toonStandard = 0, toonLit = 0, particle = 0, hide = 0, keep = 0, matcapLit = 0, atlasTargets = 0;
                 int transEmulate = 0, transHide = 0, transOpaque = 0; // 半透明(アルファブレンド)マテリアルの扱いの内訳
                 foreach (MaterialPreviewRow row in _materialPreview)
                 {
@@ -3421,6 +3433,7 @@ namespace RARA.QuestConverter
                         case MaterialOverride.ParticleMultiply: particle++; break;
                         case MaterialOverride.Hide: hide++; break;
                         case MaterialOverride.Keep: keep++; break;
+                        case MaterialOverride.MatCapLit: matcapLit++; break;
                         default:
                             // 自動判定の既定動作を要約用に再現する(実際の変換はコンバーター側の判定に従う)
                             if (row.isMobileAlready || row.isTMP || row.isBrokenShader) keep++;
@@ -3452,6 +3465,7 @@ namespace RARA.QuestConverter
                             case MaterialOverride.Hide: transHide++; break;
                             case MaterialOverride.ToonStandard:
                             case MaterialOverride.ToonLit:
+                            case MaterialOverride.MatCapLit: // MatCap Lit も不透明化(透過は失われる)
                             case MaterialOverride.Keep: transOpaque++; break;
                             default: // 自動 → 既定処理(保護時は不透明)
                                 if (autoFate == TransparentHandling.Emulate) transEmulate++;
@@ -3469,6 +3483,7 @@ namespace RARA.QuestConverter
                 if (toonStandard > 0) lines.Add(toonStandard + "件を Toon Standard へ変換");
                 if (toonLit > 0) lines.Add(toonLit + "件を Toon Lit へ変換");
                 if (particle > 0) lines.Add(particle + "件をパーティクル(加算/乗算)へ変換");
+                if (matcapLit > 0) lines.Add(matcapLit + "件を MatCap Lit(金属向け)へ変換");
                 if (hide > 0) lines.Add(hide + "件を非表示化");
                 if (keep > 0) lines.Add(keep + "件はそのまま(変換なし)");
 
