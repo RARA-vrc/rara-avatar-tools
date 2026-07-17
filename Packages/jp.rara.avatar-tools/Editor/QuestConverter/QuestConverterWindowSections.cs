@@ -36,7 +36,7 @@ namespace RARA.QuestConverter
             new GUIContent("パーティクル加算", "Particles/Additive へ変換。黒が透明になる加算合成(光り物・ホロ向け)"),
             new GUIContent("パーティクル乗算", "Particles/Multiply へ変換。白が透明になる乗算合成(チーク・頬染め向け)"),
             new GUIContent("非表示", "Quest版では不可視マテリアルに差し替えて見えなくします"),
-            new GUIContent("変換しない", "元のマテリアルのまま残します(非対応シェーダーのままだとアップロード不可の原因になります)"),
+            new GUIContent("変換しない", "元のマテリアルのまま残します(非対応シェーダーのままだと Quest では正しく表示されない原因になります)"),
         };
 
         // 透過マテリアルの既定処理ドロップダウンの表示名(TransparentHandlingの並び順 Emulate, Hide, Opaque と一致させること)
@@ -2765,7 +2765,7 @@ namespace RARA.QuestConverter
             new GUIContent("Excellent 7,500", "最も厳しい目標。7,500ポリゴン以下(顔・髪を強く保護すると到達できないことがあります)"),
             new GUIContent("Good 10,000", "10,000ポリゴン以下"),
             new GUIContent("Medium 15,000", "Questの既定表示ランク。15,000ポリゴン以下"),
-            new GUIContent("Poor 20,000", "アップロードできる上限。20,000ポリゴン以下(まずはここを目標にすると崩れにくい)"),
+            new GUIContent("Poor 20,000", "Poor 圏内の上限。20,000ポリゴン以下(まずはここを目標にすると崩れにくい)"),
         };
 
         // カテゴリ別バッジ色(ダーク/ライト両スキンで読める中間トーン)
@@ -3346,7 +3346,7 @@ namespace RARA.QuestConverter
                     bool ok = _diagnostics.canUploadToAndroid;
                     GUI.color = ok ? UploadOkColor : OverLimitColor;
                     EditorGUILayout.LabelField(
-                        "・診断: 総合ランク " + rank + " / Android アップロード: " + (ok ? "可" : "不可(Very Poor)"),
+                        "・診断: 総合ランク " + rank + " / Android アップロード: " + (ok ? "可" : "不可(サイズ上限超過)"),
                         _wrapLabel);
                     GUI.color = defaultColor;
                     if (_diagnosisStale)
@@ -3964,9 +3964,9 @@ namespace RARA.QuestConverter
             new[] { "ASTC", "Androidで使われるテクスチャ圧縮形式。4x4が最高品質・最大容量、8x8が低品質・最小容量(6x6が推奨)。" },
             new[] { "縮小計画(テクスチャ)", "削減提案の「適用」や「10MB以下まで自動調整」で登録される、テクスチャごとの縮小予定サイズ。元のテクスチャは変更されず、変換時に縮小コピーが出力フォルダへ生成されて変換後のマテリアルがそれを参照する。「縮小計画をクリア」でいつでも解除できる。" },
             new[] { "Android上書き(テクスチャ)", "テクスチャのインポート設定のうちAndroidプラットフォームにのみ適用される上書き。本ツールの削減提案は元テクスチャのこの設定を変更せず、縮小計画に登録して変換時に縮小コピーを生成する。旧バージョンの本ツールが元テクスチャへ直接適用した上書きは元アセットに残ったままのため(サイズ一覧に「Android上書きあり」と表示)、不要ならテクスチャのインポート設定(Androidタブ)から手動で解除できる。" },
-            new[] { "PhysBone", "髪や服を揺らすVRChatのコンポーネント。Androidではコンポーネント8個/コライダー16個(Poor上限)を超えるとアップロード不可。" },
+            new[] { "PhysBone", "髪や服を揺らすVRChatのコンポーネント。Androidでコンポーネント8個/コライダー16個(Poor上限)を超えると、モバイルではPhysBone・コンタクト・コンストレイントが全て除去される(アップロード自体はサイズ上限内なら可能)。" },
             new[] { "EditorOnly", "このタグが付いたオブジェクトは、アップロード時にアバターから完全に取り除かれる(PC版のシーンには残る)。" },
-            new[] { "パフォーマンスランク", "Excellent/Good/Medium/Poor/Very Poorの5段階。QuestではVery Poorはアップロード不可、既定で他の人に表示されるのはMedium以上。" },
+            new[] { "パフォーマンスランク", "Excellent/Good/Medium/Poor/Very Poorの5段階。アップロード可否はサイズ上限のみで決まりランクは無関係。QuestではVery Poorも既定でフォールバック表示(Show Avatarで表示可)、既定で他の人に表示されるのはMedium以上。" },
             new[] { "NDMF (Non-Destructive Modular Framework)", "Modular Avatar / FaceEmo / AAO などが共通で使う「ビルド時にアバターを加工する」仕組みの土台。シーン上のアバターは変更せず、アップロード用のコピーにだけ変換が適用される。" },
             new[] { "AAO (Avatar Optimizer)", "ビルド時にメッシュ結合・重複マテリアル参照の統合などを自動で行う別ツール。本ツールのアトラス統合と組み合わせるとスロット数削減の効果が高い。" },
         };
@@ -4004,8 +4004,7 @@ namespace RARA.QuestConverter
                     "・アウトライン\n" +
                     "・ファー・ラメ・屈折などの特殊効果\n" +
                     "・リムライト・マットキャップ等の質感は既定では再現されない(リムは変換設定で近似可能)\n" +
-                    "・ダウンロードサイズ10MB超の回避\n" +
-                    "・Very Poorアバターのアップロード",
+                    "・ダウンロードサイズ10MB上限の撤廃(超過分はSDKがアップロードをブロック)",
                     _wrapLabel);
 
                 _foldGlossary = EditorGUILayout.Foldout(_foldGlossary, "用語ミニ解説", true);
@@ -4057,7 +4056,7 @@ namespace RARA.QuestConverter
         private struct GoalOverRow
         {
             public string text;      // 「・{項目}: 現在{値} / 目標{上限} — {推奨アクション}」
-            public bool hardOver;    // true=VeryPoor相当(赤・アップロード不可) / false=目標超だが上限内(黄)
+            public bool hardOver;    // true=VeryPoor相当(赤・そのカテゴリがPoor上限超) / false=目標超だが上限内(黄)
         }
 
         /// <summary>

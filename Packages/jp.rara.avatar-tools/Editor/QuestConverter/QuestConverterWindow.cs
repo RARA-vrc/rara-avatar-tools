@@ -692,7 +692,7 @@ namespace RARA.QuestConverter
                 var prev = GUI.color;
                 GUI.color = ok ? UploadOkColor : OverLimitColor;
                 EditorGUILayout.LabelField(
-                    ok ? "Android アップロード: 可" : "Android アップロード: 不可(Very Poor)",
+                    ok ? "Android アップロード: 可" : "Android アップロード: 不可(ダウンロードサイズ上限超過)",
                     _verdictLabel, GUILayout.Height(20f));
                 GUI.color = prev;
                 if (GUILayout.Button(new GUIContent("再診断", "現在の設定で診断をやり直します"), GUILayout.Width(70f)))
@@ -750,10 +750,15 @@ namespace RARA.QuestConverter
 
             string message = "総合パフォーマンスランク: " + rating;
             MessageType type;
-            if (key == "verypoor" || !_diagnostics.canUploadToAndroid)
+            if (!_diagnostics.canUploadToAndroid)
             {
                 type = MessageType.Error;
-                message += "\nAndroidへはアップロードできません。変換・削減が必要です。";
+                message += "\nダウンロードサイズが上限(" + QuestLimits.HardDownloadSizeCapMB + "MB)を超える見込みのため、SDKがアップロードをブロックします。テクスチャ・メッシュの削減が必要です。";
+            }
+            else if (key == "verypoor")
+            {
+                type = MessageType.Warning;
+                message += "\nVery Poor: アップロードは可能ですが、既定では相手にフォールバック表示(Show Avatarで表示可)。Dynamics上限超過分野があると揺れ物は全停止。公式が将来の表示制限を予告しているため Poor 以内を推奨。";
             }
             else if (key == "poor")
             {

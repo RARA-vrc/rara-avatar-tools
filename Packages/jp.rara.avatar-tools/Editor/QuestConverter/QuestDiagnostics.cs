@@ -35,7 +35,7 @@ namespace RARA.QuestConverter
         public System.Collections.Generic.List<DiagnosticsRow> perfRows;
         /// <summary>総合ランク。</summary>
         public string overallRating;
-        /// <summary>総合ランクがVeryPoorでなければtrue(Androidへアップロード可能)。</summary>
+        /// <summary>ダウンロードサイズ上限内でSDKがアップロードをハードブロックしない見込みならtrue(可否はサイズのみで判定。ランクとは無関係)。</summary>
         public bool canUploadToAndroid;
         /// <summary>Android許可シェーダー以外を使用しているマテリアル。</summary>
         public System.Collections.Generic.List<Material> nonMobileMaterials;
@@ -127,7 +127,9 @@ namespace RARA.QuestConverter
                     // 総合ランクとアップロード可否
                     PerformanceRating overall = stats.GetPerformanceRatingForCategory(AvatarPerformanceCategory.Overall);
                     result.overallRating = overall.ToString();
-                    result.canUploadToAndroid = overall != PerformanceRating.VeryPoor;
+                    // アップロード可否はランクでは決まらない。SDKがハードブロックするのはダウンロードサイズ上限
+                    // (QuestLimits.HardDownloadSizeCapMB)超過のみ。実際の可否は下のサイズ推定後に確定する。
+                    result.canUploadToAndroid = true;
 
                     // テクスチャのインポート設定に関する警告も除去後の複製に対して収集する
                     // (依存関係ベースの収集のため、除外サブツリーのみが参照するテクスチャを自然に除外できる)
@@ -164,6 +166,10 @@ namespace RARA.QuestConverter
                     result.sizeEstimate = null;
                     result.textureWarnings.Add("サイズ推定に失敗しました: " + sizeEx.Message);
                 }
+
+                // アップロード可否はサイズのみで判定する(ランク非依存)。ダウンロードサイズ上限
+                // (QuestLimits.HardDownloadSizeCapMB)超過見込みのときだけ不可。推定失敗時はブロック扱いにしない。
+                result.canUploadToAndroid = !(result.sizeEstimate != null && result.sizeEstimate.overCap);
             }
             catch (Exception ex)
             {

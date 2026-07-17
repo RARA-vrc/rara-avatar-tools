@@ -52,7 +52,7 @@ namespace RARA.AvatarStudio
         public string questValueText = "-";
         /// <summary>QuestのSDK項目別ランク。未計測は空。</summary>
         public string questRating = string.Empty;
-        /// <summary>Quest側で VeryPoor(Androidアップロード不可の上限超過)か。</summary>
+        /// <summary>Quest側で VeryPoor(Poor上限超過。表示・Dynamicsに影響するがアップロード可否には無関係)か。</summary>
         public bool questOverLimit;
     }
 
@@ -71,7 +71,7 @@ namespace RARA.AvatarStudio
 
         /// <summary>Quest(Android)総合ランク。</summary>
         public string questOverallRating = string.Empty;
-        /// <summary>Quest総合ランクが VeryPoor でなければ true(Androidへアップロード可)。</summary>
+        /// <summary>ダウンロードサイズ上限内でSDKがアップロードをハードブロックしない見込みなら true(可否はサイズのみで判定。ランク非依存)。</summary>
         public bool questCanUpload;
 
         /// <summary>デュアル比較テーブル(PC/Quest 並記)。</summary>

@@ -902,7 +902,7 @@ namespace RARA.AvatarStudio
                 EditorGUILayout.Space(2f);
                 foreach (string[] r in questRows) DrawRankTableRow(r);
             }
-            EditorGUILayout.LabelField("※ 代表値の目安です。実際の判定は VRChat SDK の診断結果に従ってください。Quest は Very Poor だとアップロードできません。",
+            EditorGUILayout.LabelField("※ 代表値の目安です。実際の判定は VRChat SDK の診断結果に従ってください。アップロード可否はダウンロードサイズ上限(10MB)のみで決まり、ランクでは決まりません。Very Poor は既定でフォールバック表示になります。",
                 AvatarStudioUI.MiniWrapLabel);
         }
 

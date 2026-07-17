@@ -141,7 +141,9 @@ namespace RARA.AvatarStudio
                     EditorGUILayout.LabelField("Quest総合", GUILayout.Width(62f));
                     DrawRatingChip(diag.questOverallRating, GUILayout.Width(96f));
                     if (!diag.questCanUpload)
-                        WarnMini("Androidアップロード不可(VeryPoor)");
+                        WarnMini("アップロード不可(サイズ上限超過)");
+                    else if (AvatarStudioDiagnostics.NormalizeRating(diag.questOverallRating) == "verypoor")
+                        WarnMini("Very Poor(既定で非表示/揺れ物停止)");
                     else if (AvatarStudioDiagnostics.IsOverGoal(diag.questOverallRating, settings.questGoalRank))
                         WarnMini("目標未達");
                 }

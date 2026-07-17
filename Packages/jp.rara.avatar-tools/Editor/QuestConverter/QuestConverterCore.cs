@@ -354,7 +354,7 @@ namespace RARA.QuestConverter
     /// <summary>Android(Quest)アバターのパフォーマンス上限値(2026-07時点の公式仕様)。</summary>
     public static class QuestLimits
     {
-        // Poor上限(これを超えると Very Poor = Androidへアップロード不可)
+        // Poor上限(これを超えると Very Poor。アップロード可否はサイズのみで決まりランクでは決まらない)
         public const int PoorPolygons = 20000;
         public const int PoorSkinnedMeshes = 2;
         public const int PoorBasicMeshes = 2;

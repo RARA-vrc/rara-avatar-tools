@@ -39,7 +39,7 @@ namespace RARA.AvatarStudio
         Good = 1,
         /// <summary>Questの既定表示ランク(既定)。</summary>
         Medium = 2,
-        /// <summary>最低ライン(これを超えると Very Poor = Androidへアップロード不可)。</summary>
+        /// <summary>最低ライン(これを超えると Very Poor。既定で非表示になりやすく揺れ物も停止し得るが、アップロード可否はサイズのみで決まる)。</summary>
         Poor = 3,
     }
 

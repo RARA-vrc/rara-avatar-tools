@@ -263,7 +263,7 @@
     <div class="note warn">
       <b>依存ツール:AAO(Avatar Optimizer)の導入を強く推奨。</b>
       メッシュ・マテリアルスロットの統合や非表示メッシュの削減は、ビルド時に AAO(<code class="inline">com.anatawa12.avatar-optimizer</code>)が担当する分業設計です。
-      AAO が無いと削減効果が出にくく、Quest ではスキンメッシュ数の上限に収まらず Very Poor でアップロードできないことがあります。
+      AAO が無いと削減効果が出にくく、Quest ではスキンメッシュ数の上限に収まらず Very Poor になりやすく、既定で相手にフォールバック表示され揺れ物も停止し得ます(アップロード可否自体はサイズ上限のみで決まります)。
       ブラウザで <a href="https://vpm.anatawa12.com/add-repo" target="_blank" rel="noopener">https://vpm.anatawa12.com/add-repo</a> を開き、VCC / ALCOM で
       Add Repository → プロジェクトに Avatar Optimizer を追加 → Unity へ戻ってください。
     </div>
@@ -327,7 +327,7 @@
         <p class="hint">ポリゴンは Excellent だけ 32,000、Good / Medium / Poor はすべて 70,000。32,001〜70,000 は Good に載り、70,000 を超えると一気に Very Poor になります。</p>
 
         <h3>Quest / iOS(Android)ランク閾値</h3>
-        <p class="hint">iOS も Quest(Android)と同じモバイル制限。Very Poor はモバイルへアップロード不可(既定の表示ランクは Medium)。</p>
+        <p class="hint">iOS も Quest(Android)と同じモバイル制限。アップロード可否はサイズ上限(ダウンロード10MB / 展開後40MB)のみで決まり、Very Poor でもアップロード自体は可能(既定でフォールバック表示・Show Avatarで表示可、既定の表示ランクは Medium)。</p>
         <div class="table-scroll">
           <table>
             <thead>
