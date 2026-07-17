@@ -52,6 +52,18 @@ namespace RARA.PCOptimizer
         /// <summary>色のみ材質(テクスチャ無し)の単色セルの一辺(px)。</summary>
         private const int ColorCellSize = 16;
 
+        /// <summary>品質フロア: 顔・体・髪系の名前を持つ材質は、このサイズ未満へは縮小しない(px)。</summary>
+        private const int DetailFloorSize = 512;
+
+        /// <summary>品質フロア: その他の(色のみ以外の)材質は、このサイズ未満へは縮小しない(px)。</summary>
+        private const int GeneralFloorSize = 256;
+
+        /// <summary>顔・体・髪など高精細を保ちたい材質の名前トークン(英字は語頭境界一致、CJKは部分一致)。</summary>
+        private static readonly string[] HighDetailTokens =
+        {
+            "face", "顔", "body", "体", "肌", "skin", "hair", "髪",
+        };
+
         /// <summary>UV0が0..1に収まっているとみなす許容誤差。</summary>
         private const float UvTolerance = 0.001f;
 
@@ -370,76 +382,88 @@ namespace RARA.PCOptimizer
         }
 
         /// <summary>1グループぶんのパッキング・合成・マテリアル生成を行い、結果へ登録する。</summary>
+        /// <remarks>
+        /// 品質フロア(顔/体/髪=512px, その他=256px, 色のみ=16px)を下限にセルを縮小し、それでも1枚の
+        /// atlasMaxSize アトラスに収まらない場合は、品質を潰し切るのではなく複数枚(ビン)へ分割する。
+        /// これにより「単一アトラスをどんな低品質でも維持する」旧挙動(mat_face/body/hair が128pxまで崩れる)を避ける。
+        /// </remarks>
         private static void BuildOneGroup(Group group, int atlasMaxSize, Material blitMat, int passTint, int passUnpack, PCOptimizeSettings settings, string outputDir, ConversionAssetContext assets, AtlasBuildResult result, ConversionReport report)
         {
-            int atlasW, atlasH;
-            if (!FitCells(group, atlasMaxSize, result.excluded, report, out atlasW, out atlasH))
+            // グループを1枚以上のアトラス(ビン)へ分割する(1枚に収まればビンは1つ)。
+            List<List<Cell>> bins = PartitionGroupIntoBins(group, atlasMaxSize, report);
+            if (bins.Count == 0) return;
+
+            // アウトライン統合・カリング統一・質感差警告はグループ単位で一度だけ確定する(全ビン共通の代表・設定)。
+            ResolveOutlineRepresentative(group, settings.atlasOutlineUnifyMode, report);
+            ResolveGroupCull(group, report);
+            WarnMaterialParameterDifferences(group, report);
+
+            if (bins.Count > 1)
             {
-                return; // メンバーが2未満になった(残りは除外済み)
+                report.Info(string.Format("グループを{0}枚に分割しました(品質維持のため)。", bins.Count));
             }
 
-            // ---- 内部整合性ガード(パッキング破綻の検出) ----
-            // SkylinePack が確定した各セルの rect は以後不変で、ComposeChannel の描画先も
-            // result.cellRects の登録値も RemapMeshesAndMergeSlots が参照するセルも、すべて
-            // 同一 Cell.rect を単一の真実として使う(名前キーや並列配列での対応付けは無い)。
-            // したがって「セル同士が重ならず、全セルがアトラス領域内に収まる」ことさえ保証すれば
-            // 『テクスチャの描画先セル ↔ 登録セル矩形 ↔ サブメッシュの参照セル』は必ず一致する。
-            // 万一パッキングが破綻して2セルが重なると、一方のセルへ他メンバーのテクスチャが描かれ、
-            // そのセルを参照するメッシュが誤った材質内容(例: 別マテリアルの絵柄)を映してしまう。
-            // 破綻を検出したらこのグループは統合せず据え置き、壊れたアトラスを出さない。
-            if (!ValidateCellLayout(group, atlasW, atlasH, report))
+            for (int b = 0; b < bins.Count; b++)
             {
-                // この時点では result.atlasMap/cellRects へ未登録(登録は後段の成功パスのみ、下の 410-421 行)。
-                // よって除外リストへ積んで return するだけでよい(統合されなかったメンバーは元マテリアルのまま残る)。
-                foreach (Cell brokenCell in group.cells)
-                {
-                    if (brokenCell.src != null)
-                    {
-                        result.excluded.Add(brokenCell.src.name + ": アトラス内部整合性エラーのため統合を中止(単独維持)");
-                    }
-                }
+                BuildOneBin(group, bins[b], b, bins.Count, atlasMaxSize, blitMat, passTint, passUnpack, settings, outputDir, assets, result, report);
+            }
+        }
+
+        /// <summary>1ビン(=1アトラス)ぶんのパッキング確定・合成・マテリアル生成・登録を行う。</summary>
+        private static void BuildOneBin(Group group, List<Cell> cells, int binIndex, int binCount, int atlasMaxSize, Material blitMat, int passTint, int passUnpack, PCOptimizeSettings settings, string outputDir, ConversionAssetContext assets, AtlasBuildResult result, ConversionReport report)
+        {
+            if (cells == null || cells.Count == 0) return;
+
+            // ビンの最終メンバーで再パッキングして各セルの rect と atlas 寸法を確定する(唯一の真実 = Cell.rect)。
+            int packedSize;
+            if (!TryPackSquare(cells, atlasMaxSize, out packedSize))
+            {
+                foreach (Cell c in cells) if (c.src != null) result.excluded.Add(c.src.name + ": アトラスに収まらないため(単独)");
+                return;
+            }
+            int atlasW, atlasH;
+            ComputeTrimmedAtlasSize(cells, atlasMaxSize, out atlasW, out atlasH);
+
+            // ---- 内部整合性ガード(パッキング破綻の検出) ----
+            // 「セル同士が重ならず、全セルがアトラス領域内に収まる」ことを保証すれば、
+            // 『テクスチャの描画先セル ↔ 登録セル矩形 ↔ サブメッシュの参照セル』は必ず一致する。
+            if (!ValidateCellLayout(cells, atlasW, atlasH, report))
+            {
+                foreach (Cell c in cells) if (c.src != null) result.excluded.Add(c.src.name + ": アトラス内部整合性エラーのため統合を中止(単独維持)");
                 return;
             }
 
-            // アウトライン統合モードに応じて代表(先頭)を寄せ、見た目変化(付与/除去)を警告する。
-            ResolveOutlineRepresentative(group, settings.atlasOutlineUnifyMode, report);
-
-            // カリング差を無視して片面/両面が混在した場合は両面(Cull Off)へ統一し、対象メンバーを警告する。
-            ResolveGroupCull(group, report);
-
-            // チャンネルの要否
-            group.needNormal = false;
-            group.needEmission = false;
-            foreach (Cell cell in group.cells)
+            // チャンネルの要否(ビン単位。分割時に各ビンで必要なチャンネルだけ合成する)
+            bool needNormal = false;
+            bool needEmission = false;
+            foreach (Cell cell in cells)
             {
-                if (cell.hasBump) group.needNormal = true;
-                if (cell.emits) group.needEmission = true;
+                if (cell.hasBump) needNormal = true;
+                if (cell.emits) needEmission = true;
             }
+            group.needNormal = needNormal;
+            group.needEmission = needEmission;
 
-            WarnMaterialParameterDifferences(group, report);
-
-            // 名前は「メンバー構成由来の安定キー」。処理順に依存させないことで、同一構成のグループは
-            // 実行間で常に同じパス(＝同じGUID)を得る(旧クローンのUV再配置と食い違わない)。
-            // さらにパッキング結果(セル配置)由来のレイアウトハッシュを接尾辞に付ける。
-            // メンバー構成が同じでも設定変更でUV配置が変わると別名=別GUIDのテクスチャ/マテリアルに
-            // なり、旧レイアウトのメッシュを参照する古い複製を共有テクスチャのその場上書きで壊さない
-            // (メッシュ命名と同じ保護をテクスチャ/マテリアルにも与える)。
-            string baseName = "PCAtlas_" + BuildStableGroupName(group) + "_" + BuildGroupLayoutHash(group, atlasW, atlasH);
+            // 名前は「ビンのメンバー構成由来の安定キー + パッキング由来のレイアウトハッシュ」。処理順に依存させない。
+            // 分割時は _p{n} を付し、レイアウトハッシュにビン番号も畳み込む(ビンごとに別GUIDの安定パスを得る)。
+            string stable = BuildStableGroupName(cells);
+            string suffix = binCount > 1 ? "_p" + (binIndex + 1) : string.Empty;
+            string baseName = "PCAtlas_" + stable + suffix + "_" + BuildGroupLayoutHash(cells, atlasW, atlasH, binCount > 1 ? binIndex + 1 : 0);
 
             // メイン
-            Texture2D mainAtlas = ComposeChannel(group, atlasW, atlasH, AtlasChannel.Main, blitMat, passTint, passUnpack, report);
+            Texture2D mainAtlas = ComposeChannel(cells, atlasW, atlasH, AtlasChannel.Main, blitMat, passTint, passUnpack, report);
             Texture2D mainSaved = SaveAtlasTexture(mainAtlas, baseName, "_main", true, false, outputDir, assets);
             if (mainSaved == null)
             {
-                report.Warn(string.Format("アトラス '{0}' のメインテクスチャ保存に失敗したため、このグループは統合せず据え置きます。", baseName));
+                report.Warn(string.Format("アトラス '{0}' のメインテクスチャ保存に失敗したため、このビンは統合せず据え置きます。", baseName));
                 return;
             }
 
             // ノーマル
             Texture2D normalSaved = null;
-            if (group.needNormal)
+            if (needNormal)
             {
-                Texture2D normalAtlas = ComposeChannel(group, atlasW, atlasH, AtlasChannel.Normal, blitMat, passTint, passUnpack, report);
+                Texture2D normalAtlas = ComposeChannel(cells, atlasW, atlasH, AtlasChannel.Normal, blitMat, passTint, passUnpack, report);
                 normalSaved = SaveAtlasTexture(normalAtlas, baseName, "_normal", false, true, outputDir, assets);
                 if (normalSaved == null)
                 {
@@ -449,9 +473,9 @@ namespace RARA.PCOptimizer
 
             // エミッション
             Texture2D emissionSaved = null;
-            if (group.needEmission)
+            if (needEmission)
             {
-                Texture2D emissionAtlas = ComposeChannel(group, atlasW, atlasH, AtlasChannel.Emission, blitMat, passTint, passUnpack, report);
+                Texture2D emissionAtlas = ComposeChannel(cells, atlasW, atlasH, AtlasChannel.Emission, blitMat, passTint, passUnpack, report);
                 emissionSaved = SaveAtlasTexture(emissionAtlas, baseName, "_emission", true, false, outputDir, assets);
                 if (emissionSaved == null)
                 {
@@ -465,7 +489,7 @@ namespace RARA.PCOptimizer
             var memberNames = new List<string>();
             int colorOnlyCount = 0;
             long packedArea = 0;
-            foreach (Cell cell in group.cells)
+            foreach (Cell cell in cells)
             {
                 result.atlasMap[cell.src] = atlasMaterial;
                 result.cellRects[cell.src] = new Rect(
@@ -478,10 +502,129 @@ namespace RARA.PCOptimizer
                 packedArea += (long)cell.rect.width * cell.rect.height;
             }
             float usage = (atlasW > 0 && atlasH > 0) ? (float)packedArea / ((long)atlasW * atlasH) * 100f : 0f;
-            string info = string.Format("統合: {0}材質 → 1 (サイズ{1}x{2}, 使用率{3:F1}%, メンバー{0}件: {4})",
-                group.cells.Count, atlasW, atlasH, usage, string.Join(", ", memberNames));
+            string prefix = binCount > 1 ? string.Format("[{0}/{1}枚目] ", binIndex + 1, binCount) : string.Empty;
+            string info = string.Format("{5}統合: {0}材質 → 1 (サイズ{1}x{2}, 使用率{3:F1}%, メンバー{0}件: {4})",
+                cells.Count, atlasW, atlasH, usage, string.Join(", ", memberNames), prefix);
             if (colorOnlyCount > 0) info += string.Format(" / 色のみ材質 {0}件を単色セルで統合", colorOnlyCount);
             report.Info(info);
+        }
+
+        /// <summary>セルの品質フロア(この一辺未満へは縮小しない)。色のみ材質は極小セル、顔/体/髪は高精細、他は標準。</summary>
+        private static int CellFloor(Cell cell)
+        {
+            if (cell == null) return GeneralFloorSize;
+            if (cell.colorOnly) return ColorCellSize;
+            return (cell.src != null && IsHighDetailName(cell.src.name)) ? DetailFloorSize : GeneralFloorSize;
+        }
+
+        /// <summary>材質名が顔・体・髪系トークンに一致するか(英字は語頭境界一致、CJKは部分一致)。</summary>
+        private static bool IsHighDetailName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            foreach (string token in HighDetailTokens)
+            {
+                bool hit = IsAsciiToken(token)
+                    ? ContainsTokenAtWordStart(name, token)
+                    : name.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0;
+                if (hit) return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// グループを1枚以上のアトラス(ビン)へ分割する。まず現サイズで1枚を試し、収まらなければ品質フロアまで
+        /// 大きいセルを縮小して1枚を再試行する。フロアでも1枚に収まらなければ、面積降順の first-fit で複数ビンへ分割する。
+        /// 返り値の各ビンはそれぞれ atlasMaxSize に収まる(セル rect は BuildOneBin が最終確定する)。
+        /// </summary>
+        private static List<List<Cell>> PartitionGroupIntoBins(Group group, int atlasMaxSize, ConversionReport report)
+        {
+            var bins = new List<List<Cell>>();
+            int dummy;
+
+            // 1) 現在(planned)サイズで1枚に収まればそのまま1ビン。
+            if (TryPackSquare(group.cells, atlasMaxSize, out dummy))
+            {
+                bins.Add(new List<Cell>(group.cells));
+                return bins;
+            }
+
+            // 2) 品質フロアまで大きいセルを縮小して1枚を試す(各セルの CellFloor 未満へは縮小しない)。
+            ShrinkTowardFloor(group.cells, atlasMaxSize, report);
+            if (TryPackSquare(group.cells, atlasMaxSize, out dummy))
+            {
+                bins.Add(new List<Cell>(group.cells));
+                return bins;
+            }
+
+            // 3) フロアでも1枚に収まらない → 面積降順の first-fit で複数ビンへ分割する(品質を潰さない)。
+            return FirstFitBins(group.cells, atlasMaxSize);
+        }
+
+        /// <summary>1枚に収めるため、フロア超のセルを大きい順に半減する(各セルの CellFloor が縮小の下限)。</summary>
+        private static void ShrinkTowardFloor(List<Cell> cells, int atlasMaxSize, ConversionReport report)
+        {
+            int guard = 0;
+            int dummy;
+            while (guard++ < 4096)
+            {
+                if (TryPackSquare(cells, atlasMaxSize, out dummy)) return;
+
+                Cell largest = null;
+                foreach (Cell c in cells)
+                {
+                    int floor = CellFloor(c);
+                    if (c.width <= floor && c.height <= floor) continue; // これ以上は縮小しない(品質フロア)
+                    if (largest == null || (long)c.width * c.height > (long)largest.width * largest.height) largest = c;
+                }
+                if (largest == null) return; // 全セルがフロア = 1枚では収まらない(呼び出し側が分割へ)
+
+                int lf = CellFloor(largest);
+                largest.width = Mathf.Max(lf, largest.width / 2);
+                largest.height = Mathf.Max(lf, largest.height / 2);
+                report.Warn(string.Format("'{0}': アトラス({1}px)に収まらないため、セルを{2}x{3}へ縮小しました(品質フロア{4}px)。", largest.src.name, atlasMaxSize, largest.width, largest.height, lf));
+            }
+        }
+
+        /// <summary>面積降順(タイブレークは元マテリアル名)で決定的に並べ、first-fit で各ビン(=各アトラス)へ詰める。</summary>
+        private static List<List<Cell>> FirstFitBins(List<Cell> cells, int atlasMaxSize)
+        {
+            var sorted = new List<Cell>(cells);
+            sorted.Sort((a, b) =>
+            {
+                long aa = (long)a.width * a.height;
+                long bb = (long)b.width * b.height;
+                if (aa != bb) return bb.CompareTo(aa);
+                string an = a.src != null ? a.src.name : string.Empty;
+                string bn = b.src != null ? b.src.name : string.Empty;
+                return string.CompareOrdinal(an, bn);
+            });
+
+            var bins = new List<List<Cell>>();
+            int dummy;
+            foreach (Cell cell in sorted)
+            {
+                bool placed = false;
+                foreach (List<Cell> bin in bins)
+                {
+                    var trial = new List<Cell>(bin) { cell };
+                    if (TryPackSquare(trial, atlasMaxSize, out dummy)) { bin.Add(cell); placed = true; break; }
+                }
+                if (!placed)
+                {
+                    // どのビンにも入らない → 新規ビン。単独でも収まらない(フロアが atlasMaxSize 超)場合はクランプする。
+                    ClampCellToMax(cell, atlasMaxSize);
+                    bins.Add(new List<Cell> { cell });
+                }
+            }
+            return bins;
+        }
+
+        /// <summary>セルの一辺を atlasMaxSize(ガター込み)に収まる最大値までクランプする。</summary>
+        private static void ClampCellToMax(Cell cell, int atlasMaxSize)
+        {
+            int limit = Mathf.Max(1, atlasMaxSize - GutterPixels * 2);
+            if (cell.width > limit) cell.width = limit;
+            if (cell.height > limit) cell.height = limit;
         }
 
         /// <summary>
@@ -491,9 +634,8 @@ namespace RARA.PCOptimizer
         /// 破綻(領域外・重複)を検出したら 「アトラス内部整合性エラー」 を Error で報告し false を返す
         /// (呼び出し側はこのグループを統合せず据え置く)。O(n^2) だがグループ内セル数は少数のため十分軽い。
         /// </summary>
-        private static bool ValidateCellLayout(Group group, int atlasW, int atlasH, ConversionReport report)
+        private static bool ValidateCellLayout(List<Cell> cells, int atlasW, int atlasH, ConversionReport report)
         {
-            List<Cell> cells = group.cells;
             for (int i = 0; i < cells.Count; i++)
             {
                 RectInt a = cells[i].rect;
@@ -522,10 +664,10 @@ namespace RARA.PCOptimizer
         }
 
         /// <summary>アトラス名の安定キー(メンバー元マテリアル名をソート連結した FNV-1a 8桁hex)。処理順非依存。</summary>
-        private static string BuildStableGroupName(Group group)
+        private static string BuildStableGroupName(List<Cell> cells)
         {
-            var names = new List<string>(group.cells.Count);
-            foreach (Cell cell in group.cells) names.Add(cell.src != null ? cell.src.name : string.Empty);
+            var names = new List<string>(cells.Count);
+            foreach (Cell cell in cells) names.Add(cell.src != null ? cell.src.name : string.Empty);
             names.Sort(StringComparer.Ordinal);
 
             uint hash = 2166136261u; // FNV-1a 32bit
@@ -542,11 +684,12 @@ namespace RARA.PCOptimizer
         /// メンバーの元マテリアル名・各セルのピクセル矩形・アトラス寸法を(名前順に)畳み込むため、
         /// メンバー構成が同じでもパッキングが変わればハッシュが変わる。元マテリアル名で決定的に
         /// ソートするため、Dictionary列挙順=実行間で変わるインスタンスIDには依存しない。
+        /// binDiscriminator は分割時のビン番号(1始まり。非分割は0)を畳み込み、同一メンバー名の別ビンが衝突しないようにする。
         /// </summary>
-        private static string BuildGroupLayoutHash(Group group, int atlasW, int atlasH)
+        private static string BuildGroupLayoutHash(List<Cell> cells, int atlasW, int atlasH, int binDiscriminator)
         {
-            var entries = new List<KeyValuePair<string, RectInt>>(group.cells.Count);
-            foreach (Cell cell in group.cells)
+            var entries = new List<KeyValuePair<string, RectInt>>(cells.Count);
+            foreach (Cell cell in cells)
             {
                 entries.Add(new KeyValuePair<string, RectInt>(cell.src != null ? cell.src.name : string.Empty, cell.rect));
             }
@@ -562,6 +705,7 @@ namespace RARA.PCOptimizer
             uint hash = 2166136261u; // FNV-1a 32bit
             hash = FoldLayoutInt(hash, atlasW);
             hash = FoldLayoutInt(hash, atlasH);
+            hash = FoldLayoutInt(hash, binDiscriminator);
             foreach (KeyValuePair<string, RectInt> e in entries)
             {
                 foreach (char c in e.Key) hash = (hash ^ c) * 16777619u;
@@ -1396,54 +1540,6 @@ namespace RARA.PCOptimizer
         // パッキング(QuestConverter のスカイライン法を移植)
         // ================================================================
 
-        /// <summary>
-        /// グループのセルを最小の2の累乗正方形へタイトに詰め、実使用領域を囲む最小の非正方形2の累乗(W×H)を返す。
-        /// 収まらなければ最大セルを半分へ縮小、それでも駄目なら最小セルを脱落させる。メンバーが2未満で false。
-        /// </summary>
-        private static bool FitCells(Group group, int atlasMaxSize, List<string> excluded, ConversionReport report, out int atlasW, out int atlasH)
-        {
-            atlasW = 0;
-            atlasH = 0;
-            while (true)
-            {
-                int atlasSize;
-                if (TryPackSquare(group.cells, atlasMaxSize, out atlasSize))
-                {
-                    ComputeTrimmedAtlasSize(group.cells, atlasMaxSize, out atlasW, out atlasH);
-                    return true;
-                }
-
-                Cell largest = null;
-                foreach (Cell c in group.cells)
-                {
-                    if (largest == null || c.width * c.height > largest.width * largest.height) largest = c;
-                }
-                if (largest != null && (largest.width > MinCellSize || largest.height > MinCellSize))
-                {
-                    largest.width = Mathf.Max(MinCellSize, largest.width / 2);
-                    largest.height = Mathf.Max(MinCellSize, largest.height / 2);
-                    report.Warn(string.Format("'{0}': アトラス({1}px)に収まらないため、セルを{2}x{3}へ縮小しました(解像度が低下します)。", largest.src.name, atlasMaxSize, largest.width, largest.height));
-                    continue;
-                }
-
-                Cell smallest = null;
-                foreach (Cell c in group.cells)
-                {
-                    if (smallest == null || c.width * c.height < smallest.width * smallest.height) smallest = c;
-                }
-                if (smallest == null) return false;
-                group.cells.Remove(smallest);
-                report.Warn(string.Format("'{0}': アトラスに収まらないため統合から除外しました(単独マテリアルのまま)。", smallest.src.name));
-                excluded.Add(smallest.src.name + ": アトラスに収まらないため(単独)");
-
-                if (group.cells.Count < 2)
-                {
-                    if (group.cells.Count == 1) excluded.Add(group.cells[0].src.name + ": 統合できる相手がなくなったため(単独)");
-                    return false;
-                }
-            }
-        }
-
         /// <summary>正方形詰め後の実配置から、実使用領域を囲む最小の非正方形2の累乗(W×H)を求める。</summary>
         private static void ComputeTrimmedAtlasSize(List<Cell> cells, int atlasMaxSize, out int atlasW, out int atlasH)
         {
@@ -1616,14 +1712,14 @@ namespace RARA.PCOptimizer
         /// メイン: セル = テクスチャ(色のみ材質は白テクスチャ) × _Color。エミッション: マップ×色 or 単色。
         /// ノーマル: UnpackNormalパスで展開。非発光メンバーのエミッションセルは黒のまま残す。
         /// </summary>
-        private static Texture2D ComposeChannel(Group group, int width, int height, AtlasChannel channel, Material blitMat, int passTint, int passUnpack, ConversionReport report)
+        private static Texture2D ComposeChannel(List<Cell> cells, int width, int height, AtlasChannel channel, Material blitMat, int passTint, int passUnpack, ConversionReport report)
         {
             bool linear = channel == AtlasChannel.Normal;
             Color32 background = linear ? new Color32(128, 128, 255, 255) : new Color32(0, 0, 0, 255);
             var pixels = new Color32[width * height];
             for (int i = 0; i < pixels.Length; i++) pixels[i] = background;
 
-            foreach (Cell cell in group.cells)
+            foreach (Cell cell in cells)
             {
                 Texture memberTex = null;
                 Color tint = Color.white;

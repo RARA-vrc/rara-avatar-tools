@@ -797,26 +797,83 @@ namespace RARA.QuestConverter
 
             int subMeshCount = mesh.subMeshCount;
             int slotCount = mats.Length;
-            if (slotCount > subMeshCount)
+
+            // ---- 処理スロット構築(実サブメッシュに対応するスロット + 実体化する余剰スロット) ----
+            // procMats/procIndices/procTopology は「独自の出力サブメッシュを持ち、UVをアトラスセルへ
+            // 再配置する」スロット群。まず実サブメッシュと1対1のスロット([0..realSlotCount))を積む。
+            int realSlotCount = Mathf.Min(slotCount, subMeshCount);
+            var procMats = new List<Material>(slotCount);
+            var procIndices = new List<int[]>(slotCount);       // GetIndicesは毎回新しい配列を返す(安全に書き換え可能)
+            var procTopology = new List<MeshTopology>(slotCount);
+            for (int i = 0; i < realSlotCount; i++)
             {
-                // 余剰スロットは「最後のサブメッシュの重ね描き」。個別サブメッシュとして実体化し、
-                // 描画結果を変えずにスロットとサブメッシュを1対1へ整列させる。
-                report.Warn(string.Format("'{0}': マテリアルスロット数({1})がサブメッシュ数({2})を超えています。余剰スロットを個別サブメッシュ化して整列します(描画結果は変わりません)。", renderer.name, slotCount, subMeshCount));
+                procMats.Add(mats[i]);
+                procIndices.Add(mesh.GetIndices(i));
+                procTopology.Add(mesh.GetTopology(i));
             }
 
-            // ---- スロット→インデックス配列(仮想サブメッシュ: 余剰スロットは最終サブメッシュの複製) ----
-            var slotIndices = new int[slotCount][];
-            var slotTopology = new MeshTopology[slotCount];
-            for (int i = 0; i < slotCount; i++)
+            // ---- 多重描画スロット(slotCount > subMeshCount)の方針決定 ----
+            // 余剰スロットは「最終サブメッシュ(subMeshCount-1)の重ね描き」。旧実装は全ての余剰を実サブメッシュへ
+            // 複製していたが、それは冗長な重ね描き(基底と同一セルへ写像される Kei-Hair 型)まで水増しした。
+            //   ・基底(最終サブメッシュ担当スロット)と同一マテリアル/同一セルへ写像される余剰 = 冗長。
+            //     統合可能レンダラーでは削除する(ポリゴン数は増えない)。
+            //   ・異なるセル(別アトラスマテリアル/別セル/未アトラス)へ写像される真の重ね描き = 見た目に
+            //     効く上描き。基底サブメッシュのUV0は基底セルへ再配置されるため、その頂点UVを共有する
+            //     ネイティブ重ね描きでは誤ったセル(基底セル)を参照してしまう。よって専用サブメッシュへ
+            //     実体化し、自分のセル(未アトラスなら元の0..1)のUVを持たせる(ポリゴン増は真の上描きのみ)。
+            // なお統合不可レンダラー(allowSlotMerge=false: マテリアル差し替えアニメのスロット番号維持が必要)は
+            // スロット番号を変えられないため、従来どおり実体化も削除もせずネイティブ重ね描きとして温存する。
+            var overdrawMats = new List<Material>();                 // 温存する余剰(統合不可レンダラーのネイティブ重ね描き)
+            if (slotCount > subMeshCount)
             {
-                int sub = Mathf.Min(i, subMeshCount - 1);
-                slotIndices[i] = mesh.GetIndices(sub); // GetIndicesは毎回新しい配列を返す(安全に書き換え可能)
-                slotTopology[i] = mesh.GetTopology(sub);
+                int overdrawnSubmesh = subMeshCount - 1;
+                if (!allowSlotMerge)
+                {
+                    // スロット番号維持が必要 → 従来どおり複製せずネイティブ重ね描きとして温存(基底UVのみ再配置)。
+                    for (int i = subMeshCount; i < slotCount; i++) overdrawMats.Add(mats[i]);
+                }
+                else
+                {
+                    Material baseSlotMat = mats[overdrawnSubmesh];
+                    Rect baseCell = default(Rect);
+                    bool baseAtlased = baseSlotMat != null && atlas.cellRects.TryGetValue(baseSlotMat, out baseCell);
+                    int droppedCount = 0;
+                    int materializedCount = 0;
+                    for (int i = subMeshCount; i < slotCount; i++)
+                    {
+                        Material om = mats[i];
+                        // 冗長判定: 基底と同一マテリアル、または(両者アトラスで)同一セルへ写像される場合のみ削除可。
+                        bool redundant = ReferenceEquals(om, baseSlotMat);
+                        if (!redundant && om != null && baseAtlased)
+                        {
+                            Rect oc;
+                            if (atlas.cellRects.TryGetValue(om, out oc) && oc == baseCell) redundant = true;
+                        }
+                        if (redundant)
+                        {
+                            droppedCount++;
+                            continue; // 同一写像 = 冗長。削除(ポリゴン数は増えない)。
+                        }
+                        // 真の重ね描き: 重ね描き先サブメッシュのジオメトリを複製した専用スロットとして実体化。
+                        // 未アトラスなら後段のクローンループが再配置をスキップし元の0..1 UVのまま独立サブメッシュになる。
+                        procMats.Add(om);
+                        procIndices.Add(mesh.GetIndices(overdrawnSubmesh));
+                        procTopology.Add(mesh.GetTopology(overdrawnSubmesh));
+                        materializedCount++;
+                    }
+                    if (droppedCount > 0 && materializedCount == 0)
+                        report.Info(string.Format("'{0}': 冗長な多重描画スロットを統合しました(ポリゴン数は増えません)。", renderer.name));
+                    else if (materializedCount > 0)
+                        report.Info(string.Format("'{0}': 上描きスロット{1}件を専用サブメッシュ化しました(見た目維持のため。冗長{2}件は統合)。", renderer.name, materializedCount, droppedCount));
+                }
             }
+
+            int baseSlotCount = procMats.Count; // 独自出力サブメッシュを持つスロット数(実サブメッシュ + 実体化した余剰)
+
             // スロットが割り当たらない末尾サブメッシュ(スロット数 < サブメッシュ数)はそのまま保持
             var trailingIndices = new List<int[]>();
             var trailingTopology = new List<MeshTopology>();
-            for (int j = slotCount; j < subMeshCount; j++)
+            for (int j = realSlotCount; j < subMeshCount; j++)
             {
                 trailingIndices.Add(mesh.GetIndices(j));
                 trailingTopology.Add(mesh.GetTopology(j));
@@ -827,9 +884,9 @@ namespace RARA.QuestConverter
             var userCount = new int[vertexCount];
             var lastUser = new int[vertexCount]; // 0 = 未使用。サブメッシュIDは1始まり
             int submeshId = 1;
-            for (int i = 0; i < slotCount; i++, submeshId++)
+            for (int i = 0; i < baseSlotCount; i++, submeshId++)
             {
-                CountVertexUsers(slotIndices[i], userCount, lastUser, submeshId);
+                CountVertexUsers(procIndices[i], userCount, lastUser, submeshId);
             }
             foreach (int[] indices in trailingIndices)
             {
@@ -854,9 +911,9 @@ namespace RARA.QuestConverter
 
             var cloneSource = new List<int>();               // 追加頂点 → 元頂点インデックス
             var transformedInPlace = new bool[vertexCount];  // 二重変換防止
-            for (int i = 0; i < slotCount; i++)
+            for (int i = 0; i < baseSlotCount; i++)
             {
-                Material slotMat = mats[i];
+                Material slotMat = procMats[i];
                 if (slotMat == null || !atlas.atlasMap.ContainsKey(slotMat)) continue;
                 Rect cellRect;
                 if (!atlas.cellRects.TryGetValue(slotMat, out cellRect)) continue;
@@ -864,7 +921,7 @@ namespace RARA.QuestConverter
                 // 複数サブメッシュで共有される頂点は、このサブメッシュ専用のクローンへ差し替える
                 // (サブメッシュ内の重複は1つのクローンへまとめる = AAOと同じパターン)
                 var perSubmeshClone = new Dictionary<int, int>();
-                int[] indices = slotIndices[i];
+                int[] indices = procIndices[i];
                 for (int k = 0; k < indices.Length; k++)
                 {
                     int v = indices[k];
@@ -904,9 +961,9 @@ namespace RARA.QuestConverter
             var outTopology = new List<MeshTopology>();
             var outMats = new List<Material>();
             var outIndexByAtlasMat = new Dictionary<Material, int>();
-            for (int i = 0; i < slotCount; i++)
+            for (int i = 0; i < baseSlotCount; i++)
             {
-                Material slotMat = mats[i];
+                Material slotMat = procMats[i];
                 Material atlasMat = null;
                 if (slotMat != null) atlas.atlasMap.TryGetValue(slotMat, out atlasMat);
 
@@ -915,9 +972,9 @@ namespace RARA.QuestConverter
                 if (allowSlotMerge && atlasMat != null)
                 {
                     int existing;
-                    if (outIndexByAtlasMat.TryGetValue(atlasMat, out existing) && outTopology[existing] == slotTopology[i])
+                    if (outIndexByAtlasMat.TryGetValue(atlasMat, out existing) && outTopology[existing] == procTopology[i])
                     {
-                        outIndices[existing].Add(slotIndices[i]); // 結合(スロット消滅)
+                        outIndices[existing].Add(procIndices[i]); // 結合(スロット消滅)
                         continue;
                     }
                     if (!outIndexByAtlasMat.ContainsKey(atlasMat))
@@ -927,8 +984,8 @@ namespace RARA.QuestConverter
                     // トポロジー不一致の場合は結合せず別サブメッシュのまま(参照は同一アトラスに
                     // なるため、スロットの重複排除はビルド時のAAOに委ねられる)
                 }
-                outIndices.Add(new List<int[]> { slotIndices[i] });
-                outTopology.Add(slotTopology[i]);
+                outIndices.Add(new List<int[]> { procIndices[i] });
+                outTopology.Add(procTopology[i]);
                 outMats.Add(slotMat); // 元(PC)マテリアルのまま = ApplyMaterialMapが後で差し替える
             }
             int slotEntryCount = outMats.Count;
@@ -965,8 +1022,13 @@ namespace RARA.QuestConverter
             }
             if (savedMesh == null) savedMesh = copy;
 
-            var newMats = new Material[slotEntryCount];
+            // 統合不可レンダラー(allowSlotMerge=false)で温存した余剰(多重描画)マテリアルを後ろに付け足す。
+            // Unity はマテリアル数 > サブメッシュ数のとき最終サブメッシュを追加マテリアルで重ね描きするため、
+            // スロット番号を維持したまま元の多重描画構成を保てる(統合可能レンダラーでは overdrawMats は空で、
+            // 真の上描きは専用サブメッシュへ実体化済み)。
+            var newMats = new Material[slotEntryCount + overdrawMats.Count];
             for (int i = 0; i < slotEntryCount; i++) newMats[i] = outMats[i];
+            for (int i = 0; i < overdrawMats.Count; i++) newMats[slotEntryCount + i] = overdrawMats[i];
             AssignToRenderer(renderer, savedMesh, newMats);
 
             meshCache.Add(new MeshCacheEntry

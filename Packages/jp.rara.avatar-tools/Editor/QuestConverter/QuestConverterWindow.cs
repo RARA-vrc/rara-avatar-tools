@@ -1328,7 +1328,18 @@ namespace RARA.QuestConverter
         private void LoadSettings()
         {
             _settings = new QuestConvertSettings();
-            var json = EditorPrefs.GetString(SettingsPrefsKey, "");
+            // 設定はプロジェクト別キー(AvatarStudioSettingsIO.ProjectScopedKey)へ保存する。EditorPrefs はマシン全体で
+            // 共有されるため、非スコープキーには別プロジェクトの設定が入っている可能性があり、そのまま読むと別アバターの
+            // パスが混入する(実測)。プロジェクト別キーが無い初回のみ、旧・非スコープキーからスカラー設定だけを一度移行し
+            // (アバター固有のパス/GUID/計画は破棄)、以後はスコープキーのみ扱う。
+            string scopedKey = RARA.AvatarStudio.AvatarStudioSettingsIO.ProjectScopedKey(SettingsPrefsKey);
+            var json = EditorPrefs.GetString(scopedKey, "");
+            bool fromLegacy = false;
+            if (string.IsNullOrEmpty(json))
+            {
+                json = EditorPrefs.GetString(SettingsPrefsKey, ""); // 旧・非スコープキー
+                fromLegacy = !string.IsNullOrEmpty(json);
+            }
             if (string.IsNullOrEmpty(json)) return;
             try
             {
@@ -1373,6 +1384,14 @@ namespace RARA.QuestConverter
                     _settings.conversionMode = ConversionMode.QuestConvert;
                     Debug.Log("[RARA QuestConverter] PC最適化のみモードは『RARA PC軽量化ツール』へ移行しました(メニュー RARA > PC軽量化ツール)");
                 }
+
+                if (fromLegacy)
+                {
+                    // 旧・非スコープキーからの移行はスカラーのみ引き継ぐ。アバター固有のパス/GUID/計画リストは
+                    // 別プロジェクト/別アバターの混入源になるため破棄し、プロジェクト別キーへ保存し直す。
+                    RARA.AvatarStudio.AvatarStudioSettingsIO.StripAvatarSpecificPaths(_settings);
+                    SaveSettings(false); // 以後はプロジェクト別キーのみ(非スコープキーには二度と書かない)
+                }
             }
             catch (Exception)
             {
@@ -1400,7 +1419,9 @@ namespace RARA.QuestConverter
             }
             try
             {
-                EditorPrefs.SetString(SettingsPrefsKey, JsonUtility.ToJson(_settings));
+                // プロジェクト別キーへ保存する(非スコープキーには書かない=プロジェクト間の混入を防ぐ)。
+                string scopedKey = RARA.AvatarStudio.AvatarStudioSettingsIO.ProjectScopedKey(SettingsPrefsKey);
+                EditorPrefs.SetString(scopedKey, JsonUtility.ToJson(_settings));
             }
             catch (Exception ex)
             {

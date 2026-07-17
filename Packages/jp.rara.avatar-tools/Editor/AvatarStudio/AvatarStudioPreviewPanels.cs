@@ -1535,8 +1535,8 @@ namespace RARA.AvatarStudio
             new GUIContent("付きに統一", "アウトライン付き側へ揃えます。付き=輪郭の無かった部分に付きます(瞳・顔は自動回避)"),
         };
 
-        private static readonly GUIContent[] PcAtlasSizeLabels = { new GUIContent("1024"), new GUIContent("2048(推奨)") };
-        private static readonly int[] PcAtlasSizeValues = { 1024, 2048 };
+        private static readonly GUIContent[] PcAtlasSizeLabels = { new GUIContent("1024"), new GUIContent("2048(推奨)"), new GUIContent("4096") };
+        private static readonly int[] PcAtlasSizeValues = { 1024, 2048, 4096 };
 
         public static bool DrawPCAtlasPanel(GameObject avatarRoot, AvatarStudioSettings s, PCOptimizeSettings pc, AvatarStudioPreviewCache cache)
         {

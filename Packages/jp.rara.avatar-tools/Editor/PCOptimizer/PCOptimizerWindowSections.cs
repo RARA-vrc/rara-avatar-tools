@@ -187,8 +187,8 @@ namespace RARA.PCOptimizer
         // ================================================================
         // 5. マテリアル統合(アトラス)
         // ================================================================
-        private static readonly GUIContent[] AtlasSizeLabels = { new GUIContent("1024"), new GUIContent("2048(推奨)") };
-        private static readonly int[] AtlasSizeValues = { 1024, 2048 };
+        private static readonly GUIContent[] AtlasSizeLabels = { new GUIContent("1024"), new GUIContent("2048(推奨)"), new GUIContent("4096") };
+        private static readonly int[] AtlasSizeValues = { 1024, 2048, 4096 };
 
         /// <summary>アウトライン統合モードの選択肢(OutlineUnifyMode の並び 0=しない / 1=外して統合 / 2=付きに統一 と一致させること)。</summary>
         private static readonly GUIContent[] AtlasOutlineModeLabels =

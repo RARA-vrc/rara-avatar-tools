@@ -285,6 +285,7 @@ namespace RARA.QuestConverter
             // LockVisible / LockHidden の対象パス(m_IsActive 除去・MAトグル解除の対象)
             var stripPaths = new HashSet<string>(StringComparer.Ordinal);
             var details = new List<string>();
+            var notFoundPaths = new List<string>(); // このアバターに存在しない指定(1件ずつ警告せず後で集約する)
             int lockVisible = 0, lockHidden = 0, kept = 0, notFound = 0;
 
             foreach (ToggleGroupChoice choice in choices)
@@ -301,8 +302,9 @@ namespace RARA.QuestConverter
                 Transform target = QuestCompat.FindByPath(cloneRoot.transform, choice.groupId);
                 if (target == null || target == cloneRoot.transform)
                 {
+                    // 1件ずつ警告するとログが溢れるため、集約して後で1つにまとめる(下の集約警告)。
                     notFound++;
-                    report.Warn($"衣装・トグル整理: パスが見つからないためスキップしました: {choice.groupId}");
+                    notFoundPaths.Add(choice.groupId);
                     continue;
                 }
 
@@ -325,6 +327,20 @@ namespace RARA.QuestConverter
                     lockHidden++;
                     details.Add("固定(非表示): " + choice.groupId);
                 }
+            }
+
+            // 未検出パスは1件ずつではなく1つに集約して警告する(別アバターの設定が保存済みJSONへ混入していた
+            // 場合に、大量の「見つからない」警告でログが溢れるのを防ぐ。エントリ自体は設定に残す=保持)。
+            if (notFoundPaths.Count > 0)
+            {
+                const int nameCap = 5; // 先頭数件だけ名前を出し、残りは件数に畳む
+                int shownNames = Mathf.Min(nameCap, notFoundPaths.Count);
+                string names = string.Join(", ", notFoundPaths.GetRange(0, shownNames));
+                if (notFoundPaths.Count > nameCap) names += string.Format(" ...他 {0} 件", notFoundPaths.Count - nameCap);
+                report.Warn(string.Format(
+                    "衣装・トグル整理: 保存済み設定のうち {0} 件のパスがこのアバターに存在しないためスキップしました" +
+                    "(別アバターの設定が混入していた場合は自動で無視されます): {1}",
+                    notFoundPaths.Count, names));
             }
 
             int maEntriesRemoved = 0;

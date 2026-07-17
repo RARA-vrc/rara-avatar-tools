@@ -939,7 +939,18 @@ namespace RARA.PCOptimizer
         private void LoadSettings()
         {
             _settings = new PCOptimizeSettings();
-            var json = EditorPrefs.GetString(SettingsPrefsKey, "");
+            // 設定はプロジェクト別キー(<see cref="RARA.AvatarStudio.AvatarStudioSettingsIO.ProjectScopedKey"/>)へ保存する。
+            // EditorPrefs はマシン全体で共有されるため、非スコープキーには別プロジェクトの設定が入っている可能性が
+            // あり、そのまま読むと別アバターのパスが混入する(実測)。プロジェクト別キーが無い初回のみ、旧・非スコープ
+            // キーからスカラー設定だけを一度移行し(アバター固有のパス/GUID/計画は破棄)、以後はスコープキーのみ扱う。
+            string scopedKey = RARA.AvatarStudio.AvatarStudioSettingsIO.ProjectScopedKey(SettingsPrefsKey);
+            var json = EditorPrefs.GetString(scopedKey, "");
+            bool fromLegacy = false;
+            if (string.IsNullOrEmpty(json))
+            {
+                json = EditorPrefs.GetString(SettingsPrefsKey, ""); // 旧・非スコープキー
+                fromLegacy = !string.IsNullOrEmpty(json);
+            }
             if (string.IsNullOrEmpty(json)) return;
             try
             {
@@ -968,6 +979,14 @@ namespace RARA.PCOptimizer
                         Debug.Log("[RARA PCOptimizer] 旧設定のアウトライン統一(ON)を『アウトライン付きに統一』へ移行しました。瞳・顔系マテリアルは自動でアウトライン付与を回避します。");
                     }
                 }
+
+                if (fromLegacy)
+                {
+                    // 旧・非スコープキーからの移行はスカラーのみ引き継ぐ。アバター固有のパス/GUID/計画リストは
+                    // 別プロジェクト/別アバターの混入源になるため破棄し、プロジェクト別キーへ保存し直す。
+                    RARA.AvatarStudio.AvatarStudioSettingsIO.StripAvatarSpecificPaths(_settings);
+                    SaveSettings(false); // 以後はプロジェクト別キーのみ(非スコープキーには二度と書かない)
+                }
             }
             catch (Exception)
             {
@@ -988,7 +1007,9 @@ namespace RARA.PCOptimizer
             if (markDiagnosisStale && _diagnostics != null) _diagnosisStale = true;
             try
             {
-                EditorPrefs.SetString(SettingsPrefsKey, JsonUtility.ToJson(_settings));
+                // プロジェクト別キーへ保存する(非スコープキーには書かない=プロジェクト間の混入を防ぐ)。
+                string scopedKey = RARA.AvatarStudio.AvatarStudioSettingsIO.ProjectScopedKey(SettingsPrefsKey);
+                EditorPrefs.SetString(scopedKey, JsonUtility.ToJson(_settings));
             }
             catch (Exception ex)
             {

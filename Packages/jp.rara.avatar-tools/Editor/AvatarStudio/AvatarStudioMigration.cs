@@ -9,7 +9,6 @@
 //  ・パースに失敗した設定は無視(null)し、既定値へフォールバックする。
 #if UNITY_EDITOR
 using System;
-using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
 using RARA.PCOptimizer;
@@ -33,18 +32,36 @@ namespace RARA.AvatarStudio
         /// </summary>
         public static bool HasAnyOldSettings()
         {
-            return !string.IsNullOrEmpty(EditorPrefs.GetString(PcSettingsKey, "")) ||
-                   !string.IsNullOrEmpty(EditorPrefs.GetString(QuestSettingsKey, ""));
+            return !string.IsNullOrEmpty(ReadOldPref(PcSettingsKey)) ||
+                   !string.IsNullOrEmpty(ReadOldPref(QuestSettingsKey));
+        }
+
+        /// <summary>
+        /// 旧ツールのEditorPrefsを読む。まずプロジェクト別スコープキー(現行の保存先)、無ければ
+        /// プロジェクト識別子導入前の非スコープキーへフォールバックする。シードするのはアバター非依存の
+        /// スカラーのみ(<see cref="ApplyShared"/> / <see cref="ApplyPcSpecific"/> / <see cref="ApplyQuestSpecific"/>)
+        /// なので、フォールバックで別プロジェクトの値を拾ってもアバター固有のパスは持ち込まれない。
+        /// </summary>
+        private static string ReadOldPref(string baseKey)
+        {
+            string scoped = EditorPrefs.GetString(AvatarStudioSettingsIO.ProjectScopedKey(baseKey), "");
+            if (!string.IsNullOrEmpty(scoped)) return scoped;
+            return EditorPrefs.GetString(baseKey, "");
         }
 
         /// <summary>
         /// 旧2ツールの保存設定から新しい <see cref="AvatarStudioSettings"/> を組み立てて返す。
         /// 旧ツールの設定はグローバル(アバター非依存)のため、シードは全アバター共通の初期値になる。
         ///
-        /// ・PC固有フィールドは PCOptimizeSettings から、Quest固有フィールドは QuestConvertSettings から取る。
-        /// ・共有ブロック(トグル整理・SMR統合・PhysBone整理・ensureTraceAndOptimize)は、両方あれば
-        ///   Quest側を優先し、Quest設定が無ければ PC側から取る(Quest対応コンバーターの方が共有項目の
-        ///   ユースケースが広いため。どちらも無ければ AvatarStudioSettings の既定値のまま)。
+        /// 【重要】シードするのはアバター非依存の「スカラー設定のみ」(目標ランク・機能トグル・アトラス設定など)。
+        /// トグル選択・SkinnedMesh除外パス・PhysBone識別パス・除外パス・隠しメッシュパス・削減計画・マテリアル/
+        /// テクスチャGUIDといったアバター固有のリストは一切シードしない。旧ツールのEditorPrefsはマシン全体で
+        /// 共有され、別アバター(別プロジェクト)のパスが混入しうるため(実測: 別アバターMAYOのトグルパスが
+        /// Keiの設定へ混入)。アバター固有の値はユーザーが対象アバター上でプレビュー選択して設定する。
+        ///
+        /// ・PC固有スカラーは PCOptimizeSettings から、Quest固有スカラーは QuestConvertSettings から取る。
+        /// ・共有ブロック(SMR統合モード・PhysBone整理トグル・ensureTraceAndOptimize)は、両方あれば
+        ///   Quest側を優先し、Quest設定が無ければ PC側から取る(どちらも無ければ既定値のまま)。
         /// ・questGoalRank は Quest ウィンドウが別管理していた int 目標ランク pref から引き継ぐ。
         /// </summary>
         public static AvatarStudioSettings SeedFromOldTools()
@@ -57,15 +74,13 @@ namespace RARA.AvatarStudio
             if (pc != null) ApplyPcSpecific(s, pc);
             if (quest != null) ApplyQuestSpecific(s, quest);
 
-            // 共有ブロック: Quest優先、無ければPC。
+            // 共有ブロック(スカラーのみ): Quest優先、無ければPC。
             if (quest != null) ApplyShared(s,
-                quest.toggleChoices, quest.mergeSkinnedMeshesMode, quest.skinnedMeshMergeOptOutPaths,
-                quest.mergePhysBones, quest.physBoneLooseMerge, quest.physBoneKeepPaths,
-                quest.physBoneRemovePaths, quest.ensureTraceAndOptimize);
+                quest.mergeSkinnedMeshesMode, quest.mergePhysBones, quest.physBoneLooseMerge,
+                quest.ensureTraceAndOptimize);
             else if (pc != null) ApplyShared(s,
-                pc.toggleChoices, pc.mergeSkinnedMeshesMode, pc.skinnedMeshMergeOptOutPaths,
-                pc.mergePhysBones, pc.physBoneLooseMerge, pc.physBoneKeepPaths,
-                pc.physBoneRemovePaths, pc.ensureTraceAndOptimize);
+                pc.mergeSkinnedMeshesMode, pc.mergePhysBones, pc.physBoneLooseMerge,
+                pc.ensureTraceAndOptimize);
 
             // Quest目標ランク(旧Questウィンドウは素のint pref: 0=Excellent..3=Poor、既定2=Medium)。
             // questGoalRank は int 型のため、範囲だけ丸めてそのまま代入する。
@@ -86,7 +101,7 @@ namespace RARA.AvatarStudio
         /// </summary>
         private static PCOptimizeSettings TryLoadPcSettings()
         {
-            string json = EditorPrefs.GetString(PcSettingsKey, "");
+            string json = ReadOldPref(PcSettingsKey);
             if (string.IsNullOrEmpty(json)) return null;
             try
             {
@@ -120,7 +135,7 @@ namespace RARA.AvatarStudio
         /// </summary>
         private static QuestConvertSettings TryLoadQuestSettings()
         {
-            string json = EditorPrefs.GetString(QuestSettingsKey, "");
+            string json = ReadOldPref(QuestSettingsKey);
             if (string.IsNullOrEmpty(json)) return null;
             try
             {
@@ -154,7 +169,8 @@ namespace RARA.AvatarStudio
         }
 
         // ============================================================
-        // 各ブロックの適用(旧設定のList参照はそのまま譲り受ける:元オブジェクトは破棄されるため安全)
+        // 各ブロックの適用(アバター非依存のスカラーのみをコピーする。
+        // アバター固有のリスト=トグル選択・パス・GUID・削減計画は意図的にシードしない)
         // ============================================================
 
         private static void ApplyPcSpecific(AvatarStudioSettings s, PCOptimizeSettings pc)
@@ -167,29 +183,24 @@ namespace RARA.AvatarStudio
             s.pcAtlasBakeEmissionMask = pc.atlasBakeEmissionMask;
             s.pcAtlasIgnoreCull = pc.atlasIgnoreCull;
             s.pcAtlasOutlineUnifyMode = pc.atlasOutlineUnifyMode;
-            s.pcAtlasExcludeGuids = pc.atlasExcludeMaterialGuids ?? new List<string>();
-            s.pcTexturePlan = pc.texturePlan ?? new List<TextureSizePlanEntry>();
+            // pcAtlasExcludeGuids(マテリアルGUID)・pcTexturePlan(テクスチャGUID)はアバター固有のためシードしない。
         }
 
         private static void ApplyQuestSpecific(AvatarStudioSettings s, QuestConvertSettings quest)
         {
             s.shaderTarget = quest.shaderTarget;
             s.transparentHandling = quest.transparentHandling;
-            s.materialOverrides = quest.materialOverrides ?? new List<MaterialOverrideEntry>();
             s.questEnableAtlas = quest.enableAtlas;
             s.questAtlasMaxSize = quest.atlasMaxSize;
             s.questAtlasUnifyRamps = quest.atlasUnifyRamps;
-            s.questTextureSizePlan = quest.textureSizePlan ?? new List<TextureSizePlanEntry>();
-            s.questExcludePaths = quest.questExcludePaths ?? new List<string>();
             s.questRemoveHiddenMeshByBlendShape = quest.removeHiddenMeshByBlendShape;
-            s.questHiddenMeshRendererPaths = quest.hiddenMeshRendererPaths ?? new List<string>();
             s.questEnableDecimation = quest.enableDecimation;
             s.questDecimationTargetTriangles = quest.decimationTargetTriangles;
-            s.questDecimationPlan = quest.decimationPlan ?? new List<PolygonPlanEntryData>();
-            s.questPhysBoneNoMergePaths = quest.physBoneNoMergePaths ?? new List<string>();
             s.questTrimPhysBonesToPoorLimit = quest.trimPhysBonesToPoorLimit;
+            // materialOverrides / questTextureSizePlan / questExcludePaths / questHiddenMeshRendererPaths /
+            // questDecimationPlan / questPhysBoneNoMergePaths はアバター固有(パス/GUID)のためシードしない。
 
-            // Quest変換パラメータ(旧QuestConverterで既定に隠れていた項目を統合UIへシード)。
+            // Quest変換パラメータ(旧QuestConverterで既定に隠れていた項目を統合UIへシード。すべてスカラー)。
             s.questMaxTextureSize = quest.maxTextureSize;
             s.questAndroidFormat = quest.androidFormat;
             s.questAggressiveTextureReduction = quest.aggressiveTextureReduction;
@@ -200,28 +211,22 @@ namespace RARA.AvatarStudio
             s.questConvertAnimations = quest.convertAnimations;
             s.questRemoveUnsupportedComponents = quest.removeUnsupportedComponents;
             s.questConvertUnityConstraints = quest.convertUnityConstraints;
-            // outputFolder は空/未設定なら AvatarStudioSettings の既定を保持(空を持ち込まない)。
+            // outputFolder は空/未設定なら AvatarStudioSettings の既定を保持(空を持ち込まない)。アバター非依存。
             if (!string.IsNullOrEmpty(quest.outputFolder)) s.questOutputFolder = quest.outputFolder;
         }
 
         private static void ApplyShared(
             AvatarStudioSettings s,
-            List<ToggleGroupChoice> toggleChoices,
             SkinnedMeshMergeMode mergeSkinnedMeshesMode,
-            List<string> skinnedMeshMergeOptOutPaths,
             bool mergePhysBones,
             bool physBoneLooseMerge,
-            List<string> physBoneKeepPaths,
-            List<string> physBoneRemovePaths,
             bool ensureTraceAndOptimize)
         {
-            s.toggleChoices = toggleChoices ?? new List<ToggleGroupChoice>();
+            // 共有ブロックのうちアバター非依存のスカラーのみ。toggleChoices / skinnedMeshMergeOptOutPaths /
+            // physBoneKeepPaths / physBoneRemovePaths はアバター固有パスのためシードしない。
             s.mergeSkinnedMeshesMode = mergeSkinnedMeshesMode;
-            s.skinnedMeshMergeOptOutPaths = skinnedMeshMergeOptOutPaths ?? new List<string>();
             s.mergePhysBones = mergePhysBones;
             s.physBoneLooseMerge = physBoneLooseMerge;
-            s.physBoneKeepPaths = physBoneKeepPaths ?? new List<string>();
-            s.physBoneRemovePaths = physBoneRemovePaths ?? new List<string>();
             s.ensureTraceAndOptimize = ensureTraceAndOptimize;
         }
     }
