@@ -119,6 +119,9 @@ namespace RARA.PCOptimizer
 
         [Tooltip("SkinnedMesh統合から個別に除外するレンダラーの相対パス(プレビューで「統合しない」を選んだもの)")]
         public List<string> skinnedMeshMergeOptOutPaths = new List<string>();
+
+        [Tooltip("mergeSkinnedMeshesMode=グループ指定 のときの、レンダラー→グループ番号(1..8)の割り当て。統合UIから設定する")]
+        public List<RARA.QuestConverter.SmrMergeGroupAssignment> smrMergeGroups = new List<RARA.QuestConverter.SmrMergeGroupAssignment>();
     }
 
     /// <summary>

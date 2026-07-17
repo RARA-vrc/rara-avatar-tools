@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.7] - 2026-07-17
+### Added
+- Meshia Mesh Simplification（Ram.Type-0 氏 / MIT）との併用ガイドを追加。ポリゴン削減の解説付近に「Meshiaとの併用（推奨）」節を新設しました（Meshiaの概要・VPM導入リンク・役割分担と3つの併用パターン・削減はビルド時反映でエディタ/診断の数値に出ない点・二重削減の注意（目標の置き方）・謝辞）。対象: README・Docs（AvatarStudio）・導入ページ（Website）。
+- ⑤ ポリゴン削減パネルに Meshia 検出の案内を追加。選択アバターに Meshia コンポーネント（MeshiaMeshSimplifier / MeshiaCascadingAvatarMeshSimplifier）が付いていると、「Meshia検出: ビルド時にさらに削減されます。本ツールのポリゴン削減と併用する場合は削りすぎに注意（どちらか一方を主にする）」のInfo表示と公式ドキュメントを開くボタンを出します（リフレクション検出・アバター単位でキャッシュ・Meshia未導入時は非表示）。
+- 実測レポート（ビルド/Play 時の実測）を追加。メニュー RARA / 実測レポート から開くウィンドウで、_Opt / _Quest 複製を ▶️(Play)、または SDK の Build & Test / Upload でビルドすると、MA / AAO / Meshia / lilToon 適用後・EditorOnly 除去後の最終複製そのものを VRChat SDK と同じ計算で実測し、ポップアップ表示します（PC / Quest 両基準の総合ランク・項目別値・目標達成判定・元アバターとの差。アップロードビルドでは生成アセットバンドルの実ファイルサイズも記録し、Quest/Android は 10MB 判定つき）。計測は上部トグル「ビルド/Play時に実測する」でオフにでき、自動表示だけを止めるトグルも別にあります。既定は _Opt / _Quest 複製のみ対象（全アバター計測トグルあり）。ドキュメントは「エディタ数値は控えめ」の既存注意から本機能へクロスリンクしました。対象: README・Docs（AvatarStudio / QuestConverter）・導入ページ（Website）。
+- SkinnedMesh統合にグループ指定モードを追加（統合しない / 顔以外を統合(推奨) / グループ指定で統合 の3モード）。レンダラーをグループ1〜8に振り分け、まとまりごとに1つのメッシュへ統合できます（顔は常に自動保護でグループ割り当て不可、未割り当ては統合しない）。使い方・自動保護の解説をドキュメントへ追記。対象: README・Docs（AvatarStudio / QuestConverter）・導入ページ（Website）。
+- 隠れメッシュ削減の検出の仕組み（名前トークンでの候補化・顔まわりの名前/ジオメトリ両面除外・約40%以上を動かす形状の幾何判定）と「その服を後で非表示にすると下の肌が無くなり穴が開く」注意を、パネル説明と同内容でドキュメントへ要約追記。対象: Docs（QuestConverter / AvatarStudio）・README・導入ページ（Website）。
+- AAO 連携の解説に「PhysBone のマージは本ツール独自実装で、AAO の Merge PhysBone は使用していない」旨を1行追記。対象: README・Docs・導入ページ（Website）。
+
 ## [1.0.6] - 2026-07-17
 ### Added
 - オープンベータ(Open β)公開と不具合報告窓口の案内を追加。不具合報告・要望は X(Twitter) の DM (https://x.com/RR_vrchat) または メール (raravrchat@gmail.com) で受け付けます。

@@ -246,11 +246,12 @@
     </p>
     <ul>
       <li><b>Trace and Optimize</b> — アバターを走査して自動でできる限りの最適化を行うコンポーネント（未使用ボーンの削減や自動マージなど）。追加の自動最適化のために付与します（下記の <code class="inline">Merge Skinned Mesh</code> / <code class="inline">Remove Mesh By BlendShape</code> は Trace and Optimize が無くてもビルド時にAAOが適用します）。</li>
-      <li><b>Merge Skinned Mesh</b> — 顔以外の複数の <code class="inline">SkinnedMeshRenderer</code> を1つの <code class="inline">SkinnedMeshRenderer</code> へ統合します（「SkinnedMesh統合」の実体）。統合時は BlendShape 名を自動変更して重複を避けます。</li>
+      <li><b>Merge Skinned Mesh</b> — 顔以外の複数の <code class="inline">SkinnedMeshRenderer</code> を1つの <code class="inline">SkinnedMeshRenderer</code> へ統合します（「SkinnedMesh統合」の実体）。統合時は BlendShape 名を自動変更して重複を避けます。レンダラーをグループ1〜8に振り分けて、まとまりごとに統合するグループ指定モードもあります（顔は常に自動保護）。</li>
       <li><b>Remove Mesh By BlendShape</b> — 指定した BlendShape で動く頂点とポリゴンを削除します（服の下に隠れる肌などを消す「隠れメッシュ削減」の実体）。</li>
     </ul>
+    <p>PhysBone のマージ（設定が一致する兄弟チェーンを1本へまとめてコンポーネント数を減らす処理）は、AAO の <code class="inline">Merge PhysBone</code> ではなく本ツール独自の実装です。</p>
     <div class="note">
-      <b>適用タイミング。</b>これらの統合・削除は、アップロード / Play 時のビルド（NDMF）で実行されます。そのため、生成直後の複製やエディタ上の診断値には反映されず、実際のアップロード後にさらに軽くなります。最終的な数値は VRChat SDK のビルド結果で確認してください。
+      <b>適用タイミング。</b>これらの統合・削除は、アップロード / Play 時のビルド（NDMF）で実行されます。そのため、生成直後の複製やエディタ上の診断値には反映されず、実際のアップロード後にさらに軽くなります。最終的な数値は VRChat SDK のビルド結果、または本ツールの実測レポート（下の「使い方の完全ガイド」参照）で確認してください。
     </div>
     <div class="note warn">
       <b>AAO 未導入時の挙動。</b>AAO が無くても本ツール自体は動作します。AAO を使う機能（SkinnedMesh統合・隠れメッシュ削減など）は自動でスキップされ、ウィンドウ内に導入の案内が表示されます。導入は
@@ -258,7 +259,7 @@
       <a href="https://vpm.anatawa12.com/avatar-optimizer/ja/" target="_blank" rel="noopener">公式ドキュメント</a> を参照してください。
     </div>
     <div class="note ok">
-      <b>謝辞。</b>AAO: Avatar Optimizer（MIT License / anatawa12 氏）に感謝します。あわせて VRChat SDK・lilToon・NonToon・Poiyomi・Modular Avatar / NDMF にも感謝します。
+      <b>謝辞。</b>AAO: Avatar Optimizer（MIT License / anatawa12 氏）に感謝します。あわせて Meshia Mesh Simplification（MIT License / Ram.Type-0 氏）・VRChat SDK・lilToon・NonToon・Poiyomi・Modular Avatar / NDMF にも感謝します。
     </div>
   </div>
 </section>
@@ -399,9 +400,11 @@
         <ul>
           <li><b>表示で固定</b> — 常時表示にしてトグルアニメを外す。AAO がビルド時に結合できるようになり、スキンメッシュ数・スロット数が減ります。</li>
           <li><b>非表示で固定</b> — そのメッシュを削除(<code class="inline">EditorOnly</code>)。ビルドから外れます(AAO 不要)。</li>
-          <li><b>SkinnedMesh統合(顔以外を1つへ)</b> — 顔(ビセーム / まばたき)以外の SkinnedMeshRenderer を AAO の Merge Skinned Mesh で1つに統合。SkinnedMesh 数とスロット数が同時に減ります(既定:統合)。統合対象外:顔メッシュ、Cloth 付き、EditorOnly、プレビューで個別に「統合しない」を選んだメッシュ。</li>
+          <li><b>SkinnedMesh統合(顔以外を1つへ / グループ指定)</b> — 顔(ビセーム / まばたき)以外の SkinnedMeshRenderer を AAO の Merge Skinned Mesh で1つに統合。SkinnedMesh 数とスロット数が同時に減ります(既定:統合)。統合対象外:顔メッシュ、Cloth 付き、EditorOnly、プレビューで個別に「統合しない」を選んだメッシュ。<b>グループ指定モード</b>では、レンダラーごとにグループ1〜8を割り当て、同じグループのレンダラーだけを1つのメッシュへ統合します(素体と衣装を別メッシュに保ちたいときなどに。顔は自動保護でグループ割り当て不可、未割り当ては統合されません)。</li>
         </ul>
         <p class="hint">Quest 対象のときは、続けて <b>Quest 除外(ビルド除外)</b>と <b>隠面メッシュ削減</b>(服の下に隠れる肌などをブレンドシェイプで削除)もここで設定できます。</p>
+        <p class="hint"><b>隠面メッシュ削減の検出。</b>① ブレンドシェイプ名が隠し / 縮小系トークン(shrink / hide / 縮小 / 非表示 / 削除 / 消し / 隠し 等)を含む、または部位トークン(肌 / 素体 / パンツ / インナー 等)とオフ系トークン(off / オフ / なし 等)が同居するものを候補化。② 顔まわり(顔 / 目 / 眉 / 口 / 涙 / まつ毛 / ほくろ、あ・い・う・え・お、まばたき 等)は名前・ジオメトリの両面で除外し、表情・MMD標準モーフ・リップシンクの誤削除を防止。③ 名前が一致しなくても、最終フレームで頂点の大部分(約40%以上)を強く動かす形状だけを幾何判定で候補化(保守的な閾値)。</p>
+        <div class="note warn"><b>穴に注意。</b>削除されるのは選んだシェイプが動かす領域だけ(＝制作者が「隠れる前提」で設計した箇所)です。そのため、その服を後から非表示にすると下の肌が無くなって穴が開いて見えます。削除はビルド時に AAO の Remove Mesh By BlendShape が適用し、そのコンポーネントのプレビューで削除後を確認できます(元アバターは無改変)。</div>
         <div class="note warn"><b>トグルは統合先に追従しません。</b>統合したメッシュは常時表示になり、ON/OFF トグルは効かなくなります。切り替えを残したいメッシュはプレビューで「このメッシュは統合しない」を選んでください。</div>
         <p>元アバターの共有アニメクリップは変更されず(クローン側のクリップだけ編集)、m_IsActive 以外のアニメ(ブレンドシェイプ等)は維持されます。</p>
       </div>
@@ -449,6 +452,21 @@
       </div>
     </details>
 
+    <!-- Meshia 併用 -->
+    <details>
+      <summary>Meshia との併用(推奨)— 役割分担で二重削減を避ける<span class="badge">併用</span></summary>
+      <div class="details-body">
+        <p><b>Meshia Mesh Simplification</b>(Ram.Type-0 氏 / MIT)は、NDMF で <b>ビルド時(Play / アップロード)</b> にメッシュを高品質に簡略化するツールです。レンダラー単位の <code class="inline">Meshia Mesh Simplifier</code>、または(Modular Avatar 導入時)アバター単位の <code class="inline">Meshia Cascading Avatar Mesh Simplifier</code> で、目標三角形数などをレンダラーごとに細かく指定できます。導入は VPM リポジトリ <a href="https://ramtype0.github.io/VpmRepository/" target="_blank" rel="noopener">https://ramtype0.github.io/VpmRepository/</a> を VCC / ALCOM に追加して行います(<a href="https://ramtype0.github.io/Meshia.MeshSimplification/" target="_blank" rel="noopener">公式ドキュメント</a>)。</p>
+        <ul>
+          <li><b>品質重視(Meshia を主に)</b> — 崩れやすい / 見せ場のモデルは Meshia にレンダラー単位で任せ、EditMode プレビューで品質を追い込みます。本ツールのポリゴン削減はオフのまま(または Meshia を付けたレンダラーは本ツールの対象から外す)にして二重削減を避けます。</li>
+          <li><b>手早く予算内(本ツールを主に)</b> — 目標ランクへ収めたいだけなら、本ツールのポリゴン削減だけを使います(目標三角形数へ自動配分・顔 / 髪を保護・_Quest 複製へ即時適用)。Meshia は付けません。ワンショットで完結し、二重削減の心配がない既定運用です。</li>
+          <li><b>役割分担(併用)</b> — 顔・髪など品質が要る部位だけ Meshia で丁寧に指定し、残りは本ツールの予算配分で目標まで詰めます。<b>同一レンダラーに両方を効かせない</b>(レンダラー単位でどちらか一方へ割り当てる)のが最も安全です。</li>
+        </ul>
+        <div class="note warn">Meshia の削減は <b>ビルド時</b> に反映されるため、<b>エディタ / 診断のポリゴン数には出ません</b>(EditMode プレビューはありますが、実メッシュの差し替えはビルド時です)。本ツールと Meshia の両方を同じ目標へ強くかけると、ビルド後に目標を大きく下回って <b>削りすぎ</b> になります。併用時はどちらか一方に予算(目標三角形数)を持たせ、本ツールの目標は Meshia 適用後に残る想定数を差し引いて設定してください。⑤ ポリゴン削減パネルは Meshia コンポーネントを検出すると併用注意を表示します。</div>
+        <div class="note ok"><b>謝辞。</b>Meshia Mesh Simplification(MIT License / Ram.Type-0 氏)に感謝します。</div>
+      </div>
+    </details>
+
     <!-- ⑥ マテリアル / 透過 -->
     <details>
       <summary>⑥ マテリアル / 透過・アトラス・Quest変換設定<span class="badge">PC列 / Quest列</span></summary>
@@ -474,7 +492,21 @@
         <p>実行オプション(プレファブ保存・AAO 付与)を確認し、「この実行で行われること」の要約と実行前の確認ダイアログを見てから実行します。元アバターは変更されず、PC 用に <code class="inline">{名前}_Opt</code>、Quest 用に <code class="inline">{名前}_Quest</code> の複製がシーンとプレファブの両方に生成されます。アップロードするのはこの複製です。</p>
         <p>実行後は、変換前後の比較テーブル(PC / Quest、目標との突き合わせ)と、Quest の変換結果チェック(元 ←→ 変換後マテリアルのサムネイル比較)が結果欄に表示されます。</p>
         <div class="note ok"><b>繰り返し再生成は安全です。</b>実行のたびに前回の <code class="inline">_Opt</code> / <code class="inline">_Quest</code> 複製は自動で作り直され、生成アセットは決まった場所へ GUID 保持で上書きされるので、複製が増え続けたり参照が壊れたりしません。元アバターの名前を変えたあとに取り残された古い複製がある場合は、実行結果に名前付きで警告が出ます(自動削除はしません)。</div>
-        <div class="note warn"><b>ビルド時に効く処理があります。</b>AAO によるメッシュ・スロット統合や非表示メッシュ削減は、ビルド(アップロード)時に反映されます。生成直後にシーンや診断表で見える数値は最終ビルドより控えめに出ます。最終確認は SDK のビルド結果で行ってください。</div>
+        <div class="note warn"><b>ビルド時に効く処理があります。</b>AAO によるメッシュ・スロット統合や非表示メッシュ削減は、ビルド(アップロード)時に反映されます。生成直後にシーンや診断表で見える数値は最終ビルドより控えめに出ます。最終確認は SDK のビルド結果、または実測レポート(下の「実測レポート」参照)で行ってください。</div>
+      </div>
+    </details>
+
+    <!-- 実測レポート -->
+    <details>
+      <summary>実測レポート — ビルド / Play 時の実測で最終数値を確認<span class="badge">別ウィンドウ</span></summary>
+      <div class="details-body">
+        <p>診断は「見積り」ですが、実測レポートは <b>ビルド / Play 時の最終的な複製そのもの</b> を VRChat SDK と同じ計算で実測して確認できる別ウィンドウです。メニューの <code class="inline">RARA / 実測レポート</code> から開きます。MA(Modular Avatar)・AAO・Meshia・lilToon などの適用後、<code class="inline">EditorOnly</code> 除去後の本当の数値が分かるため、診断のエディタ数値が控えめに出る分をここで確認できます。</p>
+        <ul>
+          <li><b>▶️(Play)で実測</b> — <code class="inline">_Opt</code> / <code class="inline">_Quest</code> 複製を ▶️(Play)すると、ビルド時と同じ前処理を通した最終複製を実測し、結果がポップアップ表示されます。PC 基準・Quest 基準の両方の総合ランク・項目別の値・目標ランクとの達成判定・元アバターとの差を並べます。</li>
+          <li><b>実バンドルサイズの記録</b> — SDK の Build &amp; Test / Upload でビルドすると、生成されたアセットバンドルの実ファイルサイズも記録されます(エディタの推定ではなく実際にアップロードされるサイズ。Quest / Android は 10MB 上限との判定つき)。</li>
+          <li><b>対象と再計測</b> — 既定では <code class="inline">_Opt</code> / <code class="inline">_Quest</code> 複製だけを計測します。「_Opt / _Quest 以外のアバターも計測する」で全アバターを対象にでき、編集モードでは「再計測」でスタジオ診断による測り直しもできます。</li>
+          <li><b>オフにする方法</b> — 計測を止めるにはウィンドウ上部の「ビルド/Play時に実測する」をオフにします(ビルドや Play の動作自体には影響しません)。自動表示だけを止めるには「▶️(Play)・ビルドのたびに実測レポートを表示する」をオフにします。</li>
+        </ul>
       </div>
     </details>
 

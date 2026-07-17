@@ -279,34 +279,46 @@ namespace RARA.AvatarStudio
         // ================================================================
         // 2. SkinnedMesh統合(SkinnedMeshMergePlanner.BuildPlan)
         // ================================================================
+
+        /// <summary>統合モードのドロップダウン表示(SkinnedMeshMergeMode の並び順: しない/顔以外/グループ)。</summary>
+        private static readonly string[] SmrMergeModeLabels = { "統合しない", "顔以外を統合(推奨)", "グループ指定で統合" };
+
+        /// <summary>グループ指定モードの行ごとの選択肢(0=統合しない、1..8=グループn)。</summary>
+        private static readonly string[] SmrGroupChoiceLabels =
+        {
+            "統合しない", "グループ1", "グループ2", "グループ3", "グループ4",
+            "グループ5", "グループ6", "グループ7", "グループ8",
+        };
+
         public static bool DrawSkinnedMeshMergePanel(GameObject avatarRoot, AvatarStudioSettings s, AvatarStudioPreviewCache cache)
         {
             if (avatarRoot == null || s == null) { EditorGUILayout.HelpBox("アバターを選択してください。", MessageType.Info); return false; }
 
             bool changed = false;
             EnsureList(ref s.skinnedMeshMergeOptOutPaths);
+            EnsureList(ref s.smrMergeGroups);
 
-            // トグルでモードを変えると次フレームの描画量(表 or 案内)が変わるため、モードは描画前に捕捉する。
+            // モードで次フレームの描画量(表 or 案内 / opt-out or グループ選択)が変わるため、モードは描画前に捕捉する。
             // これで同一フレーム内の Layout/Repaint でコントロール数が食い違うのを防ぐ(反映は次回OnGUIから)。
-            bool mergeEnabled = s.mergeSkinnedMeshesMode != SkinnedMeshMergeMode.None;
+            SkinnedMeshMergeMode capturedMode = s.mergeSkinnedMeshesMode;
 
-            using (new EditorGUILayout.HorizontalScope())
+            // モード選択ドロップダウン(常時1コントロール。値変更は次回OnGUIへ反映)。
+            int modeIdx = EditorGUILayout.Popup(
+                new GUIContent("SkinnedMesh統合",
+                    "統合しない / 顔以外を統合(顔以外のSMRを1つへ) / グループ指定(レンダラーをグループ1..8ごとに統合)。顔(ビセーム/まばたき)は常に自動保護されます。"),
+                (int)capturedMode, SmrMergeModeLabels);
+            if (modeIdx != (int)capturedMode)
             {
-                EditorGUILayout.LabelField(new GUIContent("SkinnedMesh統合", "顔(ビセーム/まばたき)以外の SkinnedMeshRenderer を1つへ統合し、SMR数・スロット数を削減します。"),
-                    GUILayout.Width(120f));
-                bool newEnabled = GUILayout.Toggle(mergeEnabled, mergeEnabled ? "顔以外を統合(推奨)" : "統合しない", "Button", GUILayout.Width(160f));
-                if (newEnabled != mergeEnabled)
-                {
-                    s.mergeSkinnedMeshesMode = newEnabled ? SkinnedMeshMergeMode.MergeExceptFace : SkinnedMeshMergeMode.None;
-                    changed = true;
-                }
+                s.mergeSkinnedMeshesMode = (SkinnedMeshMergeMode)modeIdx;
+                changed = true;
+                cache.Bump(); // キャッシュ済みのプラン/プレビューを無効化する
             }
 
-            // 無効時: レンダラーごとに同じ「統合しない」行を並べず、1つの案内 + 目立つ有効化ボタンだけを見せる。
-            if (!mergeEnabled)
+            // 無効時: レンダラーごとに同じ「統合しない」行を並べず、1つの案内 + 目立つ有効化ボタンだけを見せる(既存のquick-enable)。
+            if (capturedMode == SkinnedMeshMergeMode.None)
             {
                 EditorGUILayout.HelpBox(
-                    "SkinnedMesh統合は無効です。『顔以外を統合』にすると、顔以外のメッシュ(静的なMeshRenderer含む)を" +
+                    "SkinnedMesh統合は無効です。『顔以外を統合』にすると、顔以外の SkinnedMeshRenderer を" +
                     "ビルド時に1つへ統合し、SkinnedMesh数を2まで削減できます(表示/非表示トグルは無効化されます)。",
                     MessageType.Info);
                 if (GUILayout.Button(new GUIContent("顔以外を統合を有効にする",
@@ -314,17 +326,28 @@ namespace RARA.AvatarStudio
                 {
                     s.mergeSkinnedMeshesMode = SkinnedMeshMergeMode.MergeExceptFace;
                     changed = true;
-                    cache.Bump(); // キャッシュ済みのプラン/プレビューを無効化する
+                    cache.Bump();
                 }
                 return changed;
             }
 
-            string sig = avatarRoot.GetInstanceID() + "|" + (int)s.mergeSkinnedMeshesMode + "|" + HashPaths(s.skinnedMeshMergeOptOutPaths);
+            bool byGroup = capturedMode == SkinnedMeshMergeMode.MergeByGroup;
+            string sig = avatarRoot.GetInstanceID() + "|" + (int)capturedMode + "|" + HashPaths(s.skinnedMeshMergeOptOutPaths)
+                + "|" + (byGroup ? HashGroups(s.smrMergeGroups) : "-");
             SkinnedMeshMergePlan plan = cache.GetOrBuild(
                 "smr", sig,
-                () => SkinnedMeshMergePlanner.BuildPlan(avatarRoot, s.mergeSkinnedMeshesMode, s.skinnedMeshMergeOptOutPaths));
+                () => SkinnedMeshMergePlanner.BuildPlan(
+                    avatarRoot, capturedMode, s.skinnedMeshMergeOptOutPaths, byGroup ? s.smrMergeGroups : null));
 
             if (plan == null) { EditorGUILayout.HelpBox("SkinnedMesh統合プレビューの計算に失敗しました。", MessageType.Warning); return changed; }
+
+            if (byGroup)
+            {
+                EditorGUILayout.LabelField(
+                    "各レンダラーにグループ(1..8)を割り当てると、グループ単位で1つのメッシュへ統合します。" +
+                    "顔は自動保護(割り当て不可)、未割り当ては統合しません。",
+                    EditorStyles.wordWrappedMiniLabel);
+            }
 
             using (new EditorGUILayout.HorizontalScope(EditorStyles.helpBox))
             {
@@ -345,16 +368,38 @@ namespace RARA.AvatarStudio
                     EditorGUILayout.LabelField(new GUIContent(row.rendererName, row.rendererPath), GUILayout.MinWidth(120f), GUILayout.MaxWidth(220f));
                     GUI.color = prev;
 
-                    // 統合対象になり得る行(顔でない・メッシュあり)だけ opt-out トグルを出す。
-                    bool mergeable = !row.isFace && row.willMerge || IsOptedOut(s.skinnedMeshMergeOptOutPaths, row.rendererPath);
-                    if (s.mergeSkinnedMeshesMode != SkinnedMeshMergeMode.None && mergeable)
+                    if (byGroup)
                     {
-                        bool optOut = IsOptedOut(s.skinnedMeshMergeOptOutPaths, row.rendererPath);
-                        bool newOptOut = GUILayout.Toggle(optOut, "統合しない", GUILayout.Width(90f));
-                        if (newOptOut != optOut)
+                        if (row.isFace)
                         {
-                            TogglePath(s.skinnedMeshMergeOptOutPaths, row.rendererPath, newOptOut);
-                            changed = true;
+                            GUILayout.Label(new GUIContent("顔(自動保護)", "顔メッシュは常に分離維持され、グループへ割り当てできません"),
+                                EditorStyles.miniLabel, GUILayout.Width(110f));
+                        }
+                        else if (row.canAssign)
+                        {
+                            int cur = GetSmrGroup(s.smrMergeGroups, row.rendererPath);
+                            int next = EditorGUILayout.Popup(cur, SmrGroupChoiceLabels, GUILayout.Width(110f));
+                            if (next != cur)
+                            {
+                                SetSmrGroup(s.smrMergeGroups, row.rendererPath, next);
+                                changed = true;
+                            }
+                        }
+                        // 割り当て不可(Cloth/メッシュ無し等)は選択肢を出さず、理由ラベルのみ表示する。
+                    }
+                    else
+                    {
+                        // 顔以外を統合: 統合対象になり得る行(顔でない・メッシュあり)だけ opt-out トグルを出す。
+                        bool mergeable = !row.isFace && row.willMerge || IsOptedOut(s.skinnedMeshMergeOptOutPaths, row.rendererPath);
+                        if (mergeable)
+                        {
+                            bool optOut = IsOptedOut(s.skinnedMeshMergeOptOutPaths, row.rendererPath);
+                            bool newOptOut = GUILayout.Toggle(optOut, "統合しない", GUILayout.Width(90f));
+                            if (newOptOut != optOut)
+                            {
+                                TogglePath(s.skinnedMeshMergeOptOutPaths, row.rendererPath, newOptOut);
+                                changed = true;
+                            }
                         }
                     }
                     GUILayout.Label(row.reason ?? "", EditorStyles.miniLabel, GUILayout.MinWidth(120f));
@@ -362,8 +407,88 @@ namespace RARA.AvatarStudio
                 }
             }
 
+            // グループ指定モード: グループごとのまとめ行 + 期待総数の内訳(グループ + 顔 + 未統合)。
+            if (byGroup)
+            {
+                DrawSmrGroupSummary(plan);
+            }
+
             EditorGUILayout.LabelField("※ 実際の統合はビルド時(AvatarOptimizer)に行われます。統合後SMR数は概算です。", EditorStyles.miniLabel);
             return changed;
+        }
+
+        /// <summary>グループ指定モードの、グループ別まとめ(グループn: m枚→1枚)と期待総数の内訳を描画する。</summary>
+        private static void DrawSmrGroupSummary(SkinnedMeshMergePlan plan)
+        {
+            if (plan == null) return;
+
+            EditorGUILayout.Space(2f);
+            int groupTargets = 0; // 2枚以上で実際に統合されるグループ数(各→1枚)
+            foreach (SkinnedMeshMergeGroup g in plan.mergeGroups)
+            {
+                if (g == null) continue;
+                int m = g.sourcePaths != null ? g.sourcePaths.Count : 0;
+                if (m >= 2)
+                {
+                    EditorGUILayout.LabelField(string.Format("グループ{0}: {1}枚 → 1枚", g.groupIndex, m), EditorStyles.miniLabel);
+                    groupTargets++;
+                }
+                else
+                {
+                    EditorGUILayout.LabelField(string.Format("グループ{0}: {1}枚(2枚以上で統合されます)", g.groupIndex, m), EditorStyles.miniLabel);
+                }
+            }
+
+            int faceN = 0;
+            foreach (SkinnedMeshMergeRow row in plan.rows)
+            {
+                if (row != null && !row.isEditorOnly && row.isFace) faceN++;
+            }
+            int unassigned = plan.expectedCount - groupTargets - faceN;
+            if (unassigned < 0) unassigned = 0;
+            EditorGUILayout.LabelField(
+                string.Format("内訳: グループ統合 {0} + 顔(自動保護) {1} + 統合しない {2} = 統合後(概算) {3} 枚",
+                    groupTargets, faceN, unassigned, plan.expectedCount),
+                EditorStyles.miniLabel);
+        }
+
+        /// <summary>smrMergeGroups から path のグループ番号を返す(未割り当ては 0)。</summary>
+        private static int GetSmrGroup(List<SmrMergeGroupAssignment> list, string path)
+        {
+            if (list == null || string.IsNullOrEmpty(path)) return 0;
+            foreach (SmrMergeGroupAssignment a in list)
+                if (a != null && a.rendererPath == path) return a.groupIndex;
+            return 0;
+        }
+
+        /// <summary>path のグループ番号を設定する。0(統合しない)は既定なのでエントリを削除する。</summary>
+        private static void SetSmrGroup(List<SmrMergeGroupAssignment> list, string path, int groupIndex)
+        {
+            if (list == null || string.IsNullOrEmpty(path)) return;
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (list[i] != null && list[i].rendererPath == path)
+                {
+                    if (groupIndex < 1) list.RemoveAt(i);      // 0=統合しない=既定 → エントリ削除
+                    else list[i].groupIndex = groupIndex;
+                    return;
+                }
+            }
+            if (groupIndex >= 1) list.Add(new SmrMergeGroupAssignment { rendererPath = path, groupIndex = groupIndex });
+        }
+
+        /// <summary>グループ割り当てのハッシュ(キャッシュシグネチャ用。順不同でも同集合は同値になるよう加算合成)。</summary>
+        private static int HashGroups(List<SmrMergeGroupAssignment> list)
+        {
+            if (list == null) return 0;
+            int h = 0;
+            foreach (SmrMergeGroupAssignment a in list)
+            {
+                if (a == null) continue;
+                int e = (a.rendererPath != null ? a.rendererPath.GetHashCode() : 0) * 31 + a.groupIndex;
+                h += e; // 加算合成 = 並び順に依存しない
+            }
+            return h;
         }
 
         // ================================================================
@@ -533,7 +658,8 @@ namespace RARA.AvatarStudio
 
             EditorGUILayout.HelpBox(
                 "Transform数は目安です(VRChatの正式カウントとは一致しません)。「削除」に入れた PhysBone は変換後アバターから除かれ、残りは全て残ります。" +
-                "モバイルは上限が厳しいため、Quest対象では上限内(" + QuestLimits.PoorPhysBoneComponents + "本)に収めてください。", MessageType.None);
+                "モバイルは上限が厳しいため、Quest対象では上限内(" + QuestLimits.PoorPhysBoneComponents + "本)に収めてください。\n" +
+                "※ PhysBoneマージは本ツール独自実装です(AAOのMerge PhysBoneは未使用)。", MessageType.None);
             return changed;
         }
 
@@ -1178,6 +1304,24 @@ namespace RARA.AvatarStudio
             {
                 bool enable = GUILayout.Toggle(s.questEnableDecimation, "ポリゴン削減を有効化", "Button", GUILayout.Width(170f));
                 if (enable != s.questEnableDecimation) { s.questEnableDecimation = enable; changed = true; }
+            }
+
+            // Meshia(Ram.Type-0 / MIT)併用の検出。Meshia はビルド時にさらにメッシュを簡略化するため、
+            // 本ツールのポリゴン削減と同一レンダラーへ重ねると削りすぎになりうる。検出はアバター単位で
+            // キャッシュし、同一フレームの Layout/Repaint でコントロール数が食い違わないようにする
+            // (毎イベント再計算せず、キャッシュ値でHelpBox+ボタンの有無を安定させる)。
+            bool meshiaPresent = cache.GetOrBuild("meshia", avatarRoot.GetInstanceID().ToString(),
+                () => new bool[] { MeshiaCompat.IsPresent(avatarRoot) })?[0] ?? false;
+            if (meshiaPresent)
+            {
+                EditorGUILayout.HelpBox(
+                    "Meshia検出: ビルド時にさらに削減されます。本ツールのポリゴン削減と併用する場合は削りすぎに注意(どちらか一方を主にする)。",
+                    MessageType.Info);
+                if (GUILayout.Button(new GUIContent("Meshiaのドキュメントを開く",
+                    "Meshia Mesh Simplification の公式ドキュメントを開きます: " + AvatarStudioUI.MeshiaDocsUrl), GUILayout.Width(200f)))
+                {
+                    Application.OpenURL(AvatarStudioUI.MeshiaDocsUrl);
+                }
             }
 
             using (new EditorGUI.DisabledScope(!s.questEnableDecimation))

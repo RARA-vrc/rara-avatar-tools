@@ -78,11 +78,14 @@ namespace RARA.AvatarStudio
         [Tooltip("衣装・トグルグループごとの固定方法(維持/常時表示/非表示除去)。常時表示・非表示にするとトグルが解消され、AAOがメッシュ・マテリアルスロットを統合できるようになる(PC・Quest双方に効く)")]
         public List<ToggleGroupChoice> toggleChoices = new List<ToggleGroupChoice>();
 
-        [Tooltip("SkinnedMeshの統合方法。しない=従来どおり / 顔以外を統合=顔(ビセーム/まばたき)以外の全SkinnedMeshRendererを1つへ統合しSMR数・スロット数を削減(推奨)。新規既定は MergeExceptFace")]
+        [Tooltip("SkinnedMeshの統合方法。しない=従来どおり / 顔以外を統合=顔(ビセーム/まばたき)以外の全SkinnedMeshRendererを1つへ統合しSMR数・スロット数を削減(推奨) / グループ指定=レンダラーをグループ(1..8)ごとに統合。新規既定は MergeExceptFace")]
         public SkinnedMeshMergeMode mergeSkinnedMeshesMode = SkinnedMeshMergeMode.MergeExceptFace;
 
         [Tooltip("SkinnedMesh統合から個別に除外するレンダラーの相対パス(プレビューで「統合しない」を選んだもの)")]
         public List<string> skinnedMeshMergeOptOutPaths = new List<string>();
+
+        [Tooltip("SkinnedMesh統合=グループ指定 のときの、レンダラー→グループ番号(1..8)の割り当て(顔は自動保護で割り当て不可)。PC・Quest双方へ同一List参照で配られる")]
+        public List<SmrMergeGroupAssignment> smrMergeGroups = new List<SmrMergeGroupAssignment>();
 
         [Tooltip("設定が一致する兄弟PhysBoneチェーンを1つへマージし、揺れを維持したままコンポーネント数を削減する")]
         public bool mergePhysBones = true;

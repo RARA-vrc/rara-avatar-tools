@@ -27,8 +27,11 @@ namespace RARA.QuestConverter
         private const string MergeSkinnedMeshTypeName = "Anatawa12.AvatarOptimizer.MergeSkinnedMesh";
         private const string TraceAndOptimizeTypeName = "Anatawa12.AvatarOptimizer.TraceAndOptimize";
 
-        /// <summary>統合ターゲットとして生成する GameObject 名。</summary>
+        /// <summary>統合ターゲットとして生成する GameObject 名(顔以外を統合=単一セット)。</summary>
         public const string MergeTargetName = "RARA_MergedMesh";
+
+        /// <summary>グループ指定モードで、グループ n の統合ターゲットに付ける名前を返す(RARA_MergedMesh_G{n})。</summary>
+        public static string MergeTargetNameForGroup(int groupIndex) => MergeTargetName + "_G" + groupIndex;
 
         // AAO BlendShapeMode の列挙インデックス(MergeSameName=0, RenameToAvoidConflict=1, TraditionalCompability=2)。
         // 既定は RenameToAvoidConflict: 同名ブレンドシェイプを別名化して衝突を避け、各アニメを個別に追従させる
@@ -47,10 +50,12 @@ namespace RARA.QuestConverter
             if (report == null) report = new ConversionReport();
             if (cloneRoot == null || plan == null) return 0;
 
-            // ソースが2件未満なら統合しても意味が無い(1件はそのまま残す)。
+            bool byGroup = plan.mergeGroups != null && plan.mergeGroups.Count > 0;
+
+            // どのセットも2件未満なら統合しても意味が無い(1件はそのまま残す)。
             if (!plan.WillMergeAnything)
             {
-                if (plan.mergeSourcePaths.Count == 1)
+                if (!byGroup && plan.mergeSourcePaths.Count == 1)
                 {
                     report.Info("SkinnedMesh統合: 統合対象が1件のみのため統合をスキップしました(そのまま残します)。");
                 }
@@ -64,9 +69,63 @@ namespace RARA.QuestConverter
                 return 0;
             }
 
-            // 統合ソースのレンダラーを複製内で解決する。
+            int totalMerged;
+            if (byGroup)
+            {
+                // --- グループ指定モード: グループごとに別々の統合ターゲットを作る ---
+                totalMerged = 0;
+                int mergedGroups = 0;
+                foreach (SkinnedMeshMergeGroup group in plan.mergeGroups)
+                {
+                    if (group == null) continue;
+                    List<SkinnedMeshRenderer> sources = ResolveSources(cloneRoot, group.sourcePaths, report);
+                    if (sources.Count < 2)
+                    {
+                        report.Info($"SkinnedMesh統合: グループ{group.groupIndex} は統合対象が2件未満のため統合しませんでした(そのまま残します)。");
+                        continue;
+                    }
+                    if (CreateMergeTarget(cloneRoot, msmType, sources, MergeTargetNameForGroup(group.groupIndex), report))
+                    {
+                        totalMerged += sources.Count;
+                        mergedGroups++;
+                    }
+                }
+                if (mergedGroups == 0) return 0;
+                report.Info($"SkinnedMesh統合(グループ指定)を追加しました: {mergedGroups}グループ / 顔以外の{totalMerged}メッシュをグループ単位で統合(ビルド時にAAOが結合)。統合後の想定SkinnedMesh数: {plan.beforeCount}→{plan.expectedCount}。");
+            }
+            else
+            {
+                // --- 顔以外を統合(単一セット。従来動作) ---
+                List<SkinnedMeshRenderer> sources = ResolveSources(cloneRoot, plan.mergeSourcePaths, report);
+                if (sources.Count < 2)
+                {
+                    report.Warn("SkinnedMesh統合: 複製内で解決できた統合対象が2件未満のため統合しませんでした。");
+                    return 0;
+                }
+                if (!CreateMergeTarget(cloneRoot, msmType, sources, MergeTargetName, report)) return 0;
+                totalMerged = sources.Count;
+                report.Info($"SkinnedMesh統合を追加しました: 顔以外の{sources.Count}メッシュを1つ('{MergeTargetName}')へ統合(ビルド時にAAOが結合)。統合後の想定SkinnedMesh数: {plan.beforeCount}→{plan.expectedCount}。マテリアルスロットは同一マテリアルのサブメッシュがビルド時に重複排除されます。");
+            }
+
+            // --- Trace and Optimize を確保(EditSkinnedMeshComponent はこの存在下でビルド時に処理される) ---
+            AAOMeshRemovalHelper.EnsureTraceAndOptimize(cloneRoot, report);
+
+            // --- 顔レンダラーを AAO の自動統合からも除外する(明示ソースに入れていないが、
+            //     VisemeSkinnedMesh/eyelidsSkinnedMesh 参照だけでは自動統合から外れないため) ---
+            ExcludeFaceFromAutoMerge(cloneRoot, plan, report);
+
+            report.Info("注: この統合はNDMFビルド時(Play/アップロード)に反映されます。保存された複製プレファブは統合前のメッシュ・スロット数のまま表示されます(既存のブレンドシェイプ削除・自動統合と同じ挙動)。");
+            return totalMerged;
+        }
+
+        /// <summary>
+        /// paths を複製内で SkinnedMeshRenderer として解決する(見つからない/型不一致はWarnしてスキップ、重複除去)。
+        /// </summary>
+        private static List<SkinnedMeshRenderer> ResolveSources(GameObject cloneRoot, List<string> paths, ConversionReport report)
+        {
             var sources = new List<SkinnedMeshRenderer>();
-            foreach (string path in plan.mergeSourcePaths)
+            if (paths == null) return sources;
+            foreach (string path in paths)
             {
                 if (string.IsNullOrEmpty(path)) continue;
                 Transform t = QuestCompat.FindByPath(cloneRoot.transform, path);
@@ -83,17 +142,21 @@ namespace RARA.QuestConverter
                 }
                 if (!sources.Contains(smr)) sources.Add(smr);
             }
+            return sources;
+        }
 
-            if (sources.Count < 2)
-            {
-                report.Warn("SkinnedMesh統合: 複製内で解決できた統合対象が2件未満のため統合しませんでした。");
-                return 0;
-            }
-
+        /// <summary>
+        /// 統合ターゲット GameObject(targetName)+ 空の SkinnedMeshRenderer + MergeSkinnedMesh を作り、
+        /// sources を統合ソースとして登録する。成功なら true。失敗時は生成したGOを破棄して false を返す
+        /// (絶対に例外を投げない。1グループの失敗が他グループを止めないようにする)。
+        /// </summary>
+        private static bool CreateMergeTarget(GameObject cloneRoot, Type msmType, List<SkinnedMeshRenderer> sources, string targetName, ConversionReport report)
+        {
+            GameObject targetGo = null;
             try
             {
                 // --- 統合ターゲット GameObject + 空の SkinnedMeshRenderer を作る ---
-                var targetGo = new GameObject(MergeTargetName);
+                targetGo = new GameObject(targetName);
                 Undo.RegisterCreatedObjectUndo(targetGo, "RARA SkinnedMesh Merge");
                 targetGo.transform.SetParent(cloneRoot.transform, false);
                 // 新規 GO なので、このターゲットが GameObject 上で唯一かつ最初の SkinnedMeshRenderer になる
@@ -104,9 +167,9 @@ namespace RARA.QuestConverter
                 Component msm = Undo.AddComponent(targetGo, msmType);
                 if (msm == null)
                 {
-                    report.Warn("MergeSkinnedMeshの追加に失敗したためSkinnedMesh統合をスキップしました。");
+                    report.Warn($"MergeSkinnedMeshの追加に失敗したためSkinnedMesh統合をスキップしました('{targetName}')。");
                     UnityEngine.Object.DestroyImmediate(targetGo);
-                    return 0;
+                    return false;
                 }
                 TryInitialize(msm, msmType, 2);
 
@@ -116,27 +179,19 @@ namespace RARA.QuestConverter
                 // --- 統合ソースを登録する(公開API優先、失敗時 SerializedObject へフォールバック) ---
                 if (!AddSources(msm, msmType, sources, report))
                 {
-                    report.Warn("SkinnedMesh統合ソースの登録に失敗しました。手動でMerge Skinned Meshの対象を設定してください。");
+                    report.Warn($"SkinnedMesh統合ソースの登録に失敗しました('{targetName}')。手動でMerge Skinned Meshの対象を設定してください。");
                     UnityEngine.Object.DestroyImmediate(targetGo);
-                    return 0;
+                    return false;
                 }
 
-                // --- Trace and Optimize を確保(EditSkinnedMeshComponent はこの存在下でビルド時に処理される) ---
-                AAOMeshRemovalHelper.EnsureTraceAndOptimize(cloneRoot, report);
-
-                // --- 顔レンダラーを AAO の自動統合からも除外する(明示ソースに入れていないが、
-                //     VisemeSkinnedMesh/eyelidsSkinnedMesh 参照だけでは自動統合から外れないため) ---
-                ExcludeFaceFromAutoMerge(cloneRoot, plan, report);
-
-                report.Info($"SkinnedMesh統合を追加しました: 顔以外の{sources.Count}メッシュを1つ('{MergeTargetName}')へ統合(ビルド時にAAOが結合)。統合後の想定SkinnedMesh数: {plan.beforeCount}→{plan.expectedCount}。マテリアルスロットは同一マテリアルのサブメッシュがビルド時に重複排除されます。");
-                report.Info("注: この統合はNDMFビルド時(Play/アップロード)に反映されます。保存された複製プレファブは統合前のメッシュ・スロット数のまま表示されます(既存のブレンドシェイプ削除・自動統合と同じ挙動)。");
                 EditorUtility.SetDirty(msm);
-                return sources.Count;
+                return true;
             }
             catch (Exception ex)
             {
-                report.Warn($"SkinnedMesh統合の設定に失敗しました: {ex.Message}。統合を無効にするか手動でMerge Skinned Meshを設定してください。");
-                return 0;
+                report.Warn($"SkinnedMesh統合の設定に失敗しました('{targetName}'): {ex.Message}。統合を無効にするか手動でMerge Skinned Meshを設定してください。");
+                if (targetGo != null) UnityEngine.Object.DestroyImmediate(targetGo);
+                return false;
             }
         }
 

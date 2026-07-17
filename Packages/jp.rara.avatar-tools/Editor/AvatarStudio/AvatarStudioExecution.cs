@@ -448,6 +448,9 @@ namespace RARA.AvatarStudio
                 : "完了しました。生成された複製をアップロードしてください(元アバターは無改変です)。";
             EditorGUILayout.HelpBox(summary, result.AnyErrors ? MessageType.Error : MessageType.Info);
 
+            // 実測レポートへの導線(前回ビルド実測サイズ + レポートを開く)。
+            DrawMeasureReportLink(result);
+
             // H1: リネーム孤児の警告。
             if (result.renameWarnings.Count > 0)
             {
@@ -499,6 +502,55 @@ namespace RARA.AvatarStudio
             {
                 EditorGUILayout.HelpBox(MACompatAudit.MergeArmatureNote, MessageType.Info);
             }
+        }
+
+        /// <summary>
+        /// 実測レポートへの導線。生成複製に対応する「前回ビルド実測」サイズ(あれば)を出し、
+        /// レポートウィンドウを開くボタンを添える。実測は ▶️/SDKビルド時に AvatarStudioMeasureHook が記録する。
+        /// </summary>
+        private static void DrawMeasureReportLink(AvatarStudioRunResult result)
+        {
+            using (new EditorGUILayout.HorizontalScope(EditorStyles.helpBox))
+            {
+                EditorGUILayout.LabelField("前回ビルド実測", EditorStyles.miniBoldLabel, GUILayout.Width(90f));
+
+                string pcSize = FindLastBuildSizeLabel(result != null ? result.pcClone : null, false);
+                string questSize = FindLastBuildSizeLabel(result != null ? result.questClone : null, true);
+
+                if (pcSize == null && questSize == null)
+                {
+                    EditorGUILayout.LabelField(
+                        "未取得(▶️PlayまたはSDKの Build & Test / Upload で実測されます)",
+                        AvatarStudioUI.MiniWrapLabel);
+                }
+                else
+                {
+                    if (pcSize != null) EditorGUILayout.LabelField(pcSize, EditorStyles.miniLabel, GUILayout.Width(170f));
+                    if (questSize != null) EditorGUILayout.LabelField(questSize, EditorStyles.miniLabel, GUILayout.Width(220f));
+                }
+
+                GUILayout.FlexibleSpace();
+                if (GUILayout.Button(new GUIContent("実測レポートを開く",
+                    "ビルド/Play時に実測した最終複製のパフォーマンス・実測ビルドサイズを一覧表示します"),
+                    GUILayout.Width(140f)))
+                {
+                    AvatarStudioMeasureReportWindow.Open();
+                }
+            }
+        }
+
+        /// <summary>生成複製名から実測ストアの前回ビルドサイズ行(なければ null)を作る。_Quest は10MB判定も添える。</summary>
+        private static string FindLastBuildSizeLabel(GameObject clone, bool isQuest)
+        {
+            if (clone == null) return null;
+            MeasuredAvatar m = AvatarStudioMeasureStore.Find(clone.name);
+            if (m == null || m.buildSizeBytes < 0) return null;
+
+            float mb = m.buildSizeBytes / (1024f * 1024f);
+            string head = isQuest ? "Quest " : "PC ";
+            string body = mb.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) + " MB";
+            if (isQuest) body += mb > 10f ? "(10MB超)" : "(10MB以内)";
+            return head + body;
         }
 
         /// <summary>1パイプラインぶんの結果ブロック(生成物・プレファブ・レポート)を描画する。</summary>

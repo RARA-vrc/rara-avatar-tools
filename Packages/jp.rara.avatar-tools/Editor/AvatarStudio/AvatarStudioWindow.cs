@@ -880,6 +880,19 @@ namespace RARA.AvatarStudio
                     AvatarStudioUI.WrapLabel);
             }
 
+            // 実測レポートの案内(見積りではなく、ビルド/Play時の最終複製を実測する仕組み)。
+            EditorGUILayout.Space(4f);
+            EditorGUILayout.LabelField("実測レポートとは", EditorStyles.miniBoldLabel);
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                EditorGUILayout.LabelField(
+                    "生成した _Opt / _Quest 複製を ▶️(Play)するか、VRChat SDK で Build & Test / Upload すると、"
+                    + "MA・AAO・lilToon 等の適用後・EditorOnly 除去後の“最終的な複製そのもの”を SDK と同じ計算で実測し、"
+                    + "総合/項目別ランク・目標との比較・元アバターとの差・実測ビルドサイズ(Questは10MB判定)を「実測レポート」に表示します。"
+                    + "▶️(Play)やビルドのたびに自動で開きます(この動作はレポート上部のトグルで切り替えられます)。",
+                    AvatarStudioUI.WrapLabel);
+            }
+
             EditorGUILayout.Space(4f);
             DrawRankThresholdTable();
 

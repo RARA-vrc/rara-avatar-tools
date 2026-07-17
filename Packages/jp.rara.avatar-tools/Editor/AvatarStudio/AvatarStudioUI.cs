@@ -207,6 +207,9 @@ namespace RARA.AvatarStudio
         /// <summary>AAO(Avatar Optimizer)の公式ドキュメント(日本語)。</summary>
         internal const string AAODocsUrl = "https://vpm.anatawa12.com/avatar-optimizer/ja/";
 
+        /// <summary>Meshia Mesh Simplification(Ram.Type-0 氏 / MIT)の公式ドキュメント。ポリゴン削減パネルの併用注意から開く。</summary>
+        internal const string MeshiaDocsUrl = "https://ramtype0.github.io/Meshia.MeshSimplification/";
+
         /// <summary>不具合報告・要望の受付先: X(Twitter) の DM。</summary>
         internal const string BugReportXUrl = "https://x.com/RR_vrchat";
 

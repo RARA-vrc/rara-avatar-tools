@@ -255,5 +255,40 @@ namespace RARA.QuestConverter
             return paths;
         }
     }
+
+    /// <summary>
+    /// Meshia Mesh Simplification(Ram.Type-0 氏 / MIT, https://github.com/RamType0/Meshia.MeshSimplification)の
+    /// NDMFコンポーネントをリフレクションで検出する共有ヘルパー。コンパイル時のMeshia依存は持たない(型名解決のみ)。
+    /// Meshia はビルド時(Play/Upload)にメッシュを簡略化するため、本ツールのポリゴン削減(変換時に複製へ適用)と
+    /// 同一レンダラーへ重ねると二重削減になりうる。UIの併用注意表示のために「付いているか」だけを判定する。
+    /// Meshia 未導入・型解決失敗時は常に false(=注意表示は出ない)。
+    /// </summary>
+    public static class MeshiaCompat
+    {
+        /// <summary>Meshia のレンダラー単位コンポーネント型フルネーム(Meshia 導入時は常に存在しうる)。</summary>
+        public const string PerRendererTypeName = "Meshia.MeshSimplification.Ndmf.MeshiaMeshSimplifier";
+
+        /// <summary>Meshia のアバター単位コンポーネント型フルネーム(Modular Avatar 導入時のみコンパイルされるため不在の可能性あり)。</summary>
+        public const string CascadingTypeName = "Meshia.MeshSimplification.Ndmf.MeshiaCascadingAvatarMeshSimplifier";
+
+        /// <summary>
+        /// root 配下(非アクティブ含む)に Meshia のいずれかのコンポーネントが1つでも付いていれば true。
+        /// Cascading 型は環境により存在しないことがあるため、両型を型名で個別に探す。Meshia 未導入時は false。
+        /// </summary>
+        public static bool IsPresent(GameObject root)
+        {
+            if (root == null) return false;
+            return HasComponentOfType(root, PerRendererTypeName) || HasComponentOfType(root, CascadingTypeName);
+        }
+
+        /// <summary>root 配下(非アクティブ含む)に typeName 型のコンポーネントがあるか。型が解決できなければ(未導入)false。</summary>
+        private static bool HasComponentOfType(GameObject root, string typeName)
+        {
+            Type type = QuestCompat.FindType(typeName);
+            if (type == null) return false; // Meshia 未導入 or 当該型なし(no-op)
+            Component[] found = root.GetComponentsInChildren(type, true);
+            return found != null && found.Length > 0;
+        }
+    }
 }
 #endif

@@ -276,6 +276,9 @@ namespace RARA.QuestConverter
         [Tooltip("SkinnedMesh統合から個別に除外するレンダラーの相対パス(プレビューで「統合しない」を選んだもの)")]
         public List<string> skinnedMeshMergeOptOutPaths = new List<string>();
 
+        [Tooltip("mergeSkinnedMeshesMode=グループ指定 のときの、レンダラー→グループ番号(1..8)の割り当て。統合UIから設定する")]
+        public List<SmrMergeGroupAssignment> smrMergeGroups = new List<SmrMergeGroupAssignment>();
+
         [Tooltip("変換時にこのサイズへ縮小したコピーを生成するテクスチャの計画。元テクスチャは変更しない")]
         public List<TextureSizePlanEntry> textureSizePlan = new List<TextureSizePlanEntry>();
 

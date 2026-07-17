@@ -137,7 +137,7 @@ namespace RARA.PCOptimizer
                 {
                     EditorUtility.DisplayProgressBar(ProgressTitle, "SkinnedMeshを統合中...", 0.8f);
                     RARA.QuestConverter.SkinnedMeshMergePlan mergePlan = RARA.QuestConverter.SkinnedMeshMergePlanner.BuildPlan(
-                        clone, settings.mergeSkinnedMeshesMode, settings.skinnedMeshMergeOptOutPaths);
+                        clone, settings.mergeSkinnedMeshesMode, settings.skinnedMeshMergeOptOutPaths, settings.smrMergeGroups);
                     RARA.QuestConverter.AAOMeshMergeHelper.ApplyMergeSkinnedMesh(clone, mergePlan, report);
                 }
 
