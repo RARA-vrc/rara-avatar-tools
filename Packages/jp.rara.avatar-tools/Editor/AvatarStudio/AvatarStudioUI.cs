@@ -207,6 +207,12 @@ namespace RARA.AvatarStudio
         /// <summary>AAO(Avatar Optimizer)の公式ドキュメント(日本語)。</summary>
         internal const string AAODocsUrl = "https://vpm.anatawa12.com/avatar-optimizer/ja/";
 
+        /// <summary>不具合報告・要望の受付先: X(Twitter) の DM。</summary>
+        internal const string BugReportXUrl = "https://x.com/RR_vrchat";
+
+        /// <summary>不具合報告・要望の受付先: メール(mailto)。</summary>
+        internal const string BugReportMailUrl = "mailto:raravrchat@gmail.com";
+
         /// <summary>
         /// AAO 未導入ガードの直後に置く導入CTA(ボタン + 1行の手順)。押すと VCC/ALCOM のリポジトリ追加ページを開く。
         /// </summary>

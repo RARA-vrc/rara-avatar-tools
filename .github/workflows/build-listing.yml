@@ -1,4 +1,5 @@
 # RARA Avatar Tools - Build Repo Listing workflow
+# ベースの vrchat-community/template-package は MIT License(再利用を前提としたテンプレート)で公開されています。
 # vrchat-community/template-package の build-listing.yml をベースに、
 # リポジトリ変数(vars.PACKAGE_NAME)の設定を不要にするため PACKAGE_NAME を env で固定しています。
 # package-list-action の Nuke タスク(BuildRepoListing)が index.json を生成し、Website/ を GitHub Pages へデプロイします。

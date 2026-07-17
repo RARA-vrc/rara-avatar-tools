@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.6] - 2026-07-17
+### Added
+- オープンベータ(Open β)公開と不具合報告窓口の案内を追加。不具合報告・要望は X(Twitter) の DM (https://x.com/RR_vrchat) または メール (raravrchat@gmail.com) で受け付けます。
+- 対象: README・Docs・導入ページ(Website) の冒頭付近、およびツール内ヘルプ(⑧ ヘルプ / はじめての方へ)。ヘルプには「Xで報告(DM)」「メールで報告」ボタンを追加しました。
+
 ## [1.0.4] - 2026-07-17
 ### Fixed
 - アップロード可否の判定と表記を公式仕様に合わせて訂正: アップロードのハードブロックはダウンロードサイズ上限(ビルド後圧縮10MB / 展開後40MB)超過のみで発生し、パフォーマンスランクでは決まりません。Quest 診断の可否フラグ(`canUploadToAndroid` / `questCanUpload`)をサイズ基準へ変更しました。
@@ -12,6 +17,11 @@
 
 ## [1.0.0]
 - 初版リリース。Quest Converter・PC Optimizer・Avatar Studio を収録。
+
+## 1.0.6
+- オープンベータ(Open β)の表記と不具合報告先 (X: https://x.com/RR_vrchat のDM / メール: raravrchat@gmail.com) をドキュメントとツール内ヘルプに追加
+- 謝辞にデシメータの設計参考元 (UnityMeshSimplifier / Meshia, いずれもMIT) を追記
+- Booth配布用のVCC/ALCOM案内unitypackageと商品ページ下書きをリポジトリに追加 (BoothInstaller/)
 
 ## 1.0.5
 - ドキュメント冒頭に「AAO(Avatar Optimizer)との連携について」を追加 (使用する3コンポーネント: Trace and Optimize / Merge Skinned Mesh / Remove Mesh By BlendShape の役割・複製にのみ付与・ビルド時適用・未導入時の挙動・anatawa12氏への謝辞)

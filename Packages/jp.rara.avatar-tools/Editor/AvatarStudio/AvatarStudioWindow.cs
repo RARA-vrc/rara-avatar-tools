@@ -888,6 +888,29 @@ namespace RARA.AvatarStudio
                 "準備の注意: このツールにもQuest向けのポリゴン削減はありますが、大幅にポリゴンを減らす場合は、"
                 + "先に外部ツール(Blender等)でメッシュを整えておくと仕上がりが安定します。ポリゴン削減は最後の微調整に使うのがおすすめです。",
                 MessageType.Info);
+
+            // (e) 不具合報告 / Open β。X(Twitter) DM または メールで受付。
+            EditorGUILayout.Space(4f);
+            EditorGUILayout.LabelField("不具合報告・要望(Open β)", EditorStyles.miniBoldLabel);
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                EditorGUILayout.LabelField(
+                    "本ツールはオープンベータ(Open β)として公開中です。不具合報告・要望は X(Twitter) の DM または メール へお願いします。",
+                    AvatarStudioUI.WrapLabel);
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    if (GUILayout.Button(new GUIContent("Xで報告(DM)",
+                        "X(Twitter) を開きます: " + AvatarStudioUI.BugReportXUrl)))
+                    {
+                        Application.OpenURL(AvatarStudioUI.BugReportXUrl);
+                    }
+                    if (GUILayout.Button(new GUIContent("メールで報告",
+                        "メール作成を開きます: " + AvatarStudioUI.BugReportMailUrl)))
+                    {
+                        Application.OpenURL(AvatarStudioUI.BugReportMailUrl);
+                    }
+                }
+            }
         }
 
         /// <summary>4段階ランクの主要項目しきい値の参照表(VRChat の代表的な上限。読み取り専用の目安)。</summary>
