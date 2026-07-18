@@ -117,6 +117,16 @@ namespace RARA.QuestConverter
         };
 
         /// <summary>
+        /// name が AAO の mmdWorldCompatibility が保護する標準MMD表情モーフ名か
+        /// (完全一致・大文字小文字無視・前後空白無視)。同名ブレンドシェイプ衝突の自動固定([B])で、
+        /// MMDモーフを誤って固定・除去しないためのガードとして AAOMeshMergeHelper から再利用する。
+        /// </summary>
+        internal static bool IsMmdStandardMorph(string name)
+        {
+            return !string.IsNullOrEmpty(name) && MmdMorphNames.Contains(name.Trim());
+        }
+
+        /// <summary>
         /// 幾何判定: 最終フレームで「メッシュ境界対角長の一定割合以上」変位した頂点が
         /// 全体のこの割合以上あれば、身体を消す/縮める系の形状とみなす(保守的な閾値)。
         /// </summary>
