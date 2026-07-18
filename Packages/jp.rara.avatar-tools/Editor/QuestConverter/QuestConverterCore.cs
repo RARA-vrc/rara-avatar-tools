@@ -1446,6 +1446,50 @@ namespace RARA.QuestConverter
             }
         }
 
+        // ================================================================
+        // ビルド除外(EditorOnly / Quest除外)の共有判定(1.5.1: 一覧・変換の非表示用)
+        // 「EditorOnlyタグ付きとQuest除外登録はビルド同様に除外して計算」という診断の定義を
+        // 一覧・変換にも適用するための共有ヘルパー(QuestDiagnostics の除外判定と同じ規則)。
+        // ================================================================
+
+        /// <summary>
+        /// questExcludePaths(アバタールート相対の名前パス集合)を root 上で解決した
+        /// 除外サブツリーのルート集合を返す(ルート自身は含めない。解決できないパスは無視)。
+        /// 一覧描画で毎回パス解決しないよう、呼び出し側は結果をキャッシュして使うこと
+        /// (<see cref="BuildExclusionCache"/> がアバター+登録状態単位でキャッシュする)。
+        /// </summary>
+        public static HashSet<Transform> ResolveExcludedRoots(Transform root, IEnumerable<string> questExcludePaths)
+        {
+            var roots = new HashSet<Transform>();
+            if (root == null || questExcludePaths == null) return roots;
+            foreach (string path in questExcludePaths)
+            {
+                if (string.IsNullOrEmpty(path)) continue;
+                Transform found = FindByPath(root, path);
+                if (found != null && found != root) roots.Add(found);
+            }
+            return roots;
+        }
+
+        /// <summary>
+        /// t がVRChatビルドから除外されるか(自身または祖先に EditorOnly タグ、または excludedRoots 配下)。
+        /// avatarRoot まで遡って判定を打ち切る(avatarRoot 自身も判定対象)。excludedRoots は
+        /// <see cref="ResolveExcludedRoots"/> の結果(Quest除外サブツリーのルート集合。null可)。
+        /// EditorOnly はタグを都度参照するため、登録変更なしのタグ付け替えも即座に反映される。
+        /// </summary>
+        public static bool IsBuildExcluded(Transform t, Transform avatarRoot, HashSet<Transform> excludedRoots)
+        {
+            Transform current = t;
+            while (current != null)
+            {
+                if (current.CompareTag(EditorOnlyTag)) return true;
+                if (excludedRoots != null && excludedRoots.Contains(current)) return true;
+                if (current == avatarRoot) break;
+                current = current.parent;
+            }
+            return false;
+        }
+
         /// <summary>
         /// VRC.Dynamics.VRCConstraintManager.Sdk_ManuallyRefreshGroups(VRCConstraintBase[]) をリフレクションで呼び、
         /// パフォーマンス計測前にコンストレイントのグループ計上を正す(型がinternalのため直接参照できない)。
@@ -1472,6 +1516,64 @@ namespace RARA.QuestConverter
                 try { method.Invoke(null, new object[] { constraints }); }
                 catch (Exception ex) { Debug.LogWarning("[RARA] コンストレイントグループの更新に失敗しました: " + ex.Message); }
             }
+        }
+    }
+
+    /// <summary>
+    /// 一覧描画(セクション再描画)向けの、ビルド除外(EditorOnly / Quest除外)判定キャッシュ。
+    /// アバターと除外登録(questExcludePaths)の状態が変わったときだけ除外ルート集合を解決し直し、
+    /// 毎リペイントでのパス解決(FindByPath 走査)を避ける。各ウィンドウが1インスタンス保持して使う。
+    /// EditorOnly タグ自体は都度参照するため常に最新(キャッシュするのはパス解決結果のみ)。
+    /// </summary>
+    public sealed class BuildExclusionCache
+    {
+        private GameObject _avatar;
+        private string _signature;
+        private HashSet<Transform> _excludedRoots = new HashSet<Transform>();
+
+        /// <summary>解決済みの Quest除外サブツリー ルート集合(EditorOnly は含まない。タグで別途判定)。</summary>
+        public HashSet<Transform> ExcludedRoots { get { return _excludedRoots; } }
+
+        /// <summary>
+        /// avatarRoot と questExcludePaths を最新化する(署名が変わったときだけ除外ルートを解決し直す)。
+        /// questExcludePaths が null の面(PC最適化など Quest除外を持たない面)では EditorOnly のみで判定される。
+        /// </summary>
+        public void Refresh(GameObject avatarRoot, IList<string> questExcludePaths)
+        {
+            string sig = BuildSignature(avatarRoot, questExcludePaths);
+            if (_avatar == avatarRoot && _signature == sig) return;
+            _avatar = avatarRoot;
+            _signature = sig;
+            _excludedRoots = avatarRoot != null
+                ? QuestCompat.ResolveExcludedRoots(avatarRoot.transform, questExcludePaths)
+                : new HashSet<Transform>();
+        }
+
+        /// <summary>t が現在のアバターでビルド除外されるか(Refresh 済み前提。未Refresh・別アバターなら false)。</summary>
+        public bool IsExcluded(Transform t)
+        {
+            if (_avatar == null || t == null) return false;
+            return QuestCompat.IsBuildExcluded(t, _avatar.transform, _excludedRoots);
+        }
+
+        /// <summary>アバタールート相対パスの対象オブジェクトがビルド除外されるか(見つからないパスは false)。</summary>
+        public bool IsExcludedPath(string relativePath)
+        {
+            if (_avatar == null) return false;
+            Transform target = QuestCompat.FindByPath(_avatar.transform, relativePath);
+            return target != null && QuestCompat.IsBuildExcluded(target, _avatar.transform, _excludedRoots);
+        }
+
+        private static string BuildSignature(GameObject avatarRoot, IList<string> questExcludePaths)
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.Append(avatarRoot != null ? avatarRoot.GetInstanceID() : 0);
+            if (questExcludePaths != null)
+            {
+                sb.Append('|').Append(questExcludePaths.Count);
+                for (int i = 0; i < questExcludePaths.Count; i++) sb.Append('|').Append(questExcludePaths[i] ?? string.Empty);
+            }
+            return sb.ToString();
         }
     }
 

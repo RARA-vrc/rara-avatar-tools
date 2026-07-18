@@ -27,6 +27,18 @@ namespace RARA.QuestConverter
             GUI.color = prev;
         }
 
+        /// <summary>
+        /// [1.5.1] EditorOnly / Quest除外(ビルド除外)で一覧から隠した件数を1行の注記で示す(0件なら何も描画しない)。
+        /// 各セクション共通の非表示サマリー行(仕様[C])。
+        /// </summary>
+        private void DrawBuildExcludedHiddenNote(int hiddenCount)
+        {
+            if (hiddenCount <= 0) return;
+            EditorGUILayout.LabelField(
+                string.Format("EditorOnly/Quest除外のため {0} 件を非表示(ビルドに含まれないため)", hiddenCount),
+                _miniWrapLabel);
+        }
+
         // マテリアル個別設定のポップアップ表示名(MaterialOverrideの並び順 Auto..Keep と一致させること)
         private static readonly GUIContent[] OverrideModeLabels =
         {
@@ -101,6 +113,8 @@ namespace RARA.QuestConverter
                 EditorGUILayout.LabelField(
                     "マテリアルごとの変換方法です(全 " + _materialPreview.Count + " 件)。通常は「自動(推奨)」のままで問題ありません。",
                     _miniWrapLabel);
+
+                DrawBuildExcludedHiddenNote(_materialHiddenExcluded);
 
                 foreach (MaterialPreviewRow row in _materialPreview)
                 {
@@ -447,11 +461,14 @@ namespace RARA.QuestConverter
         {
             _materialGuidCache.Clear();
             _materialPreview = null;
+            _materialHiddenExcluded = 0;
             if (_avatar == null) return;
             try
             {
                 PruneOverrideEntries();
                 _materialPreview = AvatarQuestConverter.PreviewMaterials(_avatar, _settings);
+                // [1.5.1] EditorOnly / Quest除外配下のみで使われ、一覧・変換から外れるマテリアル件数([C])。
+                _materialHiddenExcluded = AvatarQuestConverter.CountBuildExcludedOnlyMaterials(_avatar, _settings);
             }
             catch (Exception ex)
             {
@@ -627,6 +644,7 @@ namespace RARA.QuestConverter
                 }
 
                 DrawPhysBoneCountHeader(projectedKept);
+                DrawBuildExcludedHiddenNote(_physBonePreview.hiddenExcludedCount);
                 DrawPhysBoneModeAndTools();
 
                 var rows = _physBonePreview.rows;
@@ -1659,8 +1677,11 @@ namespace RARA.QuestConverter
                 if (_toggleGroups.Count == 0)
                 {
                     EditorGUILayout.LabelField("トグルは検出されませんでした。", EditorStyles.miniLabel);
+                    DrawBuildExcludedHiddenNote(_toggleGroupsHiddenExcluded);
                     return;
                 }
+
+                DrawBuildExcludedHiddenNote(_toggleGroupsHiddenExcluded);
 
                 // グループごとの専有アセットサイズ寄与(非表示固定=除去時の削減量)を用意する。
                 // アバター+グループ集合ごとに1回だけ計算し、以降はキャッシュを使う(毎OnGUI再計算しない)。
@@ -2068,13 +2089,23 @@ namespace RARA.QuestConverter
         {
             _toggleGroups = null;
             _toggleGroupsFailed = false;
+            _toggleGroupsHiddenExcluded = 0;
             // グループ集合が変わるためサイズ寄与キャッシュも破棄する(次回表示時に再計算される)。
             _toggleGroupSizes = null;
             _toggleGroupSizesSig = null;
             if (_avatar == null) return;
             try
             {
-                _toggleGroups = ToggleConsolidator.DetectToggleGroups(_avatar.gameObject) ?? new List<ToggleGroup>();
+                List<ToggleGroup> detected = ToggleConsolidator.DetectToggleGroups(_avatar.gameObject) ?? new List<ToggleGroup>();
+                // [1.5.1] 対象オブジェクトが EditorOnly / Quest除外(ビルド除外)のグループは、ビルドに含まれないため一覧から隠す。
+                _buildExclusion.Refresh(_avatar.gameObject, _settings != null ? _settings.questExcludePaths : null);
+                var visible = new List<ToggleGroup>(detected.Count);
+                foreach (ToggleGroup g in detected)
+                {
+                    if (g != null && _buildExclusion.IsExcludedPath(g.id)) { _toggleGroupsHiddenExcluded++; continue; }
+                    visible.Add(g);
+                }
+                _toggleGroups = visible;
             }
             catch (Exception ex)
             {
@@ -2388,8 +2419,11 @@ namespace RARA.QuestConverter
             }
 
             // プレビューは元アバター上で作る(読み取り専用・軽量: コンポーネント列挙のみ)。
+            // [1.5.1] EditorOnly / Quest除外(ビルド除外)のレンダラーは統合対象外・一覧非表示・概算除外にする。
+            _buildExclusion.Refresh(_avatar.gameObject, _settings.questExcludePaths);
             SkinnedMeshMergePlan plan = SkinnedMeshMergePlanner.BuildPlan(
-                _avatar.gameObject, _settings.mergeSkinnedMeshesMode, _settings.skinnedMeshMergeOptOutPaths);
+                _avatar.gameObject, _settings.mergeSkinnedMeshesMode, _settings.skinnedMeshMergeOptOutPaths, null,
+                _buildExclusion.ExcludedRoots);
 
             EditorGUILayout.Space(2f);
             using (new EditorGUILayout.HorizontalScope(EditorStyles.helpBox))
@@ -2411,10 +2445,13 @@ namespace RARA.QuestConverter
                 "マテリアルスロットは統合時に同一マテリアルのサブメッシュがビルド時に重複排除されます(アトラスと併用でさらに削減)。",
                 _miniWrapLabel);
 
+            int mergeHiddenExcluded = 0;
             foreach (SkinnedMeshMergeRow row in plan.rows)
             {
+                if (row != null && row.isBuildExcluded) { mergeHiddenExcluded++; continue; } // ビルド除外は一覧から隠す
                 DrawSkinnedMeshMergeRow(row);
             }
+            DrawBuildExcludedHiddenNote(mergeHiddenExcluded);
         }
 
         /// <summary>統合プレビュー1行(統合する/しない・理由・個別除外トグル・ピン)を描画する。</summary>
@@ -2514,9 +2551,11 @@ namespace RARA.QuestConverter
                 EditorGUILayout.HelpBox(
                     "shrinkブレンドシェイプは検出されませんでした。手動での箱指定削除(下の手引き)をご検討ください。",
                     MessageType.Info);
+                DrawBuildExcludedHiddenNote(_hiddenMeshHiddenExcluded);
                 return;
             }
 
+            DrawBuildExcludedHiddenNote(_hiddenMeshHiddenExcluded);
             EditorGUILayout.Space(2f);
             EditorGUILayout.LabelField("削除に使うメッシュを選んでください(チェックしたメッシュのみ対象)", EditorStyles.miniBoldLabel);
             foreach (ShrinkShapeCandidate candidate in _hiddenMeshCandidates)
@@ -2677,10 +2716,20 @@ namespace RARA.QuestConverter
         {
             _hiddenMeshCandidates = null;
             _hiddenMeshFailed = false;
+            _hiddenMeshHiddenExcluded = 0;
             if (_avatar == null) return;
             try
             {
-                _hiddenMeshCandidates = AAOMeshRemovalHelper.DetectShrinkShapes(_avatar.gameObject) ?? new List<ShrinkShapeCandidate>();
+                List<ShrinkShapeCandidate> detected = AAOMeshRemovalHelper.DetectShrinkShapes(_avatar.gameObject) ?? new List<ShrinkShapeCandidate>();
+                // [1.5.1] Quest除外(EditorOnly は検出側で既に除外済み)配下のレンダラーはビルドに含まれないため一覧から隠す。
+                _buildExclusion.Refresh(_avatar.gameObject, _settings != null ? _settings.questExcludePaths : null);
+                var visible = new List<ShrinkShapeCandidate>(detected.Count);
+                foreach (ShrinkShapeCandidate c in detected)
+                {
+                    if (c != null && _buildExclusion.IsExcludedPath(c.rendererPath)) { _hiddenMeshHiddenExcluded++; continue; }
+                    visible.Add(c);
+                }
+                _hiddenMeshCandidates = visible;
             }
             catch (Exception ex)
             {
@@ -2781,6 +2830,15 @@ namespace RARA.QuestConverter
                     {
                         GUI.color = NoteYellowColor;
                         EditorGUILayout.LabelField("(見つかりません)", EditorStyles.miniLabel, GUILayout.Width(90f));
+                        GUI.color = defaultColor;
+                    }
+                    // [1.5.1] このパネルは除外登録を全件表示する(唯一の非表示しない面)。既に EditorOnly タグが
+                    // 付いているオブジェクト(登録前から手動でタグ付け済み)には「EditorOnly」バッジを付ける。
+                    else if (resolved != null && QuestCompat.IsEditorOnly(resolved))
+                    {
+                        GUI.color = NoteYellowColor;
+                        EditorGUILayout.LabelField(new GUIContent("EditorOnly", "このオブジェクトは既に EditorOnly タグが付いています(ビルドから除外されます)"),
+                            EditorStyles.miniLabel, GUILayout.Width(72f));
                         GUI.color = defaultColor;
                     }
 

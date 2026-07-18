@@ -88,6 +88,12 @@ namespace RARA.QuestConverter
         /// mergePhysBones がオフのとき、実際に残る数はこちら(マージ削減は起きない)。
         /// </summary>
         public int nonMergedComponentCount;
+
+        /// <summary>
+        /// [1.5.1] EditorOnly / Quest除外(ビルド除外)配下のため一覧・現在数・予測数から隠したPhysBone本数。
+        /// 0 より大きいとき、セクションに「n 件を非表示」の注記を1行だけ表示する(仕様[C])。
+        /// </summary>
+        public int hiddenExcludedCount;
     }
 
     /// <summary>
@@ -645,6 +651,9 @@ namespace RARA.QuestConverter
             /// <summary>removePaths(削除指定)により計画から除外した本数。</summary>
             public int removePlannedCount;
 
+            /// <summary>EditorOnly / Quest除外(ビルド除外)配下のため計画から隠した本数(仕様[C]の非表示注記用)。</summary>
+            public int hiddenExcludedCount;
+
             /// <summary>候補判定で対象外になったもの(判定順)。</summary>
             public readonly List<PhysBoneSkipEntry> skipped = new List<PhysBoneSkipEntry>();
 
@@ -677,9 +686,9 @@ namespace RARA.QuestConverter
 
             foreach (VRCPhysBone pb in root.GetComponentsInChildren<VRCPhysBone>(true))
             {
-                if (IsInEditorOnlySubtree(pb.transform, root.transform)) continue;
+                if (IsInEditorOnlySubtree(pb.transform, root.transform)) { plan.hiddenExcludedCount++; continue; }
                 // 変換時にEditorOnly化される除外サブツリー配下は、実変換ではマージ判定に載らないため計画から除く
-                if (IsUnderAny(pb.transform, excludedRoots)) continue;
+                if (IsUnderAny(pb.transform, excludedRoots)) { plan.hiddenExcludedCount++; continue; }
                 if (removeSet != null && removeSet.Contains(GetPhysBoneIdentityPath(root.transform, pb)))
                 {
                     // 削除指定分は「存在しないもの」として扱う(プレビューの行・予測数にも含めない)
@@ -849,6 +858,8 @@ namespace RARA.QuestConverter
             preview.currentComponentCount = plan.candidates.Count + plan.removePlannedCount;
             // 削除指定のみ適用しマージしなかった場合に残る数(マージ候補数)。
             preview.nonMergedComponentCount = plan.candidates.Count;
+            // EditorOnly / Quest除外配下のため一覧・現在数から隠した本数(セクションの非表示注記用)。
+            preview.hiddenExcludedCount = plan.hiddenExcludedCount;
 
             // --- マージされるグループ(2本以上 → 1本) ---
             foreach (PhysBoneBucketPlan bucket in plan.buckets)

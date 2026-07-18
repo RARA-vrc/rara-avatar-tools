@@ -369,6 +369,16 @@ namespace RARA.QuestConverter
                     report.Info("コンポーネント参照のみのマテリアル(Modular AvatarのMaterial Setter等。レンダラーには未設定): " + string.Join(", ", componentOnlyNames));
                 }
 
+                // [1.5.1] EditorOnly / Quest除外 配下のみで使われるマテリアルは収集されず、変換もされない
+                // (無駄な生成マテリアル/テクスチャを出さないための既定挙動。混在利用のマテリアルは従来どおり変換される)。
+                // ビルドに含まれない分の件数を情報として1行だけ出す(元アバター基準で EditorOnly タグ+Quest除外登録のみを数え、
+                // 透過自動非表示など他要因の除外は含めない)。
+                int buildExcludedOnlyMaterials = CountBuildExcludedOnlyMaterials(sourceAvatar, settings);
+                if (buildExcludedOnlyMaterials > 0)
+                {
+                    report.Info($"EditorOnly/Quest除外配下のみで使用のため変換をスキップ: {buildExcludedOnlyMaterials}件");
+                }
+
                 // Canvas(TextMeshProUGUI等)はRendererではないためマテリアル収集対象外。明示的に警告する。
                 if (clone.GetComponentInChildren<CanvasRenderer>(true) != null)
                 {
@@ -2148,6 +2158,47 @@ namespace RARA.QuestConverter
                 excluded.AddRange(SimulateFullyTransparentRendererExclusion(root, excluded));
             }
             return excluded;
+        }
+
+        /// <summary>
+        /// [1.5.1] EditorOnly / Quest除外(settings.questExcludePaths)配下のみで使われ、収集・変換から
+        /// 外れるマテリアルの件数を返す(読み取り専用)。混在利用(除外配下でないレンダラー・アニメーション・
+        /// コンポーネントからも参照される)マテリアルは収集されるため含めない。透過自動非表示など他要因は
+        /// 対象にしない(EditorOnlyタグ+Quest除外登録のみ)。変換スキップ報告([D])とプレビューの
+        /// 非表示件数([C])で共用する。
+        /// </summary>
+        public static int CountBuildExcludedOnlyMaterials(VRC.SDK3.Avatars.Components.VRCAvatarDescriptor avatar, QuestConvertSettings settings)
+        {
+            if (avatar == null) return 0;
+            if (settings == null) settings = new QuestConvertSettings();
+            GameObject root = avatar.gameObject;
+
+            // EditorOnly タグ + Quest除外登録のみを除外条件にする(透過自動非表示のシミュレートは含めない)。
+            List<Transform> excludedRoots = ResolveExcludedRoots(root, settings);
+
+            // 収集される(=変換対象の)マテリアル集合。除外配下のレンダラーは収集されない。
+            int animationOnlyCount;
+            HashSet<Material> meshUsed, particleUsed, animationUsed, componentUsed;
+            Dictionary<Material, string> componentSources;
+            List<Material> collected = CollectUniqueMaterialsCore(
+                root, excludedRoots, out animationOnlyCount, out meshUsed, out particleUsed,
+                out animationUsed, out componentUsed, out componentSources);
+            var collectedSet = new HashSet<Material>(collected);
+
+            // 除外サブツリー配下のレンダラーが参照し、収集集合に無い=除外配下のみで使われるマテリアル。
+            var excludedOnly = new HashSet<Material>();
+            foreach (Renderer renderer in root.GetComponentsInChildren<Renderer>(true))
+            {
+                if (renderer == null) continue;
+                bool excluded = IsInEditorOnlySubtree(renderer.transform, root.transform)
+                    || IsUnderAny(renderer.transform, excludedRoots);
+                if (!excluded) continue;
+                foreach (Material material in renderer.sharedMaterials)
+                {
+                    if (material != null && !collectedSet.Contains(material)) excludedOnly.Add(material);
+                }
+            }
+            return excludedOnly.Count;
         }
 
         /// <summary>questExcludePaths を root 上で解決する(ルート自身は Convert と同様に除外対象にしない)。</summary>

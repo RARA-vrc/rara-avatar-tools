@@ -147,15 +147,23 @@ namespace RARA.AvatarStudio
                 () => ToggleConsolidator.DetectToggleGroups(avatarRoot));
 
             if (groups == null) { EditorGUILayout.HelpBox("トグルの検出に失敗しました(コンソール参照)。", MessageType.Warning); return false; }
+
+            // [1.5.1] 対象オブジェクトが EditorOnly(常時ビルド除外)/ Quest除外(Quest出力時のみ)のトグルは一覧から隠す。
+            HashSet<Transform> toggleExcludedRoots = BuildExcludedRoots(avatarRoot, s, cache);
+            int toggleHidden = 0;
+            groups = FilterBuildExcludedGroups(avatarRoot, groups, toggleExcludedRoots, ref toggleHidden);
+
             if (groups.Count == 0)
             {
                 EditorGUILayout.LabelField("切り替え(トグル)対象の衣装・アクセサリは見つかりませんでした。", EditorStyles.wordWrappedMiniLabel);
+                DrawBuildExcludedHiddenNote(toggleHidden);
                 return false;
             }
 
             EditorGUILayout.LabelField(
                 "維持=従来どおり切替 / 常時表示=常にON固定(AAOがメッシュ・スロットを統合可能に) / 非表示除去=メッシュごと除去。",
                 EditorStyles.wordWrappedMiniLabel);
+            DrawBuildExcludedHiddenNote(toggleHidden);
 
             bool changed = false;
             EnsureList(ref s.toggleChoices);
@@ -521,12 +529,15 @@ namespace RARA.AvatarStudio
             }
 
             bool byGroup = capturedMode == SkinnedMeshMergeMode.MergeByGroup;
+            // [1.5.1] EditorOnly(常時ビルド除外)/ Quest除外(Quest出力時)のレンダラーは統合対象外・一覧非表示・概算除外にする。
+            HashSet<Transform> mergeExcludedRoots = BuildExcludedRoots(avatarRoot, s, cache);
             string sig = avatarRoot.GetInstanceID() + "|" + (int)capturedMode + "|" + HashPaths(s.skinnedMeshMergeOptOutPaths)
-                + "|" + (byGroup ? HashGroups(s.smrMergeGroups) : "-");
+                + "|" + (byGroup ? HashGroups(s.smrMergeGroups) : "-")
+                + "|" + (s.targetQuest ? "Q" + HashPaths(s.questExcludePaths) : "P");
             SkinnedMeshMergePlan plan = cache.GetOrBuild(
                 "smr", sig,
                 () => SkinnedMeshMergePlanner.BuildPlan(
-                    avatarRoot, capturedMode, s.skinnedMeshMergeOptOutPaths, byGroup ? s.smrMergeGroups : null));
+                    avatarRoot, capturedMode, s.skinnedMeshMergeOptOutPaths, byGroup ? s.smrMergeGroups : null, mergeExcludedRoots));
 
             if (plan == null) { EditorGUILayout.HelpBox("SkinnedMesh統合プレビューの計算に失敗しました。", MessageType.Warning); return changed; }
 
@@ -545,9 +556,11 @@ namespace RARA.AvatarStudio
             }
 
             int shown = 0;
+            int mergeHidden = 0;
             foreach (SkinnedMeshMergeRow row in plan.rows)
             {
-                if (row == null || row.isEditorOnly) continue;
+                if (row == null) continue;
+                if (row.isBuildExcluded) { mergeHidden++; continue; } // ビルド除外は一覧から隠す
                 if (shown++ >= MaxRows) { EditorGUILayout.LabelField("...(以下省略)", EditorStyles.miniLabel); break; }
                 using (new EditorGUILayout.HorizontalScope())
                 {
@@ -602,6 +615,7 @@ namespace RARA.AvatarStudio
                 DrawSmrGroupSummary(plan);
             }
 
+            DrawBuildExcludedHiddenNote(mergeHidden);
             EditorGUILayout.LabelField("※ 実際の統合はビルド時(AvatarOptimizer)に行われます。統合後SMR数は概算です。", EditorStyles.miniLabel);
             return changed;
         }
@@ -631,7 +645,7 @@ namespace RARA.AvatarStudio
             int faceN = 0;
             foreach (SkinnedMeshMergeRow row in plan.rows)
             {
-                if (row != null && !row.isEditorOnly && row.isFace) faceN++;
+                if (row != null && !row.isBuildExcluded && row.isFace) faceN++;
             }
             int unassigned = plan.expectedCount - groupTargets - faceN;
             if (unassigned < 0) unassigned = 0;
@@ -781,6 +795,8 @@ namespace RARA.AvatarStudio
                     QuestLimits.PoorPhysBoneComponents + "本以下にしてください。",
                     MessageType.Error);
             }
+
+            DrawBuildExcludedHiddenNote(preview.hiddenExcludedCount);
 
             if (preview.rows != null)
             {
@@ -1122,6 +1138,49 @@ namespace RARA.AvatarStudio
                 if (target != null && target != avatarRoot.transform) excluded.Add(target);
             }
             return excluded;
+        }
+
+        // ================================================================
+        // [1.5.1] ビルド除外(EditorOnly / Quest除外)の一覧非表示 共有ヘルパー
+        // ================================================================
+
+        /// <summary>
+        /// このアバターの Quest除外サブツリー ルート集合を(キャッシュ経由で)解決して返す。
+        /// EditorOnly は常にビルド除外だがタグで別途判定するため、ここには含めない。
+        /// Quest除外(questExcludePaths)は Quest出力時のみ有効(PC出力では EditorOnly のみで判定される)。
+        /// </summary>
+        private static HashSet<Transform> BuildExcludedRoots(GameObject avatarRoot, AvatarStudioSettings s, AvatarStudioPreviewCache cache)
+        {
+            bool quest = s != null && s.targetQuest;
+            string key = avatarRoot.GetInstanceID() + "|" + (quest ? "Q|" + HashPaths(s.questExcludePaths) : "P");
+            return cache.GetOrBuild("qxroots", key,
+                () => quest ? QuestCompat.ResolveExcludedRoots(avatarRoot.transform, s.questExcludePaths) : new HashSet<Transform>());
+        }
+
+        /// <summary>groups から、対象オブジェクトがビルド除外(EditorOnly / Quest除外)のトグルを除いたリストを返す(非表示件数を加算)。</summary>
+        private static List<ToggleGroup> FilterBuildExcludedGroups(GameObject avatarRoot, List<ToggleGroup> groups, HashSet<Transform> excludedRoots, ref int hiddenCount)
+        {
+            if (groups == null) return new List<ToggleGroup>();
+            var visible = new List<ToggleGroup>(groups.Count);
+            foreach (ToggleGroup g in groups)
+            {
+                if (g != null && !string.IsNullOrEmpty(g.id))
+                {
+                    Transform gt = QuestCompat.FindByPath(avatarRoot.transform, g.id);
+                    if (gt != null && QuestCompat.IsBuildExcluded(gt, avatarRoot.transform, excludedRoots)) { hiddenCount++; continue; }
+                }
+                visible.Add(g);
+            }
+            return visible;
+        }
+
+        /// <summary>EditorOnly / Quest除外(ビルド除外)で一覧から隠した件数を1行の注記で示す(0件なら何も描画しない)。仕様[C]。</summary>
+        private static void DrawBuildExcludedHiddenNote(int hiddenCount)
+        {
+            if (hiddenCount <= 0) return;
+            EditorGUILayout.LabelField(
+                string.Format("EditorOnly/Quest除外のため {0} 件を非表示(ビルドに含まれないため)", hiddenCount),
+                EditorStyles.wordWrappedMiniLabel);
         }
 
         /// <summary>プレビュー行のPhysBone識別パス(グループは全メンバー、単独は1本)を into へ追加する。</summary>
@@ -2009,6 +2068,13 @@ namespace RARA.AvatarStudio
 
             if (rows == null) { EditorGUILayout.HelpBox("マテリアルプレビューの計算に失敗しました。", MessageType.Warning); return changed; }
             if (rows.Count == 0) { EditorGUILayout.LabelField("マテリアルが見つかりませんでした。", EditorStyles.miniLabel); return changed; }
+
+            // [1.5.1] EditorOnly / Quest除外配下のみで使われ、一覧・変換から外れるマテリアル件数([C])。
+            // GetOrBuild は参照型のみキャッシュ可のため int[] で包んでキャッシュする(毎リペイントの再集計を避ける)。
+            int[] matHidden = cache.GetOrBuild("questmatexcluded",
+                avatar.GetInstanceID() + "|" + HashPaths(quest.questExcludePaths),
+                () => new[] { AvatarQuestConverter.CountBuildExcludedOnlyMaterials(avatar, quest) });
+            if (matHidden != null) DrawBuildExcludedHiddenNote(matHidden[0]);
 
             // 非表示(不可視マテリアル)になる予定の件数を数え、あれば透過ドロップダウン直下に案内を出す。
             // 件数は同一OnGUIサイクル内で不変なキャッシュ済み rows から算出するため、Layout/Repaint で

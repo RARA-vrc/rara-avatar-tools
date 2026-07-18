@@ -60,6 +60,12 @@ namespace RARA.QuestConverter
         private bool _hiddenMeshRefreshQueued;                     // shrinkブレンドシェイプ検出の再入ガード
         private bool _hiddenMeshFailed;                            // shrinkブレンドシェイプ検出の失敗ラッチ(毎OnGUIの再試行を防ぐ)
 
+        // [1.5.1] EditorOnly / Quest除外(ビルド除外)を一覧から隠すための共有判定キャッシュと、各面の非表示件数。
+        private readonly BuildExclusionCache _buildExclusion = new BuildExclusionCache();
+        private int _toggleGroupsHiddenExcluded;                   // セクション5: ビルド除外で非表示にしたトグルグループ数(検出時に算出)
+        private int _hiddenMeshHiddenExcluded;                     // セクション7: ビルド除外で非表示にしたshrink候補数(検出時に算出)
+        private int _materialHiddenExcluded;                       // セクション3: EditorOnly/Quest除外配下のみで使用のため一覧・変換から外れたマテリアル数(プレビュー更新時に算出)
+
         // PhysBoneグループ行のメンバー一覧の開閉状態(キー: グループ先頭メンバーの識別パス)
         private readonly HashSet<string> _physBoneExpandedGroups = new HashSet<string>();
 

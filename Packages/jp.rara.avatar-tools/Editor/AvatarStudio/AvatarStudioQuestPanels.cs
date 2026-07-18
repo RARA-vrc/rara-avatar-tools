@@ -157,6 +157,15 @@ namespace RARA.AvatarStudio
                         EditorGUILayout.LabelField("(見つかりません)", EditorStyles.miniLabel, GUILayout.Width(90f));
                         GUI.color = defaultColor;
                     }
+                    // [1.5.1] この登録パネルは全件表示する(唯一の非表示しない面)。既に EditorOnly タグが
+                    // 付いているオブジェクト(登録前から手動でタグ付け済み)には「EditorOnly」バッジを付ける。
+                    else if (resolved != null && QuestCompat.IsEditorOnly(resolved))
+                    {
+                        GUI.color = AvatarStudioUI.NoteYellowColor;
+                        EditorGUILayout.LabelField(new GUIContent("EditorOnly", "このオブジェクトは既に EditorOnly タグが付いています(ビルドから除外されます)"),
+                            EditorStyles.miniLabel, GUILayout.Width(72f));
+                        GUI.color = defaultColor;
+                    }
                     GUILayout.FlexibleSpace();
 
                     // ピン: シーン上の該当オブジェクトをハイライト(解決できた場合のみ)

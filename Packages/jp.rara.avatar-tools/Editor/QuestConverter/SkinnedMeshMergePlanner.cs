@@ -95,6 +95,12 @@ namespace RARA.QuestConverter
         /// <summary>EditorOnly サブツリー(ビルドで除去)か。最終カウントから除外する。</summary>
         public bool isEditorOnly;
 
+        /// <summary>
+        /// ビルド除外(EditorOnly タグ、または Quest除外登録の配下)か。true の行は統合対象外で、
+        /// 一覧からも非表示にし、統合前/後の概算SMR数からも除外する(ビルドに含まれないため)。
+        /// </summary>
+        public bool isBuildExcluded;
+
         /// <summary>ブレンドシェイプ数(UI表示用)。</summary>
         public int blendShapeCount;
 
@@ -175,7 +181,7 @@ namespace RARA.QuestConverter
         /// </summary>
         public static SkinnedMeshMergePlan BuildPlan(GameObject avatarRoot, SkinnedMeshMergeMode mode, IEnumerable<string> optOutPaths)
         {
-            return BuildPlan(avatarRoot, mode, optOutPaths, null);
+            return BuildPlan(avatarRoot, mode, optOutPaths, null, null);
         }
 
         /// <summary>
@@ -184,8 +190,11 @@ namespace RARA.QuestConverter
         /// optOutPaths はユーザーが個別に統合から除外したレンダラーの相対パス集合(null可)。
         /// groupAssignments は「グループ指定で統合」モードでのレンダラー→グループ割り当て(null可)。
         /// mode!=MergeByGroup のときは無視される。顔は常に自動保護で、どのモードでも割り当て不可。
+        /// excludedRoots は Quest除外サブツリーのルート集合(プレビューで元アバターを走査する面用。null可)。
+        /// これに含まれる/EditorOnly のレンダラーは isBuildExcluded=true にして統合対象外・一覧非表示・概算除外にする。
+        /// 変換時はクローンで Quest除外が既に EditorOnly 化済みのため null でよい(EditorOnly タグで判定される)。
         /// </summary>
-        public static SkinnedMeshMergePlan BuildPlan(GameObject avatarRoot, SkinnedMeshMergeMode mode, IEnumerable<string> optOutPaths, IEnumerable<SmrMergeGroupAssignment> groupAssignments)
+        public static SkinnedMeshMergePlan BuildPlan(GameObject avatarRoot, SkinnedMeshMergeMode mode, IEnumerable<string> optOutPaths, IEnumerable<SmrMergeGroupAssignment> groupAssignments, HashSet<Transform> excludedRoots = null)
         {
             var plan = new SkinnedMeshMergePlan();
             if (avatarRoot == null) return plan;
@@ -223,6 +232,8 @@ namespace RARA.QuestConverter
                 if (path == null) continue; // avatarRoot 配下でない(通常ありえない)
 
                 bool editorOnly = QuestCompat.IsEditorOnly(smr.transform);
+                // ビルド除外 = EditorOnly タグ、または Quest除外登録の配下(プレビューで元アバターを走査する面用)。
+                bool buildExcluded = QuestCompat.IsBuildExcluded(smr.transform, avatarRoot.transform, excludedRoots);
                 bool isFace = faceRenderers.Contains(smr);
                 Mesh mesh = smr.sharedMesh;
 
@@ -234,9 +245,10 @@ namespace RARA.QuestConverter
                     rendererName = smr.gameObject.name,
                     isFace = isFace,
                     isEditorOnly = editorOnly,
+                    isBuildExcluded = buildExcluded,
                     blendShapeCount = mesh != null ? mesh.blendShapeCount : 0,
-                    // 割り当て可能=顔でない・EditorOnlyでない・メッシュあり・Clothなし(opt-outは含めない)。
-                    canAssign = !isFace && !editorOnly && mesh != null && !cloth,
+                    // 割り当て可能=顔でない・ビルド除外でない・メッシュあり・Clothなし(opt-outは含めない)。
+                    canAssign = !isFace && !buildExcluded && mesh != null && !cloth,
                 };
 
                 if (mode == SkinnedMeshMergeMode.None)
@@ -249,10 +261,12 @@ namespace RARA.QuestConverter
                     row.willMerge = false;
                     row.reason = "顔メッシュ(ビセーム/まばたき)のため分離を維持(表情を保持)";
                 }
-                else if (editorOnly)
+                else if (buildExcluded)
                 {
                     row.willMerge = false;
-                    row.reason = "EditorOnly(ビルド除外)のため統合対象外";
+                    row.reason = editorOnly
+                        ? "EditorOnly(ビルド除外)のため統合対象外"
+                        : "Quest除外(ビルド除外)のため統合対象外";
                 }
                 else if (mesh == null)
                 {
@@ -313,10 +327,10 @@ namespace RARA.QuestConverter
             }
 
             // 統合前(ビルドに残る)SMR数と、統合後の期待SMR数を算出する。
-            int surviving = 0; // ビルドに残る(EditorOnlyでない)レンダラー総数
+            int surviving = 0; // ビルドに残る(EditorOnly / Quest除外でない)レンダラー総数
             foreach (SkinnedMeshMergeRow row in plan.rows)
             {
-                if (row.isEditorOnly) continue;
+                if (row.isBuildExcluded) continue;
                 surviving++;
             }
             plan.beforeCount = surviving;

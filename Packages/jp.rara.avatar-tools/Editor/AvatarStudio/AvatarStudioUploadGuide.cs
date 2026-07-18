@@ -51,8 +51,11 @@ namespace RARA.AvatarStudio
                 EditorGUILayout.Space(2f);
                 DrawStatusBlock(avatar, optGo, questGo);
 
+                // [B] ビルドターゲットとアクティブなアバターが食い違うときの警告(手順の前に目立つ位置で出す)。
+                DrawTargetMismatchWarning(avatar != null ? avatar.gameObject : null, optGo, questGo);
+
                 EditorGUILayout.Space(4f);
-                DrawSteps(optGo, questGo, questPrefabPath);
+                DrawSteps(avatar != null ? avatar.gameObject : null, optGo, questGo, questPrefabPath);
             }
         }
 
@@ -135,7 +138,7 @@ namespace RARA.AvatarStudio
         // 4ステップの手引き(各ステップに可能な限り実行ボタンを添える)
         // ==============================================================
 
-        private static void DrawSteps(GameObject optGo, GameObject questGo, string questPrefabPath)
+        private static void DrawSteps(GameObject originalGo, GameObject optGo, GameObject questGo, string questPrefabPath)
         {
             BuildTarget bt = EditorUserBuildSettings.activeBuildTarget;
             bool isWin = IsWindows(bt);
@@ -147,6 +150,13 @@ namespace RARA.AvatarStudio
             StepHeader(1, "PC版(_Opt)を Windows でアップロード");
             using (new EditorGUILayout.VerticalScope(GUI.skin.box))
             {
+                // [C] Multi-Platform Build & Publish 併用禁止の常設注意(本ツールは複製ごとに別々にアップロードする方式のため)。
+                EditorGUILayout.HelpBox(
+                    "SDKの「Multi-Platform Build & Publish」(複数プラットフォーム同時ビルド)は使わないでください。" +
+                    "本ツールはPC版とQuest版を別々の複製でアップロードする方式のため、" +
+                    "プラットフォームは1つずつ選び、手順①〜④の順に進めます。",
+                    MessageType.Warning);
+
                 using (new EditorGUI.DisabledScope(isWin))
                 {
                     if (GUILayout.Button(new GUIContent("ビルドターゲット: Windows に切替",
@@ -171,6 +181,23 @@ namespace RARA.AvatarStudio
                     }
                     EditorGUILayout.LabelField("SDKパネルで _Opt をアップロードします。", AvatarStudioUI.MiniWrapLabel);
                 }
+
+                // [A] PC版(_Opt)だけをアクティブ化し、元アバターと _Quest を非アクティブにする(SDKパネルの誤選択防止)。
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    using (new EditorGUI.DisabledScope(optGo == null))
+                    {
+                        if (GUILayout.Button(new GUIContent("_Optだけをアクティブ化",
+                            "PC版(_Opt)だけをシーンでアクティブにし、元アバターと Quest版(_Quest)を非アクティブにします。" +
+                            "SDKパネルはアクティブなシーン内アバターを列挙するため、誤って別のアバターを選ぶ事故を防げます。Undoで元に戻せます"),
+                            GUILayout.Width(180f)))
+                        {
+                            ActivateOnly(optGo, originalGo, optGo, questGo);
+                        }
+                    }
+                    EditorGUILayout.LabelField(BuildActiveStateLabel(originalGo, optGo, questGo), AvatarStudioUI.MiniWrapLabel);
+                }
+
                 if (optGo == null) DrawNotGeneratedNote("先に PC版(_Opt)を生成してください。");
             }
 
@@ -243,6 +270,23 @@ namespace RARA.AvatarStudio
                     }
                     EditorGUILayout.LabelField("SDKパネルで _Quest をアップロードします。", AvatarStudioUI.MiniWrapLabel);
                 }
+
+                // [A] Quest版(_Quest)だけをアクティブ化し、元アバターと _Opt を非アクティブにする(SDKパネルの誤選択防止)。
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    using (new EditorGUI.DisabledScope(questGo == null))
+                    {
+                        if (GUILayout.Button(new GUIContent("_Questだけをアクティブ化",
+                            "Quest版(_Quest)だけをシーンでアクティブにし、元アバターと PC版(_Opt)を非アクティブにします。" +
+                            "SDKパネルはアクティブなシーン内アバターを列挙するため、PC用アバターを選んでMobile非対応シェーダーの警告が出る事故を防げます。Undoで元に戻せます"),
+                            GUILayout.Width(180f)))
+                        {
+                            ActivateOnly(questGo, originalGo, optGo, questGo);
+                        }
+                    }
+                    EditorGUILayout.LabelField(BuildActiveStateLabel(originalGo, optGo, questGo), AvatarStudioUI.MiniWrapLabel);
+                }
+
                 EditorGUILayout.LabelField(
                     "PC版と同じ Blueprint ID のままアップロードすると、1つのアバターの PC/Quest 両対応(フォールバック)になります。",
                     AvatarStudioUI.MiniWrapLabel);
@@ -269,6 +313,67 @@ namespace RARA.AvatarStudio
             {
                 EditorUtility.DisplayDialog("SDKパネル",
                     "SDKコントロールパネルのメニューが見つかりませんでした。メニューバーの『VRChat SDK』から開いてください。", "OK");
+            }
+        }
+
+        /// <summary>
+        /// [A] 対象クローンだけをシーンでアクティブにし、関連する既知のアバター(元アバターと、同じ元の
+        /// もう一方の複製 _Opt/_Quest)だけを非アクティブにする。無関係なアバターや非アバターには一切触れない。
+        /// SDK Builder パネルはアクティブなシーン内アバターを列挙するため、他を非アクティブにすることで
+        /// 誤ったアバター(PC用シェーダーのまま等)を選んでしまう事故を防ぐ。
+        /// 切り替えた各 GameObject は Undo 登録するので、ユーザーは Ctrl+Z で元に戻せる。
+        /// </summary>
+        private static void ActivateOnly(GameObject target, GameObject originalGo, GameObject optGo, GameObject questGo)
+        {
+            if (target == null) return;
+
+            // 触れてよいのは「関連する既知のアバター」= 元・_Opt・_Quest の3つだけ(無関係な対象は列挙しない)。
+            GameObject[] related = { originalGo, optGo, questGo };
+
+            int group = Undo.GetCurrentGroup();
+            Undo.SetCurrentGroupName("複製のアクティブ化を切り替え");
+            foreach (GameObject go in related)
+            {
+                if (go == null) continue;
+                bool wantActive = go == target;
+                if (go.activeSelf == wantActive) continue; // 状態が変わるものだけ Undo 登録して切り替える。
+                Undo.RecordObject(go, "複製のアクティブ化を切り替え");
+                go.SetActive(wantActive);
+            }
+            Undo.CollapseUndoOperations(group); // 3つの切り替えを1回の Undo にまとめる。
+        }
+
+        /// <summary>
+        /// [B] ビルドターゲットと各複製のアクティブ状態が食い違うときに警告する。
+        /// Android/iOS なのに _Quest が非アクティブで元/_Opt がアクティブ → SDKパネルはアクティブな
+        /// PC用アバターを拾い、Mobile非対応シェーダーの警告が大量に出てビルドできない(赤・重大)。
+        /// Windows なのに _Opt が非アクティブで _Quest がアクティブ → PC用として正しく選べていない(情報・軽度)。
+        /// </summary>
+        private static void DrawTargetMismatchWarning(GameObject originalGo, GameObject optGo, GameObject questGo)
+        {
+            BuildTarget bt = EditorUserBuildSettings.activeBuildTarget;
+            bool isMobile = bt == BuildTarget.Android || bt == BuildTarget.iOS;
+            bool isWin = IsWindows(bt);
+
+            bool questActive = IsActive(questGo);
+            bool optActive = IsActive(optGo);
+            bool origActive = IsActive(originalGo);
+
+            if (isMobile && questGo != null && !questActive && (origActive || optActive))
+            {
+                EditorGUILayout.HelpBox(
+                    "ビルドターゲットがAndroidですが、_Questがアクティブではありません。" +
+                    "SDKパネルでPC用アバターを選んでいるとMobile非対応シェーダーの警告が大量に出てビルドできません。" +
+                    "手順④の「_Questだけをアクティブ化」を押してください",
+                    MessageType.Error);
+            }
+            else if (isWin && optGo != null && !optActive && questActive)
+            {
+                EditorGUILayout.HelpBox(
+                    "ビルドターゲットがWindowsですが、_Optがアクティブではありません(_Questがアクティブです)。" +
+                    "SDKパネルでQuest用アバターを選んでいるとPC版として正しくアップロードできません。" +
+                    "手順①の「_Optだけをアクティブ化」を押してください。",
+                    MessageType.Info);
             }
         }
 
@@ -406,6 +511,25 @@ namespace RARA.AvatarStudio
             if (go == null) return null;
             var pm = go.GetComponent<VRC.Core.PipelineManager>();
             return pm != null ? pm.blueprintId : null;
+        }
+
+        /// <summary>シーン内で実際にアクティブか(親も含めた activeInHierarchy。SDKパネルが拾う判定に合わせる)。</summary>
+        private static bool IsActive(GameObject go)
+        {
+            return go != null && go.activeInHierarchy;
+        }
+
+        /// <summary>元・_Opt・_Quest の現在のアクティブ状態を「現在: _Opt=… / _Quest=… / 元=…」の1行にする。</summary>
+        private static string BuildActiveStateLabel(GameObject originalGo, GameObject optGo, GameObject questGo)
+        {
+            return "現在: _Opt=" + ActiveWord(optGo) + " / _Quest=" + ActiveWord(questGo) + " / 元=" + ActiveWord(originalGo);
+        }
+
+        /// <summary>アクティブ状態の日本語表記(未生成は「未生成」)。</summary>
+        private static string ActiveWord(GameObject go)
+        {
+            if (go == null) return "未生成";
+            return go.activeInHierarchy ? "アクティブ" : "非アクティブ";
         }
 
         /// <summary>Blueprint ID を先頭8文字…で短く表示する(空は呼び出し側で処理済み)。</summary>

@@ -506,8 +506,11 @@ namespace RARA.PCOptimizer
                 if (_toggleGroups.Count == 0)
                 {
                     EditorGUILayout.LabelField("トグルは検出されませんでした。", EditorStyles.miniLabel);
+                    DrawBuildExcludedHiddenNote(_toggleGroupsHiddenExcluded);
                     return;
                 }
+
+                DrawBuildExcludedHiddenNote(_toggleGroupsHiddenExcluded);
 
                 using (new EditorGUILayout.HorizontalScope())
                 {
@@ -692,8 +695,11 @@ namespace RARA.PCOptimizer
                 return;
             }
 
+            // [1.5.1] EditorOnly(ビルド除外)のレンダラーは統合対象外・一覧非表示・概算除外にする(PCはQuest除外なし)。
+            _buildExclusion.Refresh(_avatar.gameObject, null);
             RARA.QuestConverter.SkinnedMeshMergePlan plan = RARA.QuestConverter.SkinnedMeshMergePlanner.BuildPlan(
-                _avatar.gameObject, _settings.mergeSkinnedMeshesMode, _settings.skinnedMeshMergeOptOutPaths);
+                _avatar.gameObject, _settings.mergeSkinnedMeshesMode, _settings.skinnedMeshMergeOptOutPaths, null,
+                _buildExclusion.ExcludedRoots);
 
             EditorGUILayout.Space(2f);
             using (new EditorGUILayout.HorizontalScope(EditorStyles.helpBox))
@@ -715,10 +721,13 @@ namespace RARA.PCOptimizer
                 "マテリアルスロットは統合時に同一マテリアルのサブメッシュがビルド時に重複排除されます(アトラスと併用でさらに削減)。",
                 _miniWrapLabel);
 
+            int mergeHiddenExcluded = 0;
             foreach (RARA.QuestConverter.SkinnedMeshMergeRow row in plan.rows)
             {
+                if (row != null && row.isBuildExcluded) { mergeHiddenExcluded++; continue; } // ビルド除外は一覧から隠す
                 DrawSkinnedMeshMergeRowPC(row);
             }
+            DrawBuildExcludedHiddenNote(mergeHiddenExcluded);
         }
 
         /// <summary>統合プレビュー1行(PC版: 統合する/しない・理由・個別除外トグル・ピン)を描画する。</summary>
@@ -864,6 +873,7 @@ namespace RARA.PCOptimizer
                 }
 
                 DrawPhysBoneCountHeader();
+                DrawBuildExcludedHiddenNote(_physBonePreview.hiddenExcludedCount);
 
                 var rows = _physBonePreview.rows;
                 if (rows == null || rows.Count == 0)
@@ -1602,10 +1612,20 @@ namespace RARA.PCOptimizer
         {
             _toggleGroups = null;
             _toggleGroupsFailed = false;
+            _toggleGroupsHiddenExcluded = 0;
             if (_avatar == null) return;
             try
             {
-                _toggleGroups = ToggleConsolidator.DetectToggleGroups(_avatar.gameObject) ?? new List<ToggleGroup>();
+                List<ToggleGroup> detected = ToggleConsolidator.DetectToggleGroups(_avatar.gameObject) ?? new List<ToggleGroup>();
+                // [1.5.1] 対象オブジェクトが EditorOnly(ビルド除外)のグループは一覧から隠す(PCはQuest除外なし)。
+                _buildExclusion.Refresh(_avatar.gameObject, null);
+                var visible = new List<ToggleGroup>(detected.Count);
+                foreach (ToggleGroup g in detected)
+                {
+                    if (g != null && _buildExclusion.IsExcludedPath(g.id)) { _toggleGroupsHiddenExcluded++; continue; }
+                    visible.Add(g);
+                }
+                _toggleGroups = visible;
             }
             catch (Exception ex)
             {
@@ -1613,6 +1633,17 @@ namespace RARA.PCOptimizer
                 _toggleGroupsFailed = true;
                 Debug.LogError("[RARA PCOptimizer] トグルの検出に失敗しました: " + ex);
             }
+        }
+
+        /// <summary>
+        /// [1.5.1] EditorOnly(ビルド除外)で一覧から隠した件数を1行の注記で示す(0件なら何も描画しない)。仕様[C]。
+        /// </summary>
+        private void DrawBuildExcludedHiddenNote(int hiddenCount)
+        {
+            if (hiddenCount <= 0) return;
+            EditorGUILayout.LabelField(
+                string.Format("EditorOnly/Quest除外のため {0} 件を非表示(ビルドに含まれないため)", hiddenCount),
+                _miniWrapLabel);
         }
 
         private void QueueToggleGroupsRefresh()

@@ -61,6 +61,10 @@ namespace RARA.PCOptimizer
         private bool _toggleGroupsQueued;
         private bool _toggleGroupsFailed;
 
+        // [1.5.1] EditorOnly(ビルド除外)を一覧から隠すための共有判定キャッシュと非表示件数(PCはQuest除外なし=EditorOnlyのみ)。
+        private readonly BuildExclusionCache _buildExclusion = new BuildExclusionCache();
+        private int _toggleGroupsHiddenExcluded;                    // トグル整理: ビルド除外で非表示にしたトグルグループ数(検出時に算出)
+
         // セクション7: PhysBoneマージ・削除のドライランプレビュー(未計算ならnull)
         private PhysBonePreview _physBonePreview;
         private bool _physBonePreviewQueued;
