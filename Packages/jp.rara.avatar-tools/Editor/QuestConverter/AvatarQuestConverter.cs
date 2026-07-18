@@ -685,6 +685,11 @@ namespace RARA.QuestConverter
 
                 // MA互換監査: クローンに載る Modular Avatar コンポーネントの把握状況を1行で報告する(R7)。
                 MACompatAudit.AuditCoverage(clone, "Quest変換", report);
+
+                // ビルド不要の即時実測(NDMF手動ベイク)。設定オフ・NDMF未導入・例外いずれでも変換結果へは影響しない。
+                if (settings.instantMeasureAfterConvert)
+                    RARA.AvatarStudio.InstantMeasure.MeasureAfterConvert(clone);
+
                 return clone;
             }
             catch (Exception ex)

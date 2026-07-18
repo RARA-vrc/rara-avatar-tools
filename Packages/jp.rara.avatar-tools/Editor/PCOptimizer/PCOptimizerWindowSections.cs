@@ -1111,11 +1111,17 @@ namespace RARA.PCOptimizer
                         "PhysBoneなどの揺れ物へNetwork IDを割り当て、PC(_Opt)版とQuest(_Quest)版で同じ揺れ物が同じIDになるようにします。" +
                         "他ユーザーから見た掴み/ポーズ/ストレッチの同期がPC/Quest間でズレるのを防ぎます(元アバター基準で採番)。既定はオン"),
                     _settings.assignNetworkIds);
+                bool instantMeasure = EditorGUILayout.ToggleLeft(
+                    new GUIContent("変換直後に即時実測する(ビルド/Play不要)",
+                        "軽量化直後に、ビルド時の姿(NDMF手動ベイク)で複製を即時実測してレポートに表示します(ビルド/Play不要。既定オン)。" +
+                        "NDMF未導入時はスキップされ、従来どおりビルド/Play時に実測されます"),
+                    _settings.instantMeasureAfterConvert);
                 if (EditorGUI.EndChangeCheck())
                 {
                     _settings.savePrefab = savePrefab;
                     _settings.ensureTraceAndOptimize = ensureTao;
                     _settings.assignNetworkIds = assignNetworkIds;
+                    _settings.instantMeasureAfterConvert = instantMeasure;
                     SaveSettings();
                 }
 

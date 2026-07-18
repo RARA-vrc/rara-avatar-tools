@@ -109,6 +109,7 @@ namespace RARA.AvatarStudio
         public double measuredAtUtc;       // 計測時刻(UTC Ticks)
         public double buildAtUtc;          // ビルドサイズ取得時刻(UTC Ticks)
         public bool fromBuild;             // true=ビルド/Playの実測 / false=エディタ再計測(スタジオ診断)
+        public bool instantBake;           // true=ビルド不要の即時実測(NDMF手動ベイク)。fromBuild と併存(表示ラベル用)
 
         public List<MeasuredCategory> categories = new List<MeasuredCategory>();
     }
@@ -724,6 +725,25 @@ namespace RARA.AvatarStudio
             w.Repaint();
         }
 
+        /// <summary>
+        /// 即時実測(ビルド不要)後にレポートを前面へ出す。force=false のときは「▶️/ビルドのたびに表示」設定に従う
+        /// (オフなら開いているときだけ再描画する)。Playセッション1回制限には縛られない。
+        /// </summary>
+        public static void ShowForInstantMeasure(bool force)
+        {
+            if (!force && !AvatarStudioMeasurePrefs.ShowOnPlay)
+            {
+                RepaintIfOpen();
+                return;
+            }
+            // focus:false で作業中のフォーカスを奪わない。
+            var w = GetWindow<AvatarStudioMeasureReportWindow>(false, "実測レポート", false);
+            w.titleContent = new GUIContent("RARA 実測レポート");
+            w.minSize = new Vector2(520f, 420f);
+            w._goalCache = null; // 次の Layout で目標を取り直す
+            w.Repaint();
+        }
+
         /// <summary>編集モードへ戻ったら「今回のPlayセッションでの表示済み」フラグをリセットする。</summary>
         public static void ResetPlaySession()
         {
@@ -851,6 +871,17 @@ namespace RARA.AvatarStudio
                         }
                     }
 
+                    using (new EditorGUI.DisabledScope(isPlaying))
+                    {
+                        if (GUILayout.Button(new GUIContent("今すぐ実測(ビルド不要)",
+                            "選択中(またはシーン上)の _Opt/_Quest 複製を、ビルド時の姿(NDMF手動ベイク)で実測します。"
+                            + "Play も SDK ビルドも不要です"),
+                            GUILayout.Width(150f)))
+                        {
+                            RunInstantMeasureFromButton();
+                        }
+                    }
+
                     GUILayout.FlexibleSpace();
 
                     if (GUILayout.Button(new GUIContent("結果をクリア"), GUILayout.Width(100f)))
@@ -890,9 +921,12 @@ namespace RARA.AvatarStudio
                     string kind = string.IsNullOrEmpty(a.cloneType) ? "(元アバター)" : a.cloneType;
                     EditorGUILayout.LabelField(kind, EditorStyles.miniLabel, GUILayout.Width(90f));
                     GUILayout.FlexibleSpace();
+                    string measureLabel = a.instantBake
+                        ? "実測(手動ベイク・ビルド不要)"
+                        : (a.fromBuild ? "実測" : "診断");
                     EditorGUILayout.LabelField(
-                        (a.fromBuild ? "実測" : "診断") + " " + FormatTime(a.measuredAtUtc),
-                        EditorStyles.miniLabel, GUILayout.Width(150f));
+                        measureLabel + " " + FormatTime(a.measuredAtUtc),
+                        EditorStyles.miniLabel, GUILayout.Width(a.instantBake ? 220f : 150f));
                 }
 
                 // 総合ランク行(PC / Quest)。権威基準を太字強調。
@@ -908,6 +942,16 @@ namespace RARA.AvatarStudio
 
                 DrawGoalLine(a);
                 DrawBuildSizeLine(a, isQuest);
+
+                // 即時実測(手動ベイク)の正直な注記。
+                if (a.instantBake)
+                {
+                    EditorGUILayout.LabelField(
+                        "※ ビルド不要の手動ベイク(NDMF)による実測です。ダウンロードサイズは推定値のまま"
+                        + "(実ファイルサイズはSDKビルド/アップロード時のみ確定します)。lilToon等のSDKビルド固有処理"
+                        + "(コールバック)は含まれません。",
+                        AvatarStudioUI.MiniWrapLabel);
+                }
 
                 // 項目別テーブル。
                 DrawCategoryTable(a, source);
@@ -1168,6 +1212,74 @@ namespace RARA.AvatarStudio
                     + "_Opt / _Quest 複製をシーンに置くか、上の「_Opt / _Quest 以外も計測する」をオンにしてください。", "OK");
             }
             Repaint();
+        }
+
+        /// <summary>
+        /// 「今すぐ実測(ビルド不要)」ボタン。選択中(なければシーン上)の対象複製を NDMF 手動ベイクで即時実測する。
+        /// 対象ゲート(_Opt/_Quest、全アバターがオンなら全て)はビルドフックと同じ。
+        /// </summary>
+        private void RunInstantMeasureFromButton()
+        {
+            if (!InstantMeasure.IsNdmfAvailable)
+            {
+                EditorUtility.DisplayDialog("今すぐ実測(ビルド不要)",
+                    "NDMFが導入されていないため、ビルド不要の即時実測はできません。"
+                    + "NDMFを導入するか、_Opt / _Quest 複製を ▶️(Play)/ SDKビルドすると実測されます。", "OK");
+                return;
+            }
+
+            bool all = AvatarStudioMeasurePrefs.MeasureAllAvatars;
+            var targets = new List<VRCAvatarDescriptor>();
+
+            // まず選択中のアバター(シーン実体のみ)を対象にする。
+            foreach (GameObject sel in Selection.gameObjects)
+            {
+                if (sel == null) continue;
+                VRCAvatarDescriptor d = sel.GetComponent<VRCAvatarDescriptor>();
+                if (d == null || EditorUtility.IsPersistent(d)) continue;
+                if (InScope(d, all) && !targets.Contains(d)) targets.Add(d);
+            }
+            // 選択が対象外/空ならシーン全体から集める。
+            if (targets.Count == 0)
+            {
+                foreach (VRCAvatarDescriptor d in UnityEngine.Object.FindObjectsOfType<VRCAvatarDescriptor>(true))
+                {
+                    if (d == null || EditorUtility.IsPersistent(d)) continue;
+                    if (InScope(d, all) && !targets.Contains(d)) targets.Add(d);
+                }
+            }
+
+            if (targets.Count == 0)
+            {
+                EditorUtility.DisplayDialog("今すぐ実測(ビルド不要)",
+                    "実測対象のアバターが見つかりませんでした。_Opt / _Quest 複製を選択するかシーンに置いてください"
+                    + "(それ以外も測るには「_Opt / _Quest 以外のアバターも計測する」をオンに)。", "OK");
+                return;
+            }
+
+            int ok = 0;
+            string lastError = string.Empty;
+            foreach (VRCAvatarDescriptor d in targets)
+            {
+                if (InstantMeasure.MeasureManual(d.gameObject, out string msg)) ok++;
+                else if (!string.IsNullOrEmpty(msg)) lastError = msg;
+            }
+
+            _goalCache = null;
+            if (ok == 0)
+            {
+                EditorUtility.DisplayDialog("今すぐ実測(ビルド不要)",
+                    "実測できませんでした。" + (string.IsNullOrEmpty(lastError) ? string.Empty : "\n" + lastError), "OK");
+            }
+            Repaint();
+        }
+
+        /// <summary>ビルドフックと同じ対象ゲート: 名前が _Opt/_Quest で終わる、または全アバター計測がオン。</summary>
+        private static bool InScope(VRCAvatarDescriptor d, bool all)
+        {
+            string name = AvatarStudioMeasureUtil.StripCloneSuffix(d.gameObject.name);
+            string cloneType = AvatarStudioMeasureUtil.DetectCloneType(name);
+            return cloneType.Length > 0 || all;
         }
     }
 }

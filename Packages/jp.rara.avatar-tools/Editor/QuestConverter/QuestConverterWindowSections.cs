@@ -2715,6 +2715,12 @@ namespace RARA.QuestConverter
                                 "変換後に元のアバターを非アクティブ化する(元アバター自体は変更されません)"),
                             _settings.deactivateOriginal);
 
+                        _settings.instantMeasureAfterConvert = EditorGUILayout.ToggleLeft(
+                            new GUIContent("変換直後に即時実測する(ビルド/Play不要)",
+                                "変換直後に、ビルド時の姿(NDMF手動ベイク)で複製を即時実測してレポートに表示します(ビルド/Play不要。既定オン)。" +
+                                "NDMF未導入時はスキップされ、従来どおりビルド/Play時に実測されます"),
+                            _settings.instantMeasureAfterConvert);
+
                         // 出力先フォルダ
                         using (new EditorGUILayout.HorizontalScope())
                         {

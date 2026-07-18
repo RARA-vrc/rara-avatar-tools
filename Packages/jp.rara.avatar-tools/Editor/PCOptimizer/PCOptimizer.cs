@@ -191,6 +191,11 @@ namespace RARA.PCOptimizer
 
                 report.Info("PC軽量化が完了しました。確認・アップロードするのはこの複製 '" + cloneName + "' です(シーンでハイライト表示しました)。元アバターは無改変です。生成先: " + outputDir);
                 report.Info("この複製の VRCAvatarDescriptor をそのまま Questコンバーターへかければ、続けてQuest対応も行えます。");
+
+                // ビルド不要の即時実測(NDMF手動ベイク)。設定オフ・NDMF未導入・例外いずれでも軽量化結果へは影響しない。
+                if (settings.instantMeasureAfterConvert)
+                    RARA.AvatarStudio.InstantMeasure.MeasureAfterConvert(clone);
+
                 return clone;
             }
             catch (Exception ex)

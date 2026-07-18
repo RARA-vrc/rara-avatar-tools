@@ -318,6 +318,9 @@ namespace RARA.QuestConverter
 
         [Tooltip("生成アセットの出力先ルートフォルダ")]
         public string outputFolder = "Assets/RARA/QuestConverter/Generated";
+
+        [Tooltip("変換直後に、ビルド時の姿(NDMF手動ベイク)で複製を即時実測してレポートに表示する(ビルド/Play不要。既定オン)")]
+        public bool instantMeasureAfterConvert = true;
     }
 
     /// <summary>変換・診断の結果レポート。UIにそのまま表示できる形で蓄積する。</summary>

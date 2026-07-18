@@ -44,52 +44,7 @@ namespace RARA.QuestConverter
         {
             try
             {
-                // 無効化されている場合、またはモバイル(Android/iOS)ビルドでない場合は何もしない
-                if (!Enabled) return true;
-                var target = EditorUserBuildSettings.activeBuildTarget;
-                if (target != BuildTarget.Android && target != BuildTarget.iOS) return true;
-
-                // QuestCompat.FindUnsupportedComponents は依存関係
-                // (Joint→Rigidbody、AudioListener/FlareLayer→Camera)を満たす削除順で返す
-                var components = QuestCompat.FindUnsupportedComponents(avatarGameObject);
-                if (components == null || components.Count == 0) return true; // 非対応なし: 黙って通す
-
-                int removed = 0;
-                foreach (var component in components)
-                {
-                    // 先行する削除の連鎖(依存コンポーネントの破棄等)で既に消えている場合はスキップ
-                    if (component == null) continue;
-
-                    // 削除後は参照できないため、ログ用情報を先に取得しておく
-                    string typeName = component.GetType().Name;
-                    string path = GetHierarchyPath(avatarGameObject.transform, component.transform);
-                    try
-                    {
-                        UnityEngine.Object.DestroyImmediate(component);
-                        if (component == null) // Unityのnull比較: 破棄済みならtrue
-                        {
-                            removed++;
-                            Debug.Log("[RARA QuestConverter] モバイルビルド: 非対応コンポーネントを自動削除 " +
-                                      typeName + " (" + path + ")");
-                        }
-                        else
-                        {
-                            // RequireComponentで他コンポーネントから要求されている等、削除できなかった場合。
-                            // ビルドは止めずSDK側の検証に委ねる。
-                            Debug.LogWarning("[RARA QuestConverter] モバイルビルド: " + typeName + " (" + path +
-                                             ") を削除できませんでした(他のコンポーネントから必要とされている可能性があります)。");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        // 個別の削除失敗ではビルドを止めず、残りの削除を続行する
-                        Debug.LogWarning("[RARA QuestConverter] モバイルビルド: " + typeName + " (" + path +
-                                         ") の削除中に例外が発生しました: " + ex.Message);
-                    }
-                }
-
-                Debug.Log("[RARA QuestConverter] モバイルビルド: 非対応コンポーネントを " + removed +
-                          " 件自動削除しました(SDKビルダーの「Auto Fix」と同等の処理。通常のBuild/Uploadではビルド用コピーに適用され、保存済みシーンは変更されません)。");
+                StripUnsupportedForActiveTarget(avatarGameObject);
                 return true;
             }
             catch (Exception ex)
@@ -99,6 +54,60 @@ namespace RARA.QuestConverter
                 Debug.LogError("[RARA QuestConverter] モバイルビルド時の自動削除中に例外が発生しました: " + ex);
                 return true;
             }
+        }
+
+        /// <summary>
+        /// 非対応コンポーネント自動削除の本体。OnPreprocessAvatar と「ビルド不要の即時実測」で共用する。
+        /// 無効(Enabled=false)、またはモバイル(Android/iOS)ビルドでない場合は何もしない(OnPreprocessAvatar と同一判定)。
+        /// 個別の削除失敗は握りつぶすが、致命的な例外は呼び出し側へ委ねる(OnPreprocessAvatar 側で try/catch する)。
+        /// </summary>
+        public static void StripUnsupportedForActiveTarget(GameObject avatarGameObject)
+        {
+            if (!Enabled || avatarGameObject == null) return;
+            var target = EditorUserBuildSettings.activeBuildTarget;
+            if (target != BuildTarget.Android && target != BuildTarget.iOS) return;
+
+            // QuestCompat.FindUnsupportedComponents は依存関係
+            // (Joint→Rigidbody、AudioListener/FlareLayer→Camera)を満たす削除順で返す
+            var components = QuestCompat.FindUnsupportedComponents(avatarGameObject);
+            if (components == null || components.Count == 0) return; // 非対応なし: 黙って通す
+
+            int removed = 0;
+            foreach (var component in components)
+            {
+                // 先行する削除の連鎖(依存コンポーネントの破棄等)で既に消えている場合はスキップ
+                if (component == null) continue;
+
+                // 削除後は参照できないため、ログ用情報を先に取得しておく
+                string typeName = component.GetType().Name;
+                string path = GetHierarchyPath(avatarGameObject.transform, component.transform);
+                try
+                {
+                    UnityEngine.Object.DestroyImmediate(component);
+                    if (component == null) // Unityのnull比較: 破棄済みならtrue
+                    {
+                        removed++;
+                        Debug.Log("[RARA QuestConverter] モバイルビルド: 非対応コンポーネントを自動削除 " +
+                                  typeName + " (" + path + ")");
+                    }
+                    else
+                    {
+                        // RequireComponentで他コンポーネントから要求されている等、削除できなかった場合。
+                        // ビルドは止めずSDK側の検証に委ねる。
+                        Debug.LogWarning("[RARA QuestConverter] モバイルビルド: " + typeName + " (" + path +
+                                         ") を削除できませんでした(他のコンポーネントから必要とされている可能性があります)。");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // 個別の削除失敗ではビルドを止めず、残りの削除を続行する
+                    Debug.LogWarning("[RARA QuestConverter] モバイルビルド: " + typeName + " (" + path +
+                                     ") の削除中に例外が発生しました: " + ex.Message);
+                }
+            }
+
+            Debug.Log("[RARA QuestConverter] モバイルビルド: 非対応コンポーネントを " + removed +
+                      " 件自動削除しました(SDKビルダーの「Auto Fix」と同等の処理。通常のBuild/Uploadではビルド用コピーに適用され、保存済みシーンは変更されません)。");
         }
 
         /// <summary>ログ表示用の階層パス(アバタールート名/相対パス)を返す。root配下でない場合は名前のみ。</summary>

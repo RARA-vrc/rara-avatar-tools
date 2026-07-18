@@ -125,6 +125,9 @@ namespace RARA.PCOptimizer
 
         [Tooltip("mergeSkinnedMeshesMode=グループ指定 のときの、レンダラー→グループ番号(1..8)の割り当て。統合UIから設定する")]
         public List<RARA.QuestConverter.SmrMergeGroupAssignment> smrMergeGroups = new List<RARA.QuestConverter.SmrMergeGroupAssignment>();
+
+        [Tooltip("軽量化直後に、ビルド時の姿(NDMF手動ベイク)で複製を即時実測してレポートに表示する(ビルド/Play不要。既定オン)")]
+        public bool instantMeasureAfterConvert = true;
     }
 
     /// <summary>
