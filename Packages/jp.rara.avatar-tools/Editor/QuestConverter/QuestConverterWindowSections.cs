@@ -1662,15 +1662,180 @@ namespace RARA.QuestConverter
                     return;
                 }
 
+                // グループごとの専有アセットサイズ寄与(非表示固定=除去時の削減量)を用意する。
+                // アバター+グループ集合ごとに1回だけ計算し、以降はキャッシュを使う(毎OnGUI再計算しない)。
+                EnsureToggleGroupSizes();
+
+                // セクション見出しガイド: 現在の推定(圧縮後/展開後)+超過分+「大きい順に削除候補」。
+                HashSet<string> deleteCandidateIds = DrawToggleSizeGuide();
+
+                // サイズの大きい順に並べ替えるトグル。
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    bool newSort = EditorGUILayout.ToggleLeft(
+                        new GUIContent("削減量(展開後)の大きい順に並べ替え",
+                            "各グループを「非表示固定」にしたときに減る専有アセットの展開後サイズが大きい順に並べます"),
+                        _sortToggleGroupsBySize, GUILayout.Width(260f));
+                    if (newSort != _sortToggleGroupsBySize) _sortToggleGroupsBySize = newSort;
+                    GUILayout.FlexibleSpace();
+                }
+
                 DrawToggleQuickButtons();
 
-                foreach (ToggleGroup group in _toggleGroups)
+                foreach (ToggleGroup group in GetOrderedToggleGroups())
                 {
-                    DrawToggleGroupRow(group);
+                    DrawToggleGroupRow(group, deleteCandidateIds);
                 }
 
                 DrawToggleProjectedNote();
             }
+        }
+
+        /// <summary>
+        /// トグル一覧の描画順を返す。_sortToggleGroupsBySize かつサイズ計算済みなら、専有アセットの
+        /// 展開後サイズ寄与の大きい順(未計算・共有のみは後方)に並べ替えたコピーを返す。それ以外は検出順のまま。
+        /// </summary>
+        private List<ToggleGroup> GetOrderedToggleGroups()
+        {
+            if (!_sortToggleGroupsBySize || _toggleGroupSizes == null || _toggleGroups == null) return _toggleGroups;
+            var ordered = new List<ToggleGroup>(_toggleGroups);
+            ordered.Sort((a, b) =>
+            {
+                float ua = ToggleGroupUncompressed(a);
+                float ub = ToggleGroupUncompressed(b);
+                return ub.CompareTo(ua);
+            });
+            return ordered;
+        }
+
+        /// <summary>グループの専有アセット展開後サイズ寄与(未計算・null は 0)。</summary>
+        private float ToggleGroupUncompressed(ToggleGroup group)
+        {
+            if (group == null || _toggleGroupSizes == null) return 0f;
+            ToggleGroupSizeInfo info;
+            return _toggleGroupSizes.TryGetValue(group.id ?? string.Empty, out info) && info != null
+                ? info.exclusiveUncompressedMB : 0f;
+        }
+
+        /// <summary>
+        /// セクション見出しガイドを描画し、「削除候補」として強調するグループIDの集合を返す。
+        /// 現在の推定(圧縮後/展開後)と超過分を示し、超過している場合は専有削減量の大きい順に
+        /// 上限を満たすまでのグループを削除候補として列挙・強調する。サイズ未計算時は計測中の旨だけ出す。
+        /// </summary>
+        private HashSet<string> DrawToggleSizeGuide()
+        {
+            var candidateIds = new HashSet<string>(StringComparer.Ordinal);
+            SizeEstimateResult est = _diagnostics != null ? _diagnostics.sizeEstimate : null;
+            if (est == null) return candidateIds;
+
+            if (_toggleGroupSizes == null)
+            {
+                EditorGUILayout.LabelField("グループごとの削減量を計測中...", EditorStyles.miniLabel);
+                return candidateIds;
+            }
+
+            bool overC = est.estimatedDownloadMB > QuestLimits.HardDownloadSizeCapMB;
+            bool overU = est.estimatedUncompressedMB > QuestLimits.HardUncompressedSizeCapMB;
+
+            string head = "現在の推定: 圧縮後 " + est.estimatedDownloadMB.ToString("F1") + "/" + QuestLimits.HardDownloadSizeCapMB +
+                          "MB, 展開後 " + est.estimatedUncompressedMB.ToString("F1") + "/" + QuestLimits.HardUncompressedSizeCapMB + "MB";
+            if (!overC && !overU)
+            {
+                EditorGUILayout.HelpBox(head + "\n両上限とも収まっています。トグルの非表示固定でさらに削減できます。", MessageType.Info);
+                return candidateIds;
+            }
+
+            float overCompressed = Mathf.Max(0f, est.estimatedDownloadMB - QuestLimits.HardDownloadSizeCapMB);
+            float overUncompressed = Mathf.Max(0f, est.estimatedUncompressedMB - QuestLimits.HardUncompressedSizeCapMB);
+
+            // 専有削減のあるグループを展開後寄与の大きい順に並べる。
+            var groupById = new Dictionary<string, ToggleGroup>(StringComparer.Ordinal);
+            foreach (ToggleGroup g in _toggleGroups)
+            {
+                if (g != null && !string.IsNullOrEmpty(g.id) && !groupById.ContainsKey(g.id)) groupById[g.id] = g;
+            }
+            var ranked = new List<ToggleGroupSizeInfo>();
+            foreach (KeyValuePair<string, ToggleGroupSizeInfo> kv in _toggleGroupSizes)
+            {
+                if (kv.Value != null && !kv.Value.sharedOnly && kv.Value.exclusiveUncompressedMB > 0f) ranked.Add(kv.Value);
+            }
+            ranked.Sort((a, b) => b.exclusiveUncompressedMB.CompareTo(a.exclusiveUncompressedMB));
+
+            var sb = new System.Text.StringBuilder();
+            sb.Append(head).Append('\n');
+            sb.Append("超過分: ");
+            if (overC) sb.Append("圧縮後 +").Append(overCompressed.ToString("F1")).Append("MB ");
+            if (overU) sb.Append("展開後 +").Append(overUncompressed.ToString("F1")).Append("MB");
+            sb.Append('\n');
+
+            if (ranked.Count == 0)
+            {
+                sb.Append("単独除去で減らせる専有アセットを持つトグルグループはありません(共有アセット中心)。メッシュ削減・ブレンドシェイプ整理を検討してください。");
+                EditorGUILayout.HelpBox(sb.ToString(), MessageType.Warning);
+                return candidateIds;
+            }
+
+            sb.Append("大きい順に削除候補(非表示固定で減る専有アセット):");
+            float cumC = 0f, cumU = 0f;
+            bool covered = false;
+            int listed = 0;
+            const int guideMax = 6;
+            for (int i = 0; i < ranked.Count; i++)
+            {
+                ToggleGroupSizeInfo info = ranked[i];
+                bool needMore = (overC && cumC < overCompressed) || (overU && cumU < overUncompressed);
+                // 既に選んだ候補の祖先/子孫は、親を非表示固定すれば子のサブツリーも一緒に消えるため、
+                // 合計に足すと専有アセットを二重計上してしまう(カバー量を過大に見積もる)。候補から除外する。
+                bool isCandidate = needMore && !OverlapsSelectedCandidate(info.groupId, candidateIds);
+                if (isCandidate)
+                {
+                    candidateIds.Add(info.groupId);
+                    cumC += info.exclusiveDownloadMB;
+                    cumU += info.exclusiveUncompressedMB;
+                }
+                if (listed < guideMax)
+                {
+                    ToggleGroup g;
+                    string label = groupById.TryGetValue(info.groupId, out g) && g != null
+                        ? (string.IsNullOrEmpty(g.label) ? info.groupId : g.label) : info.groupId;
+                    sb.Append("\n・").Append(label)
+                      .Append(" 圧縮後-").Append(info.exclusiveDownloadMB.ToString("F1"))
+                      .Append(" / 展開後-").Append(info.exclusiveUncompressedMB.ToString("F1")).Append("MB");
+                    if (isCandidate) sb.Append("  ← 候補");
+                    listed++;
+                }
+                bool nowCovered = (!overC || cumC >= overCompressed) && (!overU || cumU >= overUncompressed);
+                if (nowCovered && !covered)
+                {
+                    covered = true;
+                }
+            }
+            if (covered)
+                sb.Append("\n→ 上位 ").Append(candidateIds.Count).Append(" 件の非表示固定で両上限をカバーできる見込みです。");
+            else
+                sb.Append("\n→ 全候補を非表示固定してもテクスチャ縮小・メッシュ削減の併用が必要な見込みです。");
+
+            EditorGUILayout.HelpBox(sb.ToString(), MessageType.Warning);
+            return candidateIds;
+        }
+
+        /// <summary>
+        /// groupId(=アバタールート相対のオブジェクトパス)が、既に選んだ候補のいずれかと
+        /// 同一または祖先/子孫(サブツリー)関係にあるか。親を非表示固定すれば子のサブツリーも一緒に
+        /// 消えるため、両方を合計に足すと専有アセットを二重計上してしまう。それを防ぐための重複判定。
+        /// </summary>
+        private static bool OverlapsSelectedCandidate(string groupId, HashSet<string> selected)
+        {
+            if (string.IsNullOrEmpty(groupId) || selected == null) return false;
+            foreach (string sel in selected)
+            {
+                if (string.IsNullOrEmpty(sel)) continue;
+                if (string.Equals(groupId, sel, StringComparison.Ordinal)) return true;
+                // "A/B" は "A/B/C" の祖先(区切りは '/')。どちら向きの入れ子も重複とみなす。
+                if (groupId.Length > sel.Length && groupId.StartsWith(sel, StringComparison.Ordinal) && groupId[sel.Length] == '/') return true;
+                if (sel.Length > groupId.Length && sel.StartsWith(groupId, StringComparison.Ordinal) && sel[groupId.Length] == '/') return true;
+            }
+            return false;
         }
 
         /// <summary>一括操作ボタン(現在の表示状態で固定 / すべてトグル維持に戻す)を描画する。</summary>
@@ -1691,8 +1856,8 @@ namespace RARA.QuestConverter
             }
         }
 
-        /// <summary>トグルグループ1件分の行(ラベル+メッシュ数+現在表示状態 / 選択ポップアップ / ピン)を描画する。</summary>
-        private void DrawToggleGroupRow(ToggleGroup group)
+        /// <summary>トグルグループ1件分の行(ラベル+メッシュ数+現在表示状態 / サイズチップ / 選択ポップアップ / ピン)を描画する。</summary>
+        private void DrawToggleGroupRow(ToggleGroup group, HashSet<string> deleteCandidateIds)
         {
             if (group == null || string.IsNullOrEmpty(group.id)) return;
             using (new EditorGUILayout.VerticalScope(GUI.skin.box))
@@ -1722,7 +1887,42 @@ namespace RARA.QuestConverter
 
                     DrawTogglePingButton(group);
                 }
+
+                DrawToggleGroupSizeChip(group, deleteCandidateIds);
             }
+        }
+
+        /// <summary>
+        /// トグルグループの「非表示固定で減る専有アセット」サイズチップを描画する。
+        /// 未計算=計測中、専有なし=共有のみ注記、それ以外=圧縮後/展開後の削減量。削除候補は強調色。
+        /// </summary>
+        private void DrawToggleGroupSizeChip(ToggleGroup group, HashSet<string> deleteCandidateIds)
+        {
+            if (_toggleGroupSizes == null)
+            {
+                EditorGUILayout.LabelField("非表示固定の削減量: 計測中...", _miniWrapLabel);
+                return;
+            }
+            ToggleGroupSizeInfo info;
+            if (!_toggleGroupSizes.TryGetValue(group.id, out info) || info == null)
+            {
+                EditorGUILayout.LabelField("非表示固定の削減量: -", _miniWrapLabel);
+                return;
+            }
+            if (info.sharedOnly)
+            {
+                EditorGUILayout.LabelField("非表示固定で約 圧縮後-0.0 MB / 展開後-0.0 MB(共有テクスチャのみ・単独削減効果小)", _miniWrapLabel);
+                return;
+            }
+
+            bool isCandidate = deleteCandidateIds != null && deleteCandidateIds.Contains(group.id);
+            Color prev = GUI.color;
+            if (isCandidate) GUI.color = OverLimitColor;
+            EditorGUILayout.LabelField(
+                (isCandidate ? "★ " : "") + "非表示固定で約 圧縮後-" + info.exclusiveDownloadMB.ToString("F1") +
+                " MB / 展開後-" + info.exclusiveUncompressedMB.ToString("F1") + " MB",
+                _miniWrapLabel);
+            GUI.color = prev;
         }
 
         /// <summary>トグルグループの代表オブジェクト(objectPathsの最初に解決できたもの)をピン表示するボタンを描画する。</summary>
@@ -1868,6 +2068,9 @@ namespace RARA.QuestConverter
         {
             _toggleGroups = null;
             _toggleGroupsFailed = false;
+            // グループ集合が変わるためサイズ寄与キャッシュも破棄する(次回表示時に再計算される)。
+            _toggleGroupSizes = null;
+            _toggleGroupSizesSig = null;
             if (_avatar == null) return;
             try
             {
@@ -1879,6 +2082,68 @@ namespace RARA.QuestConverter
                 _toggleGroupsFailed = true;
                 Debug.LogError("[RARA QuestConverter] トグルの検出に失敗しました: " + ex);
             }
+        }
+
+        /// <summary>
+        /// トグルグループごとの専有アセットサイズ寄与を用意する(アバター+グループ集合ごとに1回だけ計算)。
+        /// 現在のシグネチャと不一致(未計算・アバター変更・グループ再検出)なら遅延計算を1回だけ予約する。
+        /// </summary>
+        private void EnsureToggleGroupSizes()
+        {
+            if (_avatar == null || _toggleGroups == null) return;
+            string sig = BuildToggleGroupSizeSig();
+            if (_toggleGroupSizes != null && _toggleGroupSizesSig == sig) return; // 計算済み
+            QueueToggleGroupSizesRefresh(sig);
+        }
+
+        /// <summary>現在のアバターとトグルグループ集合を表すシグネチャ(サイズ寄与の再計算判定に使う)。</summary>
+        private string BuildToggleGroupSizeSig()
+        {
+            if (_avatar == null || _toggleGroups == null) return null;
+            var sb = new System.Text.StringBuilder();
+            sb.Append(_avatar.GetInstanceID()).Append('|').Append(_toggleGroups.Count);
+            foreach (ToggleGroup g in _toggleGroups)
+            {
+                sb.Append('|').Append(g != null ? g.id : "null");
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// トグルグループごとの専有アセットサイズ寄与の計算を1回だけ予約する。
+        /// 565体規模でもUIをブロックしないよう delayCall + 進捗バーで実行し、毎OnGUIでは計算しない
+        /// (_toggleGroupSizesQueued で再入をガード)。計算結果をシグネチャ付きでキャッシュする。
+        /// </summary>
+        private void QueueToggleGroupSizesRefresh(string sig)
+        {
+            if (_avatar == null || _toggleGroups == null || _toggleGroupSizesQueued) return;
+            _toggleGroupSizesQueued = true;
+            List<ToggleGroup> groupsSnapshot = _toggleGroups; // 計算対象を固定
+            EditorApplication.delayCall += () =>
+            {
+                _toggleGroupSizesQueued = false;
+                if (this == null) return;   // ウィンドウが閉じられた(Unityのnull比較)
+                if (_avatar == null || groupsSnapshot == null) return;
+                try
+                {
+                    EditorUtility.DisplayProgressBar("衣装・トグル整理", "グループごとの削減量を計算しています...", 0.3f);
+                    QuestConvertSettings settings = _settings ?? new QuestConvertSettings();
+                    _toggleGroupSizes = QuestSizeEstimator.EstimateToggleGroupExclusiveSizes(
+                        _avatar.gameObject, settings, groupsSnapshot);
+                    _toggleGroupSizesSig = sig;
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError("[RARA QuestConverter] トグルグループのサイズ計算に失敗しました: " + ex);
+                    _toggleGroupSizes = new Dictionary<string, ToggleGroupSizeInfo>();
+                    _toggleGroupSizesSig = sig;
+                }
+                finally
+                {
+                    EditorUtility.ClearProgressBar();
+                }
+                Repaint();
+            };
         }
 
         /// <summary>
@@ -3989,7 +4254,7 @@ namespace RARA.QuestConverter
         {
             new[] { "Toon Standard", "VRChat公式のQuest向けトゥーンシェーダー。影ランプ・ノーマルマップ・エミッションに対応。透過(半透明)は表現できない。" },
             new[] { "ASTC", "Androidで使われるテクスチャ圧縮形式。4x4が最高品質・最大容量、8x8が低品質・最小容量(6x6が推奨)。" },
-            new[] { "縮小計画(テクスチャ)", "削減提案の「適用」や「10MB以下まで自動調整」で登録される、テクスチャごとの縮小予定サイズ。元のテクスチャは変更されず、変換時に縮小コピーが出力フォルダへ生成されて変換後のマテリアルがそれを参照する。「縮小計画をクリア」でいつでも解除できる。" },
+            new[] { "縮小計画(テクスチャ)", "削減提案の「適用」や「上限内まで自動調整(圧縮後10MB・展開後40MB)」で登録される、テクスチャごとの縮小予定サイズ。元のテクスチャは変更されず、変換時に縮小コピーが出力フォルダへ生成されて変換後のマテリアルがそれを参照する。「縮小計画をクリア」でいつでも解除できる。" },
             new[] { "Android上書き(テクスチャ)", "テクスチャのインポート設定のうちAndroidプラットフォームにのみ適用される上書き。本ツールの削減提案は元テクスチャのこの設定を変更せず、縮小計画に登録して変換時に縮小コピーを生成する。旧バージョンの本ツールが元テクスチャへ直接適用した上書きは元アセットに残ったままのため(サイズ一覧に「Android上書きあり」と表示)、不要ならテクスチャのインポート設定(Androidタブ)から手動で解除できる。" },
             new[] { "PhysBone", "髪や服を揺らすVRChatのコンポーネント。Androidでコンポーネント8個/コライダー16個(Poor上限)を超えると、モバイルではPhysBone・コンタクト・コンストレイントが全て除去される(アップロード自体はサイズ上限内なら可能)。" },
             new[] { "EditorOnly", "このタグが付いたオブジェクトは、アップロード時にアバターから完全に取り除かれる(PC版のシーンには残る)。" },
@@ -4206,14 +4471,23 @@ namespace RARA.QuestConverter
                 }
             }
 
-            // ダウンロードサイズ(10MB上限。ランクに関わらずアップロードの実質ハード上限)
+            // ダウンロードサイズ(圧縮後10MB・展開後40MB上限。ランクに関わらずアップロードの実質ハード上限)
             SizeEstimateResult est = _diagnostics.sizeEstimate;
             if (est != null && est.estimatedDownloadMB > QuestLimits.HardDownloadSizeCapMB)
             {
                 list.Add(new GoalOverRow
                 {
-                    text = "・ダウンロードサイズ(推定): 現在 " + est.estimatedDownloadMB.ToString("F1") +
-                           " MB / 目標 " + QuestLimits.HardDownloadSizeCapMB + " MB — サイズ診断の『10MB自動調整』, 単色極限縮小",
+                    text = "・ダウンロードサイズ(圧縮後・推定): 現在 " + est.estimatedDownloadMB.ToString("F1") +
+                           " MB / 目標 " + QuestLimits.HardDownloadSizeCapMB + " MB — サイズ診断の『上限内まで自動調整』, 単色極限縮小",
+                    hardOver = true,
+                });
+            }
+            if (est != null && est.estimatedUncompressedMB > QuestLimits.HardUncompressedSizeCapMB)
+            {
+                list.Add(new GoalOverRow
+                {
+                    text = "・展開後(非圧縮)サイズ(推定): 現在 " + est.estimatedUncompressedMB.ToString("F1") +
+                           " MB / 目標 " + QuestLimits.HardUncompressedSizeCapMB + " MB — 圧縮後とは独立した上限。トグルの非表示固定・メッシュ削減が有効",
                     hardOver = true,
                 });
             }

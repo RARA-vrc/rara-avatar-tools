@@ -21,7 +21,7 @@ namespace RARA.QuestConverter
     /// <summary>ダウンロードサイズ見積もりの結果一式(すべて概算の目安値)。</summary>
     public class SizeEstimateResult
     {
-        /// <summary>ダウンロードサイズ合計の目安(MB)。テクスチャ+メッシュ+アニメーション。</summary>
+        /// <summary>ダウンロードサイズ合計の目安(MB)。テクスチャ+メッシュ+アニメーション。圧縮後(QuestLimits.HardDownloadSizeCapMB=10MB基準)。</summary>
         public float estimatedDownloadMB;
         /// <summary>テクスチャ分のダウンロードサイズ目安(MB)。</summary>
         public float textureDownloadMB;
@@ -31,12 +31,44 @@ namespace RARA.QuestConverter
         public float animationDownloadMB;
         /// <summary>テクスチャの展開後メモリ目安(MB)。SDKのTextureMegabytes統計に相当する概算。</summary>
         public float textureMemoryMB;
+
+        /// <summary>
+        /// 展開後(非圧縮)アセットバンドルサイズ合計の目安(MB)。QuestLimits.HardUncompressedSizeCapMB(40MB)基準。
+        /// 各アセットの生バイト(テクスチャ=ASTCデータ+ミップ、メッシュ=頂点/インデックス等のバイト、アニメ=Profiler計測)を
+        /// バンドル圧縮係数を掛ける前で合算した概算。textureUncompressedMB は textureMemoryMB と一致する。
+        /// </summary>
+        public float estimatedUncompressedMB;
+        /// <summary>テクスチャ分の展開後(非圧縮)サイズ目安(MB)。= textureMemoryMB(ASTCデータ+ミップ)。</summary>
+        public float textureUncompressedMB;
+        /// <summary>メッシュ分の展開後(非圧縮)サイズ目安(MB)。圧縮係数を掛ける前の生バイト。</summary>
+        public float meshUncompressedMB;
+        /// <summary>アニメーション分の展開後(非圧縮)サイズ目安(MB)。換算係数を掛ける前のProfiler計測値。</summary>
+        public float animationUncompressedMB;
         /// <summary>テクスチャ別の内訳(ダウンロードサイズ降順)。</summary>
         public System.Collections.Generic.List<TextureSizeInfo> textures;
         /// <summary>削減提案(削減量降順。最後の1件は常に汎用アドバイス)。</summary>
         public System.Collections.Generic.List<SizeSuggestion> suggestions;
         /// <summary>ダウンロードサイズ上限(QuestLimits.HardDownloadSizeCapMB)を超過している見込みならtrue。</summary>
         public bool overCap;
+        /// <summary>展開後(非圧縮)サイズ上限(QuestLimits.HardUncompressedSizeCapMB)を超過している見込みならtrue。</summary>
+        public bool overUncompressedCap;
+    }
+
+    /// <summary>
+    /// トグルグループ1件を「非表示固定(除去)」にしたときに削減できる専有アセットのサイズ寄与(概算)。
+    /// 専有 = そのグループのサブツリー内のレンダラーだけが参照し、サブツリー外のレンダラーが一切参照しない
+    /// テクスチャ・メッシュ。共有アセット(他のメッシュでも使う)は単独除去では減らないため含めない。
+    /// </summary>
+    public class ToggleGroupSizeInfo
+    {
+        /// <summary>対象トグルグループのID(ToggleGroup.id = アバタールート相対パス)。</summary>
+        public string groupId;
+        /// <summary>専有アセットの圧縮後ダウンロードサイズ寄与の目安(MB)。</summary>
+        public float exclusiveDownloadMB;
+        /// <summary>専有アセットの展開後(非圧縮)サイズ寄与の目安(MB)。</summary>
+        public float exclusiveUncompressedMB;
+        /// <summary>専有アセットが無く、共有アセットのみ(単独除去では容量が減らない)ならtrue。</summary>
+        public bool sharedOnly;
     }
 
     /// <summary>テクスチャ1枚分のサイズ見積もり情報。</summary>
@@ -88,8 +120,10 @@ namespace RARA.QuestConverter
         public int fromSize;
         /// <summary>縮小後の目標サイズ(px)。</summary>
         public int toSize;
-        /// <summary>この縮小で削減できる見込み量の目安(MB)。</summary>
+        /// <summary>この縮小で削減できる見込み量の目安(圧縮後、MB)。</summary>
         public float savingMB;
+        /// <summary>この縮小で削減できる展開後(非圧縮)サイズの見込み量の目安(MB)。</summary>
+        public float uncompressedSavingMB;
         /// <summary>
         /// 縮小後サイズの見積もりに使う圧縮形式。基本は settings.androidFormat だが、既存のAndroid上書き形式の方が
         /// 高効率(bppが小さい)な場合はその形式を維持して見積もる。縮小計画には保存されないが、
@@ -184,6 +218,8 @@ namespace RARA.QuestConverter
         {
             public bool skinned;
             public float downloadMB;
+            /// <summary>展開後(非圧縮)サイズ目安(MB)。圧縮係数を掛ける前の生バイト。</summary>
+            public float uncompressedMB;
             /// <summary>内訳: ブレンドシェイプ分のダウンロードサイズ目安(MB)。</summary>
             public float blendShapeMB;
         }
@@ -214,82 +250,18 @@ namespace RARA.QuestConverter
                 // 内容由来の低ディテール解析キャッシュは実行間で作り直す(再インポート後の内容を反映するため)。
                 InvalidateDetailCache();
 
-                // 縮小計画をGUID→目標サイズの辞書へ(重複GUIDは最小の目標サイズを採用)
-                Dictionary<string, int> planByGuid = BuildPlanByGuid(settings);
+                // ---- 1〜3. 収集とテクスチャ・メッシュ見積もり(トグルグループ寄与計算と共通のコンテキスト) ----
+                AvatarSizeContext ctx = BuildContext(avatarRoot, settings);
+                List<Renderer> keptRenderers = ctx.keptRenderers;
+                Dictionary<Renderer, HashSet<Texture>> rendererTextures = ctx.rendererTextures;
+                Dictionary<Texture, TextureWork> textureWorks = ctx.textureWorks;
+                Dictionary<Renderer, Mesh> rendererMeshes = ctx.rendererMeshes;
+                Dictionary<Mesh, MeshWork> meshWorks = ctx.meshWorks;
 
-                // ---- 1. 収集対象レンダラー(EditorOnly / Quest除外パス配下は「削除済み」として除外) ----
-                List<Transform> excludedRoots = ResolveExcludedRoots(avatarRoot.transform, settings);
-                var keptRenderers = new List<Renderer>();
-                foreach (Renderer renderer in avatarRoot.GetComponentsInChildren<Renderer>(true))
-                {
-                    if (renderer == null) continue;
-                    if (QuestCompat.IsEditorOnly(renderer.transform)) continue;
-                    if (IsUnderAny(renderer.transform, excludedRoots)) continue;
-                    keptRenderers.Add(renderer);
-                }
-
-                // ---- 2. テクスチャ収集と見積もり ----
-                var materialTextureCache = new Dictionary<Material, List<Texture>>();
-                var rendererTextures = new Dictionary<Renderer, HashSet<Texture>>();
-                var textureWorks = new Dictionary<Texture, TextureWork>();
-                foreach (Renderer renderer in keptRenderers)
-                {
-                    var textureSet = new HashSet<Texture>();
-                    foreach (Material material in renderer.sharedMaterials)
-                    {
-                        if (material == null) continue;
-                        foreach (Texture tex in GetMaterialTextures(material, materialTextureCache))
-                        {
-                            textureSet.Add(tex);
-                        }
-                    }
-                    rendererTextures[renderer] = textureSet;
-                    foreach (Texture tex in textureSet)
-                    {
-                        if (!textureWorks.ContainsKey(tex))
-                        {
-                            textureWorks[tex] = EstimateTexture(tex, planByGuid);
-                        }
-                    }
-                }
-
-                // ---- 3. メッシュ収集と見積もり ----
-                var rendererMeshes = new Dictionary<Renderer, Mesh>();
-                var meshWorks = new Dictionary<Mesh, MeshWork>();
-                foreach (Renderer renderer in keptRenderers)
-                {
-                    Mesh mesh = null;
-                    bool skinned = false;
-                    var skinnedRenderer = renderer as SkinnedMeshRenderer;
-                    if (skinnedRenderer != null)
-                    {
-                        mesh = skinnedRenderer.sharedMesh;
-                        skinned = true;
-                    }
-                    else
-                    {
-                        var filter = renderer.GetComponent<MeshFilter>();
-                        if (filter != null) mesh = filter.sharedMesh;
-                    }
-                    if (mesh == null) continue;
-                    rendererMeshes[renderer] = mesh;
-
-                    MeshWork existing;
-                    if (!meshWorks.TryGetValue(mesh, out existing))
-                    {
-                        meshWorks[mesh] = EstimateMesh(mesh, skinned);
-                    }
-                    else if (skinned && !existing.skinned)
-                    {
-                        // 同一メッシュがスキンあり・なし両方で使われる場合は大きい方(スキンあり)で見積もる
-                        meshWorks[mesh] = EstimateMesh(mesh, true);
-                    }
-                }
-
-                // ---- 4. アニメーション見積もり ----
+                // ---- 4. アニメーション見積もり(圧縮後・展開後の両方を result へ設定) ----
                 result.animationDownloadMB = EstimateAnimationDownloadMB(avatarRoot, result);
 
-                // ---- 5. 合計とキャップ判定 ----
+                // ---- 5. 合計とキャップ判定(圧縮後10MB・展開後40MBの2上限) ----
                 foreach (TextureWork work in textureWorks.Values)
                 {
                     result.textures.Add(work.info);
@@ -297,16 +269,22 @@ namespace RARA.QuestConverter
                     result.textureMemoryMB += work.info.memoryMB;
                 }
                 result.textures.Sort((a, b) => b.downloadMB.CompareTo(a.downloadMB));
+                // テクスチャの展開後サイズ(ASTCデータ+ミップ)は memoryMB と一致する。
+                result.textureUncompressedMB = result.textureMemoryMB;
 
                 float blendShapeTotalMB = 0f;
                 foreach (MeshWork work in meshWorks.Values)
                 {
                     result.meshDownloadMB += work.downloadMB;
+                    result.meshUncompressedMB += work.uncompressedMB;
                     blendShapeTotalMB += work.blendShapeMB;
                 }
 
                 result.estimatedDownloadMB = result.textureDownloadMB + result.meshDownloadMB + result.animationDownloadMB;
                 result.overCap = result.estimatedDownloadMB > QuestLimits.HardDownloadSizeCapMB;
+
+                result.estimatedUncompressedMB = result.textureUncompressedMB + result.meshUncompressedMB + result.animationUncompressedMB;
+                result.overUncompressedCap = result.estimatedUncompressedMB > QuestLimits.HardUncompressedSizeCapMB;
 
                 // ---- 6. 削減提案 ----
                 BuildSuggestions(avatarRoot, settings, result,
@@ -319,6 +297,235 @@ namespace RARA.QuestConverter
                 result.suggestions.Add(Note("サイズ見積もり中にエラーが発生しました: " + ex.Message));
             }
             return result;
+        }
+
+        // ================================================================
+        // 収集コンテキスト(Estimate とトグルグループ寄与計算で共通)
+        // ================================================================
+
+        /// <summary>
+        /// 収集対象レンダラーと、テクスチャ・メッシュの見積もり中間結果をまとめた作業コンテキスト。
+        /// Estimate() と EstimateToggleGroupExclusiveSizes() で同一の収集・見積もりロジックを共有し、
+        /// サイズ計算式(EstimateTexture / EstimateMesh)を重複させないための入れ物。
+        /// </summary>
+        private class AvatarSizeContext
+        {
+            public List<Renderer> keptRenderers;
+            public Dictionary<Renderer, HashSet<Texture>> rendererTextures;
+            public Dictionary<Texture, TextureWork> textureWorks;
+            public Dictionary<Renderer, Mesh> rendererMeshes;
+            public Dictionary<Mesh, MeshWork> meshWorks;
+        }
+
+        /// <summary>
+        /// アバター配下の収集(EditorOnly / Quest除外パス配下を除いたレンダラー)と、
+        /// テクスチャ・メッシュの見積もり(縮小計画を反映)を行いコンテキストを返す。
+        /// 元 Estimate のステップ1〜3をそのまま切り出したもの(挙動は不変)。
+        /// </summary>
+        private static AvatarSizeContext BuildContext(GameObject avatarRoot, QuestConvertSettings settings)
+        {
+            // 縮小計画をGUID→目標サイズの辞書へ(重複GUIDは最小の目標サイズを採用)
+            Dictionary<string, int> planByGuid = BuildPlanByGuid(settings);
+
+            // ---- 1. 収集対象レンダラー(EditorOnly / Quest除外パス配下は「削除済み」として除外) ----
+            List<Transform> excludedRoots = ResolveExcludedRoots(avatarRoot.transform, settings);
+            var keptRenderers = new List<Renderer>();
+            foreach (Renderer renderer in avatarRoot.GetComponentsInChildren<Renderer>(true))
+            {
+                if (renderer == null) continue;
+                if (QuestCompat.IsEditorOnly(renderer.transform)) continue;
+                if (IsUnderAny(renderer.transform, excludedRoots)) continue;
+                keptRenderers.Add(renderer);
+            }
+
+            // ---- 2. テクスチャ収集と見積もり ----
+            var materialTextureCache = new Dictionary<Material, List<Texture>>();
+            var rendererTextures = new Dictionary<Renderer, HashSet<Texture>>();
+            var textureWorks = new Dictionary<Texture, TextureWork>();
+            foreach (Renderer renderer in keptRenderers)
+            {
+                var textureSet = new HashSet<Texture>();
+                foreach (Material material in renderer.sharedMaterials)
+                {
+                    if (material == null) continue;
+                    foreach (Texture tex in GetMaterialTextures(material, materialTextureCache))
+                    {
+                        textureSet.Add(tex);
+                    }
+                }
+                rendererTextures[renderer] = textureSet;
+                foreach (Texture tex in textureSet)
+                {
+                    if (!textureWorks.ContainsKey(tex))
+                    {
+                        textureWorks[tex] = EstimateTexture(tex, planByGuid);
+                    }
+                }
+            }
+
+            // ---- 3. メッシュ収集と見積もり ----
+            var rendererMeshes = new Dictionary<Renderer, Mesh>();
+            var meshWorks = new Dictionary<Mesh, MeshWork>();
+            foreach (Renderer renderer in keptRenderers)
+            {
+                Mesh mesh = null;
+                bool skinned = false;
+                var skinnedRenderer = renderer as SkinnedMeshRenderer;
+                if (skinnedRenderer != null)
+                {
+                    mesh = skinnedRenderer.sharedMesh;
+                    skinned = true;
+                }
+                else
+                {
+                    var filter = renderer.GetComponent<MeshFilter>();
+                    if (filter != null) mesh = filter.sharedMesh;
+                }
+                if (mesh == null) continue;
+                rendererMeshes[renderer] = mesh;
+
+                MeshWork existing;
+                if (!meshWorks.TryGetValue(mesh, out existing))
+                {
+                    meshWorks[mesh] = EstimateMesh(mesh, skinned);
+                }
+                else if (skinned && !existing.skinned)
+                {
+                    // 同一メッシュがスキンあり・なし両方で使われる場合は大きい方(スキンあり)で見積もる
+                    meshWorks[mesh] = EstimateMesh(mesh, true);
+                }
+            }
+
+            return new AvatarSizeContext
+            {
+                keptRenderers = keptRenderers,
+                rendererTextures = rendererTextures,
+                textureWorks = textureWorks,
+                rendererMeshes = rendererMeshes,
+                meshWorks = meshWorks,
+            };
+        }
+
+        // ================================================================
+        // トグルグループごとの専有アセットサイズ寄与(非表示固定=除去時の削減量)
+        // ================================================================
+
+        /// <summary>
+        /// 各トグルグループを「非表示固定(除去)」にしたときに減る専有アセット(そのサブツリー内の
+        /// レンダラーだけが参照し、サブツリー外は一切参照しないテクスチャ・メッシュ)のサイズ寄与を
+        /// 圧縮後・展開後の両方で概算し、groupId → ToggleGroupSizeInfo の辞書で返す。
+        /// サイズ計算は Estimate と同じ per-asset ロジック(BuildContext)を再利用し、式は重複させない。
+        /// 共有アセットのみ(専有アセットが無い)のグループは sharedOnly=true(単独除去では容量が減らない)。
+        /// 例外は投げず、失敗時は空(または途中まで)の辞書を返す。
+        /// UIから繰り返し呼ばれるため、呼び出し側でアバター+グループ集合ごとにキャッシュすること
+        /// (このメソッド自体はキャッシュしない)。
+        /// </summary>
+        public static Dictionary<string, ToggleGroupSizeInfo> EstimateToggleGroupExclusiveSizes(
+            GameObject avatarRoot, QuestConvertSettings settings, List<ToggleGroup> groups)
+        {
+            var results = new Dictionary<string, ToggleGroupSizeInfo>(StringComparer.Ordinal);
+            if (avatarRoot == null || groups == null || groups.Count == 0) return results;
+            try
+            {
+                if (settings == null) settings = new QuestConvertSettings();
+                AvatarSizeContext ctx = BuildContext(avatarRoot, settings);
+
+                // アバター全体での使用レンダラー数(専有判定の基準)。
+                var textureGlobalUsers = new Dictionary<Texture, int>();
+                var meshGlobalUsers = new Dictionary<Mesh, int>();
+                foreach (Renderer r in ctx.keptRenderers)
+                {
+                    if (r == null) continue;
+                    HashSet<Texture> texs;
+                    if (ctx.rendererTextures.TryGetValue(r, out texs))
+                    {
+                        foreach (Texture t in texs)
+                        {
+                            int c; textureGlobalUsers.TryGetValue(t, out c); textureGlobalUsers[t] = c + 1;
+                        }
+                    }
+                    Mesh m;
+                    if (ctx.rendererMeshes.TryGetValue(r, out m) && m != null)
+                    {
+                        int c; meshGlobalUsers.TryGetValue(m, out c); meshGlobalUsers[m] = c + 1;
+                    }
+                }
+
+                foreach (ToggleGroup g in groups)
+                {
+                    if (g == null || string.IsNullOrEmpty(g.id) || results.ContainsKey(g.id)) continue;
+                    var info = new ToggleGroupSizeInfo { groupId = g.id };
+
+                    // グループのサブツリールートを解決(解決できないパスは無視)。
+                    var roots = new List<Transform>();
+                    if (g.objectPaths != null)
+                    {
+                        foreach (string p in g.objectPaths)
+                        {
+                            Transform t = QuestCompat.FindByPath(avatarRoot.transform, p);
+                            if (t != null && !roots.Contains(t)) roots.Add(t);
+                        }
+                    }
+                    if (roots.Count == 0) { info.sharedOnly = true; results[g.id] = info; continue; }
+
+                    // サブツリー内レンダラーが使うテクスチャ・メッシュの使用数を数える。
+                    var insideTextureUsers = new Dictionary<Texture, int>();
+                    var insideMeshUsers = new Dictionary<Mesh, int>();
+                    foreach (Renderer r in ctx.keptRenderers)
+                    {
+                        if (r == null || !IsUnderAny(r.transform, roots)) continue;
+                        HashSet<Texture> texs;
+                        if (ctx.rendererTextures.TryGetValue(r, out texs))
+                        {
+                            foreach (Texture t in texs)
+                            {
+                                int c; insideTextureUsers.TryGetValue(t, out c); insideTextureUsers[t] = c + 1;
+                            }
+                        }
+                        Mesh m;
+                        if (ctx.rendererMeshes.TryGetValue(r, out m) && m != null)
+                        {
+                            int c; insideMeshUsers.TryGetValue(m, out c); insideMeshUsers[m] = c + 1;
+                        }
+                    }
+
+                    // 専有アセット = サブツリー内の使用数がアバター全体の使用数と一致するもの
+                    // (サブツリー外のレンダラーが1つでも使っていれば専有ではない)。
+                    float dl = 0f, unc = 0f;
+                    foreach (KeyValuePair<Texture, int> kv in insideTextureUsers)
+                    {
+                        int global;
+                        if (!textureGlobalUsers.TryGetValue(kv.Key, out global) || global != kv.Value) continue;
+                        TextureWork w;
+                        if (ctx.textureWorks.TryGetValue(kv.Key, out w) && w.info != null)
+                        {
+                            dl += w.info.downloadMB;
+                            unc += w.info.memoryMB;
+                        }
+                    }
+                    foreach (KeyValuePair<Mesh, int> kv in insideMeshUsers)
+                    {
+                        int global;
+                        if (!meshGlobalUsers.TryGetValue(kv.Key, out global) || global != kv.Value) continue;
+                        MeshWork w;
+                        if (ctx.meshWorks.TryGetValue(kv.Key, out w))
+                        {
+                            dl += w.downloadMB;
+                            unc += w.uncompressedMB;
+                        }
+                    }
+
+                    info.exclusiveDownloadMB = dl;
+                    info.exclusiveUncompressedMB = unc;
+                    info.sharedOnly = dl <= 0f && unc <= 0f;
+                    results[g.id] = info;
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError("[RARA QuestConverter] トグルグループのサイズ寄与計算に失敗しました: " + ex);
+            }
+            return results;
         }
 
         // ================================================================
@@ -534,13 +741,18 @@ namespace RARA.QuestConverter
             return ComputeDownloadMB(work.effectiveWidth, work.effectiveHeight, newMaxSize, bitsPerPixel);
         }
 
-        /// <summary>元サイズ srcWidth×srcHeight を maxSize 上限へ収めた場合のダウンロードサイズを見積もる(EstimateTextureと同じ式)。</summary>
-        private static float ComputeDownloadMB(int srcWidth, int srcHeight, int maxSize, float bitsPerPixel)
+        /// <summary>元サイズ srcWidth×srcHeight を maxSize 上限へ収めた場合の展開後(非圧縮)サイズを見積もる(EstimateTextureの memoryMB と同じ式)。</summary>
+        private static float ComputeMemoryMB(int srcWidth, int srcHeight, int maxSize, float bitsPerPixel)
         {
             int width, height;
             ComputeEffectiveSize(srcWidth, srcHeight, maxSize, out width, out height);
-            float memoryMB = width * height * (bitsPerPixel / 8f) * MipmapFactor / 1048576f;
-            return memoryMB * BundleCompressionFactor;
+            return width * height * (bitsPerPixel / 8f) * MipmapFactor / 1048576f;
+        }
+
+        /// <summary>元サイズ srcWidth×srcHeight を maxSize 上限へ収めた場合のダウンロードサイズ(圧縮後)を見積もる(EstimateTextureと同じ式)。</summary>
+        private static float ComputeDownloadMB(int srcWidth, int srcHeight, int maxSize, float bitsPerPixel)
+        {
+            return ComputeMemoryMB(srcWidth, srcHeight, maxSize, bitsPerPixel) * BundleCompressionFactor;
         }
 
         /// <summary>
@@ -738,12 +950,14 @@ namespace RARA.QuestConverter
                 long totalBytes = (long)vertexCount * stride + blendShapeBytes + triangleCount * bytesPerTriangle;
 
                 work.downloadMB = totalBytes * MeshCompressionFactor / 1048576f;
+                work.uncompressedMB = totalBytes / 1048576f; // 展開後(非圧縮): 圧縮係数を掛ける前の生バイト
                 work.blendShapeMB = blendShapeBytes * MeshCompressionFactor / 1048576f;
             }
             catch (Exception ex)
             {
                 Debug.LogWarning(string.Format("[RARA QuestConverter] メッシュ '{0}' の見積もりに失敗しました: {1}", mesh != null ? mesh.name : "(不明)", ex.Message));
                 work.downloadMB = 0f;
+                work.uncompressedMB = 0f;
                 work.blendShapeMB = 0f;
             }
             return work;
@@ -761,11 +975,12 @@ namespace RARA.QuestConverter
         private static float EstimateAnimationDownloadMB(GameObject avatarRoot, SizeEstimateResult result)
         {
             float totalMB = 0f;
+            float uncompressedMB = 0f;
             try
             {
                 VRCAvatarDescriptor descriptor = avatarRoot.GetComponent<VRCAvatarDescriptor>();
                 if (descriptor == null) descriptor = avatarRoot.GetComponentInChildren<VRCAvatarDescriptor>(true);
-                if (descriptor == null) return 0f;
+                if (descriptor == null) { result.animationUncompressedMB = 0f; return 0f; }
 
                 var seenControllers = new HashSet<RuntimeAnimatorController>();
                 var seenClips = new HashSet<AnimationClip>();
@@ -778,7 +993,9 @@ namespace RARA.QuestConverter
                     {
                         string path = AssetDatabase.GetAssetPath(clip);
                         if (!string.IsNullOrEmpty(path) && path.StartsWith("Packages/", StringComparison.Ordinal)) continue;
-                        totalMB += Profiler.GetRuntimeMemorySizeLong(clip) * AnimationDownloadFactor / 1048576f;
+                        long rawBytes = Profiler.GetRuntimeMemorySizeLong(clip);
+                        totalMB += rawBytes * AnimationDownloadFactor / 1048576f;
+                        uncompressedMB += rawBytes / 1048576f; // 展開後(非圧縮): 換算係数を掛ける前の生バイト
                     }
                     catch (Exception)
                     {
@@ -790,6 +1007,7 @@ namespace RARA.QuestConverter
             {
                 result.suggestions.Add(Note("アニメーションの見積もりに失敗しました: " + ex.Message));
             }
+            result.animationUncompressedMB = uncompressedMB;
             return totalMB;
         }
 
@@ -1187,12 +1405,16 @@ namespace RARA.QuestConverter
             public int originalMaxSize;
             /// <summary>計画適用後の実効Android最大サイズ(半減のたびに更新)。</summary>
             public int currentMaxSize;
-            /// <summary>計画前のダウンロードサイズ目安(MB)。</summary>
+            /// <summary>計画前のダウンロードサイズ目安(圧縮後、MB)。</summary>
             public float originalDownloadMB;
-            /// <summary>計画適用後のダウンロードサイズ目安(MB)。</summary>
+            /// <summary>計画適用後のダウンロードサイズ目安(圧縮後、MB)。</summary>
             public float currentDownloadMB;
-            /// <summary>下限(BudgetFitMinSize)まで縮小した場合のダウンロードサイズ目安(MB)。</summary>
+            /// <summary>下限(BudgetFitMinSize)まで縮小した場合のダウンロードサイズ目安(圧縮後、MB)。</summary>
             public float minPossibleDownloadMB;
+            /// <summary>計画前の展開後(非圧縮)サイズ目安(MB)。</summary>
+            public float originalUncompressedMB;
+            /// <summary>計画適用後の展開後(非圧縮)サイズ目安(MB)。</summary>
+            public float currentUncompressedMB;
             /// <summary>顔・体・肌系の優先保護テクスチャ(なるべく縮小しない)ならtrue。</summary>
             public bool isPriority;
             /// <summary>適用時の圧縮形式(既存の上書き形式の方が高効率ならそれを維持する)。</summary>
@@ -1208,20 +1430,22 @@ namespace RARA.QuestConverter
         }
 
         /// <summary>
-        /// 推定ダウンロードサイズが targetDownloadMB 以下へ収まるよう、テクスチャの
-        /// 実効サイズを段階的に半減(例: 2048→1024→512→256)する計画を作る。
-        /// ・現在の推定が既に目標以下なら空の計画を返す。
+        /// 推定サイズが圧縮後 targetDownloadMB 以下 かつ 展開後(非圧縮)targetUncompressedMB 以下へ
+        /// 収まるよう、テクスチャの実効サイズを段階的に半減(例: 2048→1024→512→256)する計画を作る。
+        /// ・現在の推定が既に両上限とも目標以下なら空の計画を返す。
         /// ・候補は「アセットパス+TextureImporterがあり、現在の実効Android最大サイズ
         ///   (既存の縮小計画 settings.textureSizePlan があればその値)が256px超」のテクスチャ。
         ///   既存計画を起点にするため、繰り返し実行しても計画は収束する。
         /// ・毎回「計画適用後のダウンロードサイズが最大の候補」を半減する。ただし顔・体・肌系
         ///   (face/body/skin/顔/体/肌 の部分一致)は、同じ最大サイズ帯に他の候補が残っている間は後回しにする。
         /// ・同一テクスチャの複数回の半減は1手順へまとめる(fromSize=元、toSize=最終)。
-        /// ・目標以下になるか、どの候補もこれ以上縮められなくなったら終了する。
+        /// ・両上限とも目標以下になるか、どの候補もこれ以上縮められなくなったら終了する
+        ///   (テクスチャ縮小だけでは展開後上限に届かない=メッシュ支配の場合は候補枯渇で打ち切る)。
         /// このメソッドは計画を作るだけで、インポート設定も縮小計画も一切変更しない(副作用なし・同じ入力に対して決定的)。
         /// 適用(縮小計画への登録)は ApplyBudgetFit で行う。例外は投げず、失敗時はそれまでに作れた計画を返す。
         /// </summary>
-        public static List<BudgetFitStep> PlanBudgetFit(GameObject avatarRoot, QuestConvertSettings settings, float targetDownloadMB)
+        public static List<BudgetFitStep> PlanBudgetFit(GameObject avatarRoot, QuestConvertSettings settings,
+            float targetDownloadMB, float targetUncompressedMB)
         {
             var plan = new List<BudgetFitStep>();
             try
@@ -1231,7 +1455,9 @@ namespace RARA.QuestConverter
 
                 SizeEstimateResult estimate = Estimate(avatarRoot, settings);
                 if (estimate == null || estimate.textures == null) return plan;
-                if (estimate.estimatedDownloadMB <= targetDownloadMB) return plan; // 既に予算内
+                // 圧縮後・展開後の両方が既に予算内なら何もしない
+                if (estimate.estimatedDownloadMB <= targetDownloadMB &&
+                    estimate.estimatedUncompressedMB <= targetUncompressedMB) return plan;
 
                 // 変換時の縮小コピーは原則 settings.androidFormat で生成されるため、
                 // 縮小後のサイズは適用形式のbppで再計算する。ただし既存のAndroid上書き形式の方が
@@ -1245,17 +1471,22 @@ namespace RARA.QuestConverter
                 if (candidates.Count == 0) return plan;
 
                 float totalMB = estimate.estimatedDownloadMB;
+                float totalUncompressedMB = estimate.estimatedUncompressedMB;
                 var stepByTexture = new Dictionary<Texture, BudgetFitStep>();
-                while (totalMB > targetDownloadMB)
+                // 圧縮後・展開後のどちらかが上限超過の間は縮小を続ける
+                while (totalMB > targetDownloadMB || totalUncompressedMB > targetUncompressedMB)
                 {
                     BudgetFitCandidate picked = PickBudgetFitCandidate(candidates);
                     if (picked == null) break; // どの候補もこれ以上縮められない(予算未達でも打ち切る)
 
                     int newSize = NextHalvedSize(picked.currentMaxSize);
                     float newDownloadMB = ComputeDownloadMB(picked.texWidth, picked.texHeight, newSize, picked.applyBitsPerPixel);
+                    float newUncompressedMB = ComputeMemoryMB(picked.texWidth, picked.texHeight, newSize, picked.applyBitsPerPixel);
                     totalMB -= picked.currentDownloadMB - newDownloadMB;
+                    totalUncompressedMB -= picked.currentUncompressedMB - newUncompressedMB;
                     picked.currentMaxSize = newSize;
                     picked.currentDownloadMB = newDownloadMB;
+                    picked.currentUncompressedMB = newUncompressedMB;
 
                     // 同一テクスチャの複数回の半減は1手順へまとめる(fromSize=元、toSize=最終)
                     BudgetFitStep step;
@@ -1273,6 +1504,7 @@ namespace RARA.QuestConverter
                     }
                     step.toSize = newSize;
                     step.savingMB = picked.originalDownloadMB - newDownloadMB;
+                    step.uncompressedSavingMB = picked.originalUncompressedMB - newUncompressedMB;
                 }
             }
             catch (Exception ex)
@@ -1449,6 +1681,8 @@ namespace RARA.QuestConverter
                         originalDownloadMB = info.downloadMB,
                         currentDownloadMB = info.downloadMB,
                         minPossibleDownloadMB = ComputeDownloadMB(texWidth, texHeight, BudgetFitMinSize, candidateBitsPerPixel),
+                        originalUncompressedMB = info.memoryMB,   // 展開後(非圧縮)= ASTCデータ+ミップ
+                        currentUncompressedMB = info.memoryMB,
                         isPriority = IsBudgetFitPriorityName(info.texture.name),
                         applyFormat = candidateFormat,
                         applyBitsPerPixel = candidateBitsPerPixel,

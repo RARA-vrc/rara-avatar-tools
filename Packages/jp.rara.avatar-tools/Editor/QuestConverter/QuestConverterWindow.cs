@@ -52,6 +52,10 @@ namespace RARA.QuestConverter
         private List<ToggleGroup> _toggleGroups;                   // セクション5「衣装・トグル整理」: 検出されたトグルグループ(未検出ならnull)
         private bool _toggleGroupsRefreshQueued;                   // トグル検出の再入ガード
         private bool _toggleGroupsFailed;                          // トグル検出の失敗ラッチ(毎OnGUIの再試行を防ぐ)
+        private Dictionary<string, ToggleGroupSizeInfo> _toggleGroupSizes; // セクション5: トグルグループごとの専有アセットサイズ寄与(未計算ならnull)
+        private string _toggleGroupSizesSig;                       // 上記の計算対象シグネチャ(アバター+グループ集合。変化時に再計算)
+        private bool _toggleGroupSizesQueued;                      // トグルサイズ寄与計算の再入ガード(毎OnGUIの再計算を防ぐ)
+        private bool _sortToggleGroupsBySize;                      // トグル一覧をサイズ(展開後寄与)の大きい順に並べ替えるか
         private List<ShrinkShapeCandidate> _hiddenMeshCandidates;  // セクション7「メッシュ削減(AAO連携)」: 検出されたshrinkブレンドシェイプ候補(未検出ならnull)
         private bool _hiddenMeshRefreshQueued;                     // shrinkブレンドシェイプ検出の再入ガード
         private bool _hiddenMeshFailed;                            // shrinkブレンドシェイプ検出の失敗ラッチ(毎OnGUIの再試行を防ぐ)
@@ -303,14 +307,22 @@ namespace RARA.QuestConverter
                 SizeEstimateResult est = _diagnostics != null ? _diagnostics.sizeEstimate : null;
                 if (est == null)
                 {
-                    EditorGUILayout.LabelField("推定: -", EditorStyles.miniLabel, GUILayout.Width(135f));
+                    EditorGUILayout.LabelField("推定: -", EditorStyles.miniLabel, GUILayout.Width(260f));
                 }
                 else
                 {
+                    // 圧縮後(10MB)
                     GUI.color = est.overCap ? OverLimitColor : defaultColor;
                     EditorGUILayout.LabelField(
-                        "推定: " + est.estimatedDownloadMB.ToString("F1") + " / " + QuestLimits.HardDownloadSizeCapMB + " MB",
-                        EditorStyles.miniLabel, GUILayout.Width(135f));
+                        new GUIContent("圧縮後 " + est.estimatedDownloadMB.ToString("F1") + "/" + QuestLimits.HardDownloadSizeCapMB + "MB",
+                            "ダウンロードサイズ(圧縮後)の推定 / 上限"),
+                        EditorStyles.miniLabel, GUILayout.Width(120f));
+                    // 展開後(40MB)
+                    GUI.color = est.overUncompressedCap ? OverLimitColor : defaultColor;
+                    EditorGUILayout.LabelField(
+                        new GUIContent("展開後 " + est.estimatedUncompressedMB.ToString("F1") + "/" + QuestLimits.HardUncompressedSizeCapMB + "MB",
+                            "展開後(非圧縮)サイズの推定 / 上限。圧縮後10MBとは独立したアップロード上限です"),
+                        EditorStyles.miniLabel, GUILayout.Width(120f));
                     GUI.color = defaultColor;
                 }
             }
@@ -692,7 +704,7 @@ namespace RARA.QuestConverter
                 var prev = GUI.color;
                 GUI.color = ok ? UploadOkColor : OverLimitColor;
                 EditorGUILayout.LabelField(
-                    ok ? "Android アップロード: 可" : "Android アップロード: 不可(ダウンロードサイズ上限超過)",
+                    ok ? "Android アップロード: 可" : "Android アップロード: 不可(サイズ上限超過: 圧縮後10MB または 展開後40MB)",
                     _verdictLabel, GUILayout.Height(20f));
                 GUI.color = prev;
                 if (GUILayout.Button(new GUIContent("再診断", "現在の設定で診断をやり直します"), GUILayout.Width(70f)))
@@ -753,7 +765,8 @@ namespace RARA.QuestConverter
             if (!_diagnostics.canUploadToAndroid)
             {
                 type = MessageType.Error;
-                message += "\nダウンロードサイズが上限(" + QuestLimits.HardDownloadSizeCapMB + "MB)を超える見込みのため、SDKがアップロードをブロックします。テクスチャ・メッシュの削減が必要です。";
+                message += "\nサイズ上限(圧縮後" + QuestLimits.HardDownloadSizeCapMB + "MB または 展開後" + QuestLimits.HardUncompressedSizeCapMB +
+                           "MB)を超える見込みのため、SDKがアップロードをブロックします。テクスチャ・メッシュの削減が必要です。";
             }
             else if (key == "verypoor")
             {
@@ -906,19 +919,26 @@ namespace RARA.QuestConverter
             // PC最適化のみモードではテクスチャ変換・縮小を行わないため、下記の縮小提案は適用対象外になる旨を注記する
             DrawConsolidateOnlySkipNote("Quest向けのテクスチャ変換・縮小(下の縮小提案の適用)");
 
-            // 上限に対する推定ダウンロードサイズ(ビルド前の目安であり実測値ではない)
+            // 上限に対する推定サイズ(ビルド前の目安であり実測値ではない)。圧縮後10MBと展開後40MBの2つを独立に判定する。
             float cap = QuestLimits.HardDownloadSizeCapMB;
-            string message = "推定ダウンロードサイズ " + est.estimatedDownloadMB.ToString("F1") +
-                             " MB / 上限 " + QuestLimits.HardDownloadSizeCapMB + " MB(ビルド前の目安)";
+            float uncap = QuestLimits.HardUncompressedSizeCapMB;
+            string message =
+                "圧縮後 " + est.estimatedDownloadMB.ToString("F1") + " MB / 上限 " + QuestLimits.HardDownloadSizeCapMB + " MB" +
+                "   展開後 " + est.estimatedUncompressedMB.ToString("F1") + " MB / 上限 " + QuestLimits.HardUncompressedSizeCapMB + " MB(ビルド前の目安)";
             MessageType type;
-            if (est.overCap)
+            if (est.overCap || est.overUncompressedCap)
             {
                 type = MessageType.Error;
-                message += "\n10MBを超える見込みです。以下の提案で削減してください";
+                if (est.overCap && est.overUncompressedCap)
+                    message += "\n圧縮後10MB・展開後40MBの両方を超える見込みです。以下の提案で削減してください";
+                else if (est.overCap)
+                    message += "\n圧縮後10MBを超える見込みです。以下の提案で削減してください";
+                else
+                    message += "\n展開後40MBを超える見込みです(圧縮後とは独立した上限)。以下の提案で削減してください";
             }
-            else if (est.estimatedDownloadMB >= cap * 0.8f)
+            else if (est.estimatedDownloadMB >= cap * 0.8f || est.estimatedUncompressedMB >= uncap * 0.8f)
             {
-                type = MessageType.Warning; // 上限の20%以内まで迫っている
+                type = MessageType.Warning; // いずれかの上限の20%以内まで迫っている
             }
             else
             {
@@ -926,12 +946,17 @@ namespace RARA.QuestConverter
             }
             EditorGUILayout.HelpBox(message, type);
 
-            // 内訳(すべて目安)
+            // 内訳(すべて目安)。圧縮後と展開後(非圧縮)を並べて示す。
             EditorGUILayout.LabelField(
-                "内訳(目安): テクスチャ " + est.textureDownloadMB.ToString("F1") +
+                "内訳(目安・圧縮後): テクスチャ " + est.textureDownloadMB.ToString("F1") +
                 " MB / メッシュ " + est.meshDownloadMB.ToString("F1") +
-                " MB / アニメ " + est.animationDownloadMB.ToString("F1") +
-                " MB / テクスチャメモリ(VRAM) " + est.textureMemoryMB.ToString("F1") + " MB",
+                " MB / アニメ " + est.animationDownloadMB.ToString("F1") + " MB",
+                _wrapLabel);
+            EditorGUILayout.LabelField(
+                "内訳(目安・展開後): テクスチャ " + est.textureUncompressedMB.ToString("F1") +
+                " MB / メッシュ " + est.meshUncompressedMB.ToString("F1") +
+                " MB / アニメ " + est.animationUncompressedMB.ToString("F1") +
+                " MB(テクスチャメモリ(VRAM)相当 " + est.textureMemoryMB.ToString("F1") + " MB)",
                 _wrapLabel);
 
             DrawSizeTextureList(est);
@@ -1083,7 +1108,7 @@ namespace RARA.QuestConverter
         // ================================================================
 
         /// <summary>
-        /// 削減提案リストの上に出す一括アクション行(提案をすべて適用 / 10MB以下まで自動調整 / 縮小計画をクリア)。
+        /// 削減提案リストの上に出す一括アクション行(提案をすべて適用 / 上限内まで自動調整(圧縮後10MB・展開後40MB) / 縮小計画をクリア)。
         /// いずれも元テクスチャのインポート設定は変更せず、縮小計画(settings.textureSizePlan)を更新するだけ。
         /// 自動調整ボタンは推定サイズが上限超過の見込みのときだけ表示する。
         /// </summary>
@@ -1091,7 +1116,9 @@ namespace RARA.QuestConverter
         {
             if (est == null) return;
             int applicableCount = CountApplicableSuggestions(est);
-            bool showBudgetFit = est.overCap || est.estimatedDownloadMB > QuestLimits.HardDownloadSizeCapMB;
+            bool showBudgetFit = est.overCap || est.overUncompressedCap ||
+                est.estimatedDownloadMB > QuestLimits.HardDownloadSizeCapMB ||
+                est.estimatedUncompressedMB > QuestLimits.HardUncompressedSizeCapMB;
             int planCount = _settings != null && _settings.textureSizePlan != null ? _settings.textureSizePlan.Count : 0;
 
             using (new EditorGUILayout.HorizontalScope())
@@ -1111,12 +1138,12 @@ namespace RARA.QuestConverter
                     using (new EditorGUI.DisabledScope(_avatar == null))
                     {
                         if (GUILayout.Button(new GUIContent(
-                            "10MB以下まで自動調整",
-                            "推定ダウンロードサイズが上限(" + QuestLimits.HardDownloadSizeCapMB +
-                            "MB)以下に収まるよう、大きいテクスチャから順に縮小計画を作って登録します(元のテクスチャは変更しません)"),
+                            "上限内まで自動調整(圧縮後10MB・展開後40MB)",
+                            "推定サイズが圧縮後" + QuestLimits.HardDownloadSizeCapMB + "MB・展開後" + QuestLimits.HardUncompressedSizeCapMB +
+                            "MBの両方に収まるよう、大きいテクスチャから順に縮小計画を作って登録します(元のテクスチャは変更しません)"),
                             GUILayout.Height(22f)))
                         {
-                            RunBudgetFit();
+                            RunBudgetFit(est);
                         }
                     }
                 }
@@ -1212,27 +1239,29 @@ namespace RARA.QuestConverter
         }
 
         /// <summary>
-        /// 推定ダウンロードサイズが10MB上限に収まるようテクスチャの縮小計画を作って登録する
+        /// 推定サイズが圧縮後10MB・展開後40MBの両上限に収まるようテクスチャの縮小計画を作って登録する
         /// (縮小プラン作成 → 内容の確認ダイアログ → 縮小計画へ登録)。
         /// 元のテクスチャは変更しない。登録は一瞬で終わるため進捗バーはプラン計算中のみ表示する。
         /// 上限ちょうどを狙うと見積もり誤差で超えやすいため、5%のマージンを取った目標で計画する。
         /// </summary>
-        private void RunBudgetFit()
+        private void RunBudgetFit(SizeEstimateResult est)
         {
             if (_avatar == null) return;
             if (_settings == null) _settings = new QuestConvertSettings();
 
+            const string title = "上限内まで自動調整(圧縮後10MB・展開後40MB)";
             float targetMB = QuestLimits.HardDownloadSizeCapMB * 0.95f;
+            float targetUncompressedMB = QuestLimits.HardUncompressedSizeCapMB * 0.95f;
             List<BudgetFitStep> plan;
             try
             {
-                EditorUtility.DisplayProgressBar("10MB以下まで自動調整", "縮小プランを計算しています...", 0.2f);
-                plan = QuestSizeEstimator.PlanBudgetFit(_avatar.gameObject, _settings, targetMB);
+                EditorUtility.DisplayProgressBar(title, "縮小プランを計算しています...", 0.2f);
+                plan = QuestSizeEstimator.PlanBudgetFit(_avatar.gameObject, _settings, targetMB, targetUncompressedMB);
             }
             catch (Exception ex)
             {
                 Debug.LogError("[RARA QuestConverter] 自動調整プランの作成に失敗しました: " + ex);
-                EditorUtility.DisplayDialog("10MB以下まで自動調整", "縮小プランの作成中にエラーが発生しました:\n" + ex.Message, "OK");
+                EditorUtility.DisplayDialog(title, "縮小プランの作成中にエラーが発生しました:\n" + ex.Message, "OK");
                 return;
             }
             finally
@@ -1242,8 +1271,9 @@ namespace RARA.QuestConverter
 
             if (plan == null || plan.Count == 0)
             {
-                EditorUtility.DisplayDialog("10MB以下まで自動調整",
-                    "これ以上自動で下げられるテクスチャがありません。\n" +
+                EditorUtility.DisplayDialog(title,
+                    "これ以上テクスチャ縮小で下げられません。\n" +
+                    "展開後40MBがメッシュ・ブレンドシェイプ支配の場合はテクスチャ縮小だけでは収まりません。" +
                     "「削減提案」のQuest除外や、AAOによるブレンドシェイプ・メッシュの削減を検討してください。", "OK");
                 return;
             }
@@ -1251,16 +1281,19 @@ namespace RARA.QuestConverter
             // 確認ダイアログ: 縮小ステップは最大12件まで列挙し、超過分は件数のみ表示する
             const int dialogStepMax = 12;
             float totalSavingMB = 0f;
+            float totalUncompressedSavingMB = 0f;
             var steps = new System.Text.StringBuilder();
             for (int i = 0; i < plan.Count; i++)
             {
                 BudgetFitStep step = plan[i];
                 if (step == null) continue;
                 totalSavingMB += step.savingMB;
+                totalUncompressedSavingMB += step.uncompressedSavingMB;
                 if (i < dialogStepMax)
                 {
                     steps.AppendLine("・" + (step.texture != null ? step.texture.name : "(不明)") + " " +
-                                     step.fromSize + "px→" + step.toSize + "px (-" + step.savingMB.ToString("F1") + "MB)");
+                                     step.fromSize + "px→" + step.toSize + "px (圧縮後-" + step.savingMB.ToString("F1") +
+                                     "MB / 展開後-" + step.uncompressedSavingMB.ToString("F1") + "MB)");
                 }
             }
             if (plan.Count > dialogStepMax)
@@ -1268,11 +1301,37 @@ namespace RARA.QuestConverter
                 steps.AppendLine("・他 " + (plan.Count - dialogStepMax) + " 件");
             }
 
-            bool ok = EditorUtility.DisplayDialog("10MB以下まで自動調整",
-                "推定ダウンロードサイズが上限(" + QuestLimits.HardDownloadSizeCapMB + "MB)以下になるよう、" +
-                "次の " + plan.Count + " 件のテクスチャを縮小計画に登録します:\n\n" +
+            // 調整後の見込み(現在の推定 − 合計削減)。est が無い場合は削減量のみ表示する。
+            string projection;
+            bool stillOver = false;
+            if (est != null)
+            {
+                float projCompressed = Mathf.Max(0f, est.estimatedDownloadMB - totalSavingMB);
+                float projUncompressed = Mathf.Max(0f, est.estimatedUncompressedMB - totalUncompressedSavingMB);
+                stillOver = projCompressed > QuestLimits.HardDownloadSizeCapMB || projUncompressed > QuestLimits.HardUncompressedSizeCapMB;
+                projection = "\n調整後の見込み: 圧縮後 約" + projCompressed.ToString("F1") + " / " + QuestLimits.HardDownloadSizeCapMB +
+                             "MB, 展開後 約" + projUncompressed.ToString("F1") + " / " + QuestLimits.HardUncompressedSizeCapMB + "MB";
+                if (stillOver)
+                    projection += "\n※ テクスチャ縮小だけでは上限に届きません(残りはメッシュ・ブレンドシェイプ支配)。" +
+                                  "Quest除外・メッシュ削減・ブレンドシェイプ整理の併用が必要です。";
+            }
+            else
+            {
+                projection = "\n合計削減見込み: 圧縮後 約" + totalSavingMB.ToString("F1") + "MB / 展開後 約" +
+                             totalUncompressedSavingMB.ToString("F1") + "MB";
+            }
+
+            // 縮小フロアに達して上限に届かない場合は、見出しを「収まる」ではなく「可能な範囲で登録」に変える。
+            string header = stillOver
+                ? "テクスチャを最小まで縮小しても上限(圧縮後" + QuestLimits.HardDownloadSizeCapMB + "MB・展開後" + QuestLimits.HardUncompressedSizeCapMB +
+                  "MB)には届きませんが、可能な範囲で次の " + plan.Count + " 件のテクスチャを縮小計画に登録します:\n\n"
+                : "推定サイズが上限(圧縮後" + QuestLimits.HardDownloadSizeCapMB + "MB・展開後" + QuestLimits.HardUncompressedSizeCapMB +
+                  "MB)以下になるよう、次の " + plan.Count + " 件のテクスチャを縮小計画に登録します:\n\n";
+
+            bool ok = EditorUtility.DisplayDialog(title,
+                header +
                 steps.ToString() +
-                "\n合計削減見込み: 約" + totalSavingMB.ToString("F1") + "MB\n\n" +
+                projection + "\n\n" +
                 "元のテクスチャは変更しません。変換時に縮小コピーを生成し、変換後のマテリアルがそれを参照します。" +
                 "「縮小計画をクリア」でいつでも取り消せます。\n\n登録しますか?",
                 "登録する", "キャンセル");
@@ -1286,7 +1345,7 @@ namespace RARA.QuestConverter
             catch (Exception ex)
             {
                 Debug.LogError("[RARA QuestConverter] 自動調整の登録に失敗しました: " + ex);
-                EditorUtility.DisplayDialog("10MB以下まで自動調整", "縮小計画の登録中にエラーが発生しました:\n" + ex.Message, "OK");
+                EditorUtility.DisplayDialog(title, "縮小計画の登録中にエラーが発生しました:\n" + ex.Message, "OK");
                 return;
             }
 
@@ -1295,10 +1354,11 @@ namespace RARA.QuestConverter
                 _showReDiagnoseNote = true;  // 推定サイズが古くなったため再診断を促す
                 SaveSettings();              // 計画の変更を保存(診断は古い扱いになる)
             }
-            Debug.Log("[RARA QuestConverter] 10MB以下まで自動調整: " + applied + " 件を縮小計画に登録しました(削減見込み 約" +
-                      totalSavingMB.ToString("F1") + "MB)。");
-            EditorUtility.DisplayDialog("10MB以下まで自動調整",
-                applied + " 件のテクスチャを縮小計画に登録しました(削減見込み 約" + totalSavingMB.ToString("F1") + "MB)。\n" +
+            Debug.Log("[RARA QuestConverter] 上限内まで自動調整: " + applied + " 件を縮小計画に登録しました(削減見込み 圧縮後 約" +
+                      totalSavingMB.ToString("F1") + "MB / 展開後 約" + totalUncompressedSavingMB.ToString("F1") + "MB)。");
+            EditorUtility.DisplayDialog(title,
+                applied + " 件のテクスチャを縮小計画に登録しました(削減見込み 圧縮後 約" + totalSavingMB.ToString("F1") +
+                "MB / 展開後 約" + totalUncompressedSavingMB.ToString("F1") + "MB)。\n" +
                 "元のテクスチャは変更されません(変換時に縮小コピーを生成します)。\n" +
                 "「再診断」を押すと計画反映後の推定サイズを確認できます。", "OK");
         }

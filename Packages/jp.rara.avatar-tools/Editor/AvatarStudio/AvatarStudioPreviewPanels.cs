@@ -74,6 +74,9 @@ namespace RARA.AvatarStudio
     {
         private const int MaxRows = 60;
 
+        /// <summary>トグル一覧を専有削減量(展開後)の大きい順に並べ替えるか(セッション内で保持するUI状態)。</summary>
+        private static bool _sortToggleBySize;
+
         // Quest(Android)PhysBoneコンポーネントのランク別上限のうち、Excellent/Good は公開定数が無い
         // (QuestLimits は Medium/Poor のみ公開)ため、SDK 3.10.4 の
         // StatsLevels/Android/{Excellent,Good}_Android.asset の physBone.componentCount を直接引用してハードコードする。
@@ -133,9 +136,10 @@ namespace RARA.AvatarStudio
         // ================================================================
         // 1. 衣装・トグル整理(ToggleConsolidator.DetectToggleGroups)
         // ================================================================
-        public static bool DrawTogglePanel(GameObject avatarRoot, AvatarStudioSettings s, AvatarStudioPreviewCache cache)
+        public static bool DrawTogglePanel(GameObject avatarRoot, AvatarStudioSettings s, QuestConvertSettings quest, AvatarStudioPreviewCache cache)
         {
             if (avatarRoot == null || s == null) { EditorGUILayout.HelpBox("アバターを選択してください。", MessageType.Info); return false; }
+            if (quest == null) quest = new QuestConvertSettings();
 
             List<ToggleGroup> groups = cache.GetOrBuild(
                 "toggle",
@@ -155,7 +159,29 @@ namespace RARA.AvatarStudio
 
             bool changed = false;
             EnsureList(ref s.toggleChoices);
+            EnsureList(ref s.questTextureSizePlan);
             string[] labels = { "維持", "常時表示", "非表示除去" };
+
+            // サイズ寄与(グループ+アバター単位でキャッシュ)と、参考用の全体推定(テクスチャパネルと同じ "questsize" スロットを共有)。
+            SizeEstimateResult est = cache.GetOrBuild("questsize",
+                avatarRoot.GetInstanceID() + "|" + HashTexturePlan(s.questTextureSizePlan),
+                () => QuestSizeEstimator.Estimate(avatarRoot, quest));
+            Dictionary<string, ToggleGroupSizeInfo> sizes = cache.GetOrBuild("togglesize",
+                avatarRoot.GetInstanceID() + "|" + HashToggleGroupIds(groups),
+                () => QuestSizeEstimator.EstimateToggleGroupExclusiveSizes(avatarRoot, quest, groups));
+
+            // セクション見出しガイド: 現在の推定(圧縮後/展開後)+超過分+「大きい順に削除候補」。
+            HashSet<string> deleteCandidateIds = DrawToggleSizeGuide(est, sizes, groups);
+
+            // サイズの大きい順に並べ替えるトグル。
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                _sortToggleBySize = EditorGUILayout.ToggleLeft(
+                    new GUIContent("削減量(展開後)の大きい順に並べ替え",
+                        "各グループを「非表示除去」にしたときに減る専有アセットの展開後サイズが大きい順に並べます"),
+                    _sortToggleBySize, GUILayout.Width(260f));
+                GUILayout.FlexibleSpace();
+            }
 
             // 一括操作: 現在の表示状態で全トグルを固定 / すべて維持に戻す。
             using (new EditorGUILayout.HorizontalScope())
@@ -182,34 +208,197 @@ namespace RARA.AvatarStudio
                 }
             }
 
+            // 並べ替え(サイズ降順)。共有のみ・未計算は 0 として後方へ。
+            List<ToggleGroup> ordered = groups;
+            if (_sortToggleBySize && sizes != null)
+            {
+                ordered = new List<ToggleGroup>(groups);
+                ordered.Sort((a, b) => ToggleGroupUncompressed(sizes, b).CompareTo(ToggleGroupUncompressed(sizes, a)));
+            }
+
             int shown = 0;
-            foreach (ToggleGroup g in groups)
+            foreach (ToggleGroup g in ordered)
             {
                 if (g == null) continue;
-                if (shown++ >= MaxRows) { EditorGUILayout.LabelField(string.Format("...他 {0} 件", groups.Count - MaxRows), EditorStyles.miniLabel); break; }
-                using (new EditorGUILayout.HorizontalScope())
+                if (shown++ >= MaxRows) { EditorGUILayout.LabelField(string.Format("...他 {0} 件", ordered.Count - MaxRows), EditorStyles.miniLabel); break; }
+                using (new EditorGUILayout.VerticalScope(GUI.skin.box))
                 {
-                    string src = string.IsNullOrEmpty(g.source) ? "" : "[" + g.source + "]";
-                    string stateText = g.defaultActive ? "表示中" : "非表示";
-                    EditorGUILayout.LabelField(new GUIContent(g.label + " " + src + " (現在: " + stateText + ")", g.id),
-                        GUILayout.MinWidth(140f), GUILayout.MaxWidth(260f));
-                    GUILayout.Label(string.Format("Renderer {0}", g.rendererCount), EditorStyles.miniLabel, GUILayout.Width(84f));
-
-                    int cur = (int)GetToggleChoice(s.toggleChoices, g.id);
-                    int next = GUILayout.Toolbar(cur, labels, GUILayout.Width(210f));
-                    if (next != cur)
+                    using (new EditorGUILayout.HorizontalScope())
                     {
-                        SetToggleChoice(s.toggleChoices, g.id, (ToggleLockChoice)next);
-                        changed = true;
+                        string src = string.IsNullOrEmpty(g.source) ? "" : "[" + g.source + "]";
+                        string stateText = g.defaultActive ? "表示中" : "非表示";
+                        EditorGUILayout.LabelField(new GUIContent(g.label + " " + src + " (現在: " + stateText + ")", g.id),
+                            GUILayout.MinWidth(140f), GUILayout.MaxWidth(260f));
+                        GUILayout.Label(string.Format("Renderer {0}", g.rendererCount), EditorStyles.miniLabel, GUILayout.Width(84f));
+
+                        int cur = (int)GetToggleChoice(s.toggleChoices, g.id);
+                        int next = GUILayout.Toolbar(cur, labels, GUILayout.Width(210f));
+                        if (next != cur)
+                        {
+                            SetToggleChoice(s.toggleChoices, g.id, (ToggleLockChoice)next);
+                            changed = true;
+                        }
+                        GUILayout.FlexibleSpace();
+                        DrawTogglePingButton(avatarRoot, g);
                     }
-                    GUILayout.FlexibleSpace();
-                    DrawTogglePingButton(avatarRoot, g);
+                    DrawToggleGroupSizeChip(g, sizes, deleteCandidateIds);
                 }
             }
 
             DrawToggleProjectedNote(groups, s.toggleChoices);
             EditorGUILayout.LabelField("※ 統合はビルド時(AvatarOptimizer)に適用されます。数値は概算です。", EditorStyles.miniLabel);
             return changed;
+        }
+
+        /// <summary>サイズ辞書からグループの専有展開後寄与を返す(未計算・null は 0)。</summary>
+        private static float ToggleGroupUncompressed(Dictionary<string, ToggleGroupSizeInfo> sizes, ToggleGroup group)
+        {
+            if (sizes == null || group == null || string.IsNullOrEmpty(group.id)) return 0f;
+            ToggleGroupSizeInfo info;
+            return sizes.TryGetValue(group.id, out info) && info != null ? info.exclusiveUncompressedMB : 0f;
+        }
+
+        /// <summary>アバターのトグルグループ集合を表すサイズ寄与キャッシュ用シグネチャ。</summary>
+        private static string HashToggleGroupIds(List<ToggleGroup> groups)
+        {
+            if (groups == null) return "0";
+            var sb = new System.Text.StringBuilder();
+            sb.Append(groups.Count);
+            foreach (ToggleGroup g in groups) sb.Append('|').Append(g != null ? g.id : "null");
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// トグルグループの「非表示除去で減る専有アセット」サイズチップを描画する。
+        /// 未計算=計測中、専有なし=共有のみ注記、それ以外=圧縮後/展開後の削減量。削除候補は強調色。
+        /// </summary>
+        private static void DrawToggleGroupSizeChip(ToggleGroup group, Dictionary<string, ToggleGroupSizeInfo> sizes, HashSet<string> deleteCandidateIds)
+        {
+            if (sizes == null) { EditorGUILayout.LabelField("非表示除去の削減量: 計測中...", EditorStyles.miniLabel); return; }
+            ToggleGroupSizeInfo info;
+            if (string.IsNullOrEmpty(group.id) || !sizes.TryGetValue(group.id, out info) || info == null)
+            {
+                EditorGUILayout.LabelField("非表示除去の削減量: -", EditorStyles.miniLabel);
+                return;
+            }
+            if (info.sharedOnly)
+            {
+                EditorGUILayout.LabelField("非表示除去で約 圧縮後-0.0 MB / 展開後-0.0 MB(共有テクスチャのみ・単独削減効果小)", EditorStyles.wordWrappedMiniLabel);
+                return;
+            }
+            bool isCandidate = deleteCandidateIds != null && deleteCandidateIds.Contains(group.id);
+            Color prev = GUI.color;
+            if (isCandidate) GUI.color = AvatarStudioDiagnostics.OverLimitColor;
+            EditorGUILayout.LabelField(
+                (isCandidate ? "★ " : "") + "非表示除去で約 圧縮後-" + info.exclusiveDownloadMB.ToString("F1") +
+                " MB / 展開後-" + info.exclusiveUncompressedMB.ToString("F1") + " MB",
+                EditorStyles.wordWrappedMiniLabel);
+            GUI.color = prev;
+        }
+
+        /// <summary>
+        /// トグルセクションの見出しガイドを描画し、「削除候補」として強調するグループIDの集合を返す。
+        /// 現在の推定(圧縮後/展開後)と超過分を示し、超過時は専有削減量の大きい順に上限を満たすまで列挙する。
+        /// </summary>
+        private static HashSet<string> DrawToggleSizeGuide(SizeEstimateResult est, Dictionary<string, ToggleGroupSizeInfo> sizes, List<ToggleGroup> groups)
+        {
+            var candidateIds = new HashSet<string>(StringComparer.Ordinal);
+            if (est == null) return candidateIds;
+            if (sizes == null) { EditorGUILayout.LabelField("グループごとの削減量を計測中...", EditorStyles.miniLabel); return candidateIds; }
+
+            bool overC = est.estimatedDownloadMB > QuestLimits.HardDownloadSizeCapMB;
+            bool overU = est.estimatedUncompressedMB > QuestLimits.HardUncompressedSizeCapMB;
+            string head = "現在の推定: 圧縮後 " + est.estimatedDownloadMB.ToString("F1") + "/" + QuestLimits.HardDownloadSizeCapMB +
+                          "MB, 展開後 " + est.estimatedUncompressedMB.ToString("F1") + "/" + QuestLimits.HardUncompressedSizeCapMB + "MB";
+            if (!overC && !overU)
+            {
+                EditorGUILayout.HelpBox(head + "\n両上限とも収まっています。トグルの非表示除去でさらに削減できます。", MessageType.Info);
+                return candidateIds;
+            }
+
+            float overCompressed = Mathf.Max(0f, est.estimatedDownloadMB - QuestLimits.HardDownloadSizeCapMB);
+            float overUncompressed = Mathf.Max(0f, est.estimatedUncompressedMB - QuestLimits.HardUncompressedSizeCapMB);
+
+            var groupById = new Dictionary<string, ToggleGroup>(StringComparer.Ordinal);
+            foreach (ToggleGroup g in groups)
+            {
+                if (g != null && !string.IsNullOrEmpty(g.id) && !groupById.ContainsKey(g.id)) groupById[g.id] = g;
+            }
+            var ranked = new List<ToggleGroupSizeInfo>();
+            foreach (KeyValuePair<string, ToggleGroupSizeInfo> kv in sizes)
+            {
+                if (kv.Value != null && !kv.Value.sharedOnly && kv.Value.exclusiveUncompressedMB > 0f) ranked.Add(kv.Value);
+            }
+            ranked.Sort((a, b) => b.exclusiveUncompressedMB.CompareTo(a.exclusiveUncompressedMB));
+
+            var sb = new System.Text.StringBuilder();
+            sb.Append(head).Append("\n超過分: ");
+            if (overC) sb.Append("圧縮後 +").Append(overCompressed.ToString("F1")).Append("MB ");
+            if (overU) sb.Append("展開後 +").Append(overUncompressed.ToString("F1")).Append("MB");
+            sb.Append('\n');
+
+            if (ranked.Count == 0)
+            {
+                sb.Append("単独除去で減らせる専有アセットを持つトグルグループはありません(共有アセット中心)。メッシュ削減・ブレンドシェイプ整理を検討してください。");
+                EditorGUILayout.HelpBox(sb.ToString(), MessageType.Warning);
+                return candidateIds;
+            }
+
+            sb.Append("大きい順に削除候補(非表示除去で減る専有アセット):");
+            float cumC = 0f, cumU = 0f;
+            bool covered = false;
+            int listed = 0;
+            const int guideMax = 6;
+            for (int i = 0; i < ranked.Count; i++)
+            {
+                ToggleGroupSizeInfo info = ranked[i];
+                bool needMore = (overC && cumC < overCompressed) || (overU && cumU < overUncompressed);
+                // 既に選んだ候補の祖先/子孫は、親を非表示にすれば子のサブツリーも一緒に消えるため、
+                // 合計に足すと専有アセットを二重計上してしまう(カバー量を過大に見積もる)。候補から除外する。
+                bool isCandidate = needMore && !OverlapsSelectedCandidate(info.groupId, candidateIds);
+                if (isCandidate)
+                {
+                    candidateIds.Add(info.groupId);
+                    cumC += info.exclusiveDownloadMB;
+                    cumU += info.exclusiveUncompressedMB;
+                }
+                if (listed < guideMax)
+                {
+                    ToggleGroup g;
+                    string label = groupById.TryGetValue(info.groupId, out g) && g != null
+                        ? (string.IsNullOrEmpty(g.label) ? info.groupId : g.label) : info.groupId;
+                    sb.Append("\n・").Append(label)
+                      .Append(" 圧縮後-").Append(info.exclusiveDownloadMB.ToString("F1"))
+                      .Append(" / 展開後-").Append(info.exclusiveUncompressedMB.ToString("F1")).Append("MB");
+                    if (isCandidate) sb.Append("  ← 候補");
+                    listed++;
+                }
+                if (!covered && (!overC || cumC >= overCompressed) && (!overU || cumU >= overUncompressed)) covered = true;
+            }
+            sb.Append(covered
+                ? "\n→ 上位 " + candidateIds.Count + " 件の非表示除去で両上限をカバーできる見込みです。"
+                : "\n→ 全候補を非表示除去してもテクスチャ縮小・メッシュ削減の併用が必要な見込みです。");
+            EditorGUILayout.HelpBox(sb.ToString(), MessageType.Warning);
+            return candidateIds;
+        }
+
+        /// <summary>
+        /// groupId(=アバタールート相対のオブジェクトパス)が、既に選んだ候補のいずれかと
+        /// 同一または祖先/子孫(サブツリー)関係にあるか。親を非表示にすれば子のサブツリーも一緒に
+        /// 消えるため、両方を合計に足すと専有アセットを二重計上してしまう。それを防ぐための重複判定。
+        /// </summary>
+        private static bool OverlapsSelectedCandidate(string groupId, HashSet<string> selected)
+        {
+            if (string.IsNullOrEmpty(groupId) || selected == null) return false;
+            foreach (string sel in selected)
+            {
+                if (string.IsNullOrEmpty(sel)) continue;
+                if (string.Equals(groupId, sel, StringComparison.Ordinal)) return true;
+                // "A/B" は "A/B/C" の祖先(区切りは '/')。どちら向きの入れ子も重複とみなす。
+                if (groupId.Length > sel.Length && groupId.StartsWith(sel, StringComparison.Ordinal) && groupId[sel.Length] == '/') return true;
+                if (sel.Length > groupId.Length && sel.StartsWith(groupId, StringComparison.Ordinal) && sel[groupId.Length] == '/') return true;
+            }
+            return false;
         }
 
         /// <summary>トグルグループの代表オブジェクトをシーンでピン表示するボタン(解決できなければ無効化)。</summary>
@@ -1096,28 +1285,44 @@ namespace RARA.AvatarStudio
             SizeEstimateResult est = cache.GetOrBuild("questsize", sig, () => QuestSizeEstimator.Estimate(avatarRoot, quest));
             if (est == null) { EditorGUILayout.HelpBox("Questサイズ推定に失敗しました。", MessageType.Warning); return changed; }
 
-            using (new EditorGUILayout.HorizontalScope(EditorStyles.helpBox))
+            // 圧縮後(10MB)・展開後(40MB)の2上限を並べて表示する。
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
                 Color prev = GUI.color;
-                if (est.overCap) GUI.color = AvatarStudioDiagnostics.OverLimitColor;
-                EditorGUILayout.LabelField(string.Format("ダウンロード(概算) 約 {0:F1} MB / 上限 {1} MB(テクスチャ {2:F1} / メッシュ {3:F1} / アニメ {4:F1})",
-                    est.estimatedDownloadMB, QuestLimits.HardDownloadSizeCapMB, est.textureDownloadMB, est.meshDownloadMB, est.animationDownloadMB),
-                    EditorStyles.boldLabel);
-                GUI.color = prev;
-                GUILayout.FlexibleSpace();
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    if (est.overCap) GUI.color = AvatarStudioDiagnostics.OverLimitColor;
+                    EditorGUILayout.LabelField(string.Format("圧縮後(概算) 約 {0:F1} MB / 上限 {1} MB(テクスチャ {2:F1} / メッシュ {3:F1} / アニメ {4:F1})",
+                        est.estimatedDownloadMB, QuestLimits.HardDownloadSizeCapMB, est.textureDownloadMB, est.meshDownloadMB, est.animationDownloadMB),
+                        EditorStyles.boldLabel);
+                    GUI.color = prev;
+                    GUILayout.FlexibleSpace();
+                }
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    if (est.overUncompressedCap) GUI.color = AvatarStudioDiagnostics.OverLimitColor;
+                    EditorGUILayout.LabelField(string.Format("展開後(概算) 約 {0:F1} MB / 上限 {1} MB(圧縮後とは独立した上限。テクスチャ {2:F1} / メッシュ {3:F1} / アニメ {4:F1})",
+                        est.estimatedUncompressedMB, QuestLimits.HardUncompressedSizeCapMB, est.textureUncompressedMB, est.meshUncompressedMB, est.animationUncompressedMB),
+                        EditorStyles.boldLabel);
+                    GUI.color = prev;
+                    GUILayout.FlexibleSpace();
+                }
             }
 
-            // 一括操作: 10MB以下まで自動調整(上限超過見込み時のみ) / 縮小計画をクリア。
+            // 一括操作: 上限内まで自動調整(いずれかの上限超過見込み時のみ) / 縮小計画をクリア。
             using (new EditorGUILayout.HorizontalScope())
             {
-                bool showBudgetFit = est.overCap || est.estimatedDownloadMB > QuestLimits.HardDownloadSizeCapMB;
+                bool showBudgetFit = est.overCap || est.overUncompressedCap ||
+                    est.estimatedDownloadMB > QuestLimits.HardDownloadSizeCapMB ||
+                    est.estimatedUncompressedMB > QuestLimits.HardUncompressedSizeCapMB;
                 using (new EditorGUI.DisabledScope(!showBudgetFit))
                 {
-                    if (GUILayout.Button(new GUIContent("10MB以下まで自動調整",
-                        "推定ダウンロードサイズが上限(" + QuestLimits.HardDownloadSizeCapMB + "MB)以下になるよう、テクスチャの縮小計画を自動で作成します(元テクスチャは変更しません)"),
-                        GUILayout.Width(160f)))
+                    if (GUILayout.Button(new GUIContent("上限内まで自動調整(圧縮後10MB・展開後40MB)",
+                        "推定サイズが圧縮後" + QuestLimits.HardDownloadSizeCapMB + "MB・展開後" + QuestLimits.HardUncompressedSizeCapMB +
+                        "MBの両方に収まるよう、テクスチャの縮小計画を自動で作成します(元テクスチャは変更しません)"),
+                        GUILayout.Width(260f)))
                     {
-                        if (RunQuestBudgetFit(avatarRoot, quest, s.questTextureSizePlan)) changed = true;
+                        if (RunQuestBudgetFit(avatarRoot, quest, s.questTextureSizePlan, est)) changed = true;
                     }
                 }
                 GUILayout.FlexibleSpace();
@@ -1222,26 +1427,28 @@ namespace RARA.AvatarStudio
         }
 
         /// <summary>
-        /// 推定ダウンロードサイズが10MB上限に収まるよう、テクスチャ縮小計画を自動作成する(旧QuestConverterウィンドウの RunBudgetFit を移植)。
+        /// 推定サイズが圧縮後10MB・展開後40MBの両上限に収まるよう、テクスチャ縮小計画を自動作成する(旧QuestConverterウィンドウの RunBudgetFit を移植)。
         /// PlanBudgetFit で計画→確認ダイアログ→studioPlan(s.questTextureSizePlan)へ登録する。元テクスチャは変更しない。1件以上登録できたら true。
         /// 上限ちょうどを狙うと見積もり誤差で超えやすいため、5%のマージンを取った目標で計画する。
         /// </summary>
-        private static bool RunQuestBudgetFit(GameObject avatarRoot, QuestConvertSettings quest, List<TextureSizePlanEntry> studioPlan)
+        private static bool RunQuestBudgetFit(GameObject avatarRoot, QuestConvertSettings quest, List<TextureSizePlanEntry> studioPlan, SizeEstimateResult est)
         {
             if (avatarRoot == null || studioPlan == null) return false;
             if (quest == null) quest = new QuestConvertSettings();
 
+            const string title = "上限内まで自動調整(圧縮後10MB・展開後40MB)";
             float targetMB = QuestLimits.HardDownloadSizeCapMB * 0.95f;
+            float targetUncompressedMB = QuestLimits.HardUncompressedSizeCapMB * 0.95f;
             List<BudgetFitStep> plan;
             try
             {
-                EditorUtility.DisplayProgressBar("10MB以下まで自動調整", "縮小プランを計算しています...", 0.2f);
-                plan = QuestSizeEstimator.PlanBudgetFit(avatarRoot, quest, targetMB);
+                EditorUtility.DisplayProgressBar(title, "縮小プランを計算しています...", 0.2f);
+                plan = QuestSizeEstimator.PlanBudgetFit(avatarRoot, quest, targetMB, targetUncompressedMB);
             }
             catch (Exception ex)
             {
                 Debug.LogError("[RARA AvatarStudio] 自動調整プランの作成に失敗しました: " + ex);
-                EditorUtility.DisplayDialog("10MB以下まで自動調整", "縮小プランの作成中にエラーが発生しました:\n" + ex.Message, "OK");
+                EditorUtility.DisplayDialog(title, "縮小プランの作成中にエラーが発生しました:\n" + ex.Message, "OK");
                 return false;
             }
             finally
@@ -1251,29 +1458,57 @@ namespace RARA.AvatarStudio
 
             if (plan == null || plan.Count == 0)
             {
-                EditorUtility.DisplayDialog("10MB以下まで自動調整",
-                    "これ以上自動で下げられるテクスチャがありません。\n『縮小・削減提案』のQuest除外や、メッシュ・ブレンドシェイプの削減も検討してください。", "OK");
+                EditorUtility.DisplayDialog(title,
+                    "これ以上テクスチャ縮小で下げられません。\n展開後40MBがメッシュ・ブレンドシェイプ支配の場合はテクスチャ縮小だけでは収まりません。" +
+                    "『縮小・削減提案』のQuest除外や、メッシュ・ブレンドシェイプの削減も検討してください。", "OK");
                 return false;
             }
 
             const int dialogStepMax = 12;
             float totalSavingMB = 0f;
+            float totalUncompressedSavingMB = 0f;
             var steps = new System.Text.StringBuilder();
             for (int i = 0; i < plan.Count; i++)
             {
                 BudgetFitStep step = plan[i];
                 if (step == null) continue;
                 totalSavingMB += step.savingMB;
+                totalUncompressedSavingMB += step.uncompressedSavingMB;
                 if (i < dialogStepMax)
                     steps.AppendLine("・" + (step.texture != null ? step.texture.name : "(不明)") + " " +
-                        step.fromSize + "px→" + step.toSize + "px (-" + step.savingMB.ToString("F1") + "MB)");
+                        step.fromSize + "px→" + step.toSize + "px (圧縮後-" + step.savingMB.ToString("F1") +
+                        "MB / 展開後-" + step.uncompressedSavingMB.ToString("F1") + "MB)");
             }
             if (plan.Count > dialogStepMax) steps.AppendLine("・他 " + (plan.Count - dialogStepMax) + " 件");
 
-            bool ok = EditorUtility.DisplayDialog("10MB以下まで自動調整",
-                "推定ダウンロードサイズが上限(" + QuestLimits.HardDownloadSizeCapMB + "MB)以下になるよう、次の " + plan.Count +
-                " 件のテクスチャを縮小計画に登録します:\n\n" + steps +
-                "\n合計削減見込み: 約" + totalSavingMB.ToString("F1") + "MB\n\n" +
+            string projection;
+            bool stillOver = false;
+            if (est != null)
+            {
+                float projCompressed = Mathf.Max(0f, est.estimatedDownloadMB - totalSavingMB);
+                float projUncompressed = Mathf.Max(0f, est.estimatedUncompressedMB - totalUncompressedSavingMB);
+                stillOver = projCompressed > QuestLimits.HardDownloadSizeCapMB || projUncompressed > QuestLimits.HardUncompressedSizeCapMB;
+                projection = "\n調整後の見込み: 圧縮後 約" + projCompressed.ToString("F1") + " / " + QuestLimits.HardDownloadSizeCapMB +
+                             "MB, 展開後 約" + projUncompressed.ToString("F1") + " / " + QuestLimits.HardUncompressedSizeCapMB + "MB";
+                if (stillOver)
+                    projection += "\n※ テクスチャ縮小だけでは上限に届きません(残りはメッシュ・ブレンドシェイプ支配)。" +
+                                  "Quest除外・メッシュ削減・ブレンドシェイプ整理の併用が必要です。";
+            }
+            else
+            {
+                projection = "\n合計削減見込み: 圧縮後 約" + totalSavingMB.ToString("F1") + "MB / 展開後 約" +
+                             totalUncompressedSavingMB.ToString("F1") + "MB";
+            }
+
+            // 縮小フロアに達して上限に届かない場合は、見出しを「収まる」ではなく「可能な範囲で登録」に変える。
+            string header = stillOver
+                ? "テクスチャを最小まで縮小しても上限(圧縮後" + QuestLimits.HardDownloadSizeCapMB + "MB・展開後" + QuestLimits.HardUncompressedSizeCapMB +
+                  "MB)には届きませんが、可能な範囲で次の " + plan.Count + " 件のテクスチャを縮小計画に登録します:\n\n"
+                : "推定サイズが上限(圧縮後" + QuestLimits.HardDownloadSizeCapMB + "MB・展開後" + QuestLimits.HardUncompressedSizeCapMB +
+                  "MB)以下になるよう、次の " + plan.Count + " 件のテクスチャを縮小計画に登録します:\n\n";
+
+            bool ok = EditorUtility.DisplayDialog(title,
+                header + steps + projection + "\n\n" +
                 "元テクスチャは変更しません(変換時に縮小コピーを生成します)。「縮小計画をクリア」でいつでも取り消せます。\n\n登録しますか?",
                 "登録する", "キャンセル");
             if (!ok) return false;
@@ -1284,8 +1519,9 @@ namespace RARA.AvatarStudio
                 if (step == null || step.texture == null || step.toSize <= 0) continue;
                 if (UpsertTexturePlan(studioPlan, step.texture, step.toSize)) applied++;
             }
-            EditorUtility.DisplayDialog("10MB以下まで自動調整",
-                applied + " 件のテクスチャを縮小計画に登録しました(削減見込み 約" + totalSavingMB.ToString("F1") + "MB)。\n元テクスチャは変更されません。", "OK");
+            EditorUtility.DisplayDialog(title,
+                applied + " 件のテクスチャを縮小計画に登録しました(削減見込み 圧縮後 約" + totalSavingMB.ToString("F1") +
+                "MB / 展開後 約" + totalUncompressedSavingMB.ToString("F1") + "MB)。\n元テクスチャは変更されません。", "OK");
             return applied > 0;
         }
 

@@ -263,16 +263,28 @@ namespace RARA.AvatarStudio
                 {
                     EditorGUILayout.LabelField("ダウンロードサイズ(概算)", GUILayout.Width(180f));
                     Color prev = GUI.color;
+                    // 圧縮後(10MB)
                     if (size.overCap) GUI.color = AvatarStudioDiagnostics.OverLimitColor;
                     EditorGUILayout.LabelField(
-                        string.Format("約 {0:F1} MB / 上限 {1} MB", size.estimatedDownloadMB, QuestLimits.HardDownloadSizeCapMB),
-                        EditorStyles.boldLabel, GUILayout.Width(220f));
+                        string.Format("圧縮後 約 {0:F1} / {1} MB", size.estimatedDownloadMB, QuestLimits.HardDownloadSizeCapMB),
+                        EditorStyles.boldLabel, GUILayout.Width(150f));
+                    // 展開後(40MB)
+                    GUI.color = size.overUncompressedCap ? AvatarStudioDiagnostics.OverLimitColor : prev;
+                    EditorGUILayout.LabelField(
+                        string.Format("展開後 約 {0:F1} / {1} MB", size.estimatedUncompressedMB, QuestLimits.HardUncompressedSizeCapMB),
+                        EditorStyles.boldLabel, GUILayout.Width(160f));
                     GUI.color = prev;
                     GUILayout.FlexibleSpace();
                 }
-                if (size.overCap)
-                    EditorGUILayout.HelpBox("Android のダウンロードサイズ上限(" + QuestLimits.HardDownloadSizeCapMB +
-                        "MB)を超過する見込みです。テクスチャ縮小(ステップ4)で削減してください。※概算値です。", MessageType.Warning);
+                if (size.overCap || size.overUncompressedCap)
+                {
+                    string which = size.overCap && size.overUncompressedCap
+                        ? "圧縮後" + QuestLimits.HardDownloadSizeCapMB + "MB・展開後" + QuestLimits.HardUncompressedSizeCapMB + "MBの両方"
+                        : (size.overCap ? "圧縮後" + QuestLimits.HardDownloadSizeCapMB + "MB"
+                                        : "展開後" + QuestLimits.HardUncompressedSizeCapMB + "MB(圧縮後とは独立した上限)");
+                    EditorGUILayout.HelpBox("Android のサイズ上限(" + which +
+                        ")を超過する見込みです。テクスチャ縮小(ステップ4)で削減してください。※概算値です。", MessageType.Warning);
+                }
             }
 
             // 非モバイルシェーダーのマテリアル

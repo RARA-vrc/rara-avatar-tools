@@ -104,7 +104,8 @@ namespace RARA.AvatarStudio
         public string pcOverall = string.Empty;
         public string questOverall = string.Empty;
 
-        public long buildSizeBytes = -1;   // 実測ビルドサイズ(-1 = 未取得)
+        public long buildSizeBytes = -1;   // 実測ビルドサイズ(圧縮後・オンディスク。-1 = 未取得)
+        public long uncompressedBuildSizeBytes = -1; // 実測 展開後(非圧縮)サイズ(SDK API で取得。-1 = 未取得)
         public string buildBundlePath = string.Empty;
         public double measuredAtUtc;       // 計測時刻(UTC Ticks)
         public double buildAtUtc;          // ビルドサイズ取得時刻(UTC Ticks)
@@ -171,6 +172,7 @@ namespace RARA.AvatarStudio
                     if (measured.buildSizeBytes < 0 && _data.avatars[i].buildSizeBytes >= 0)
                     {
                         measured.buildSizeBytes = _data.avatars[i].buildSizeBytes;
+                        measured.uncompressedBuildSizeBytes = _data.avatars[i].uncompressedBuildSizeBytes;
                         measured.buildBundlePath = _data.avatars[i].buildBundlePath;
                         measured.buildAtUtc = _data.avatars[i].buildAtUtc;
                     }
@@ -232,6 +234,16 @@ namespace RARA.AvatarStudio
                 target.buildSizeBytes = len;
                 target.buildBundlePath = path;
                 target.buildAtUtc = DateTime.UtcNow.Ticks;
+
+                // 展開後(非圧縮)サイズは圧縮ファイルからは求められないが、SDKがビルド直後の値をキャッシュしている。
+                // ValidationEditorHelpers.CheckIfUncompressedAssetBundleFileTooLarge(ContentType.Avatar, out int, isMobile)
+                // をリフレクションで呼んで取得する(本アセンブリは VRCSDKBase-Editor.dll を参照しないため反射)。
+                // OnSdkBuildSuccess の直後(=このメソッド内)でのみ有効。timing は未検証のため失敗・異常値は黙って無視する。
+                long uncompressed;
+                if (TryGetUncompressedBuildSize(len, out uncompressed))
+                {
+                    target.uncompressedBuildSizeBytes = uncompressed;
+                }
                 Save();
 
                 if (AvatarStudioMeasureReportWindow.HasOpenInstance)
@@ -240,6 +252,47 @@ namespace RARA.AvatarStudio
             catch (Exception ex)
             {
                 Debug.LogWarning("[RARA AvatarStudio] ビルド実測サイズの記録に失敗しました: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// SDK がビルド直後にキャッシュしている「展開後(非圧縮)アセットバンドルサイズ」を
+        /// ValidationEditorHelpers.CheckIfUncompressedAssetBundleFileTooLarge(ContentType.Avatar, out int, isMobile)
+        /// でリフレクション取得する。取得できて妥当(0超・圧縮後サイズ以上)なら true。
+        /// VRCSDKBase-Editor.dll 未参照のため全て反射。型・メソッド未解決や例外時は false(黙って諦める)。
+        /// </summary>
+        private static bool TryGetUncompressedBuildSize(long compressedLen, out long uncompressed)
+        {
+            uncompressed = -1;
+            try
+            {
+                Type helperType = QuestCompat.FindType("VRC.SDKBase.Editor.Validation.ValidationEditorHelpers");
+                Type contentType = QuestCompat.FindType("VRC.SDKBase.Editor.Validation.ContentType");
+                if (helperType == null || contentType == null) return false;
+
+                MethodInfo method = helperType.GetMethod("CheckIfUncompressedAssetBundleFileTooLarge",
+                    BindingFlags.Public | BindingFlags.Static, null,
+                    new Type[] { contentType, typeof(int).MakeByRefType(), typeof(bool) }, null);
+                if (method == null) return false;
+
+                object avatarContent;
+                try { avatarContent = Enum.Parse(contentType, "Avatar"); }
+                catch { return false; }
+
+                bool mobile = AvatarStudioMeasureUtil.IsMobilePlatform();
+                var args = new object[] { avatarContent, 0, mobile };
+                method.Invoke(null, args); // 戻り値(超過フラグ)は使わず out のサイズだけ取る
+                int bytes = (int)args[1];
+
+                // 展開後は圧縮後(オンディスク)以上のはず。0以下や圧縮後未満はキャッシュ未更新/別プラットフォーム等の
+                // 疑いがあるため採用しない(誤った実測値を出さない)。
+                if (bytes <= 0 || bytes < compressedLen) return false;
+                uncompressed = bytes;
+                return true;
+            }
+            catch
+            {
+                return false; // timing/署名不一致等は黙って諦める
             }
         }
 
@@ -678,7 +731,8 @@ namespace RARA.AvatarStudio
     /// <summary>アバターごとの実測結果(総合/項目別/目標比較/元との差/実測ビルドサイズ)を並べるレポート。</summary>
     public class AvatarStudioMeasureReportWindow : EditorWindow
     {
-        private const float HardDownloadCapMB = 10f; // Quest/Android のアップロード上限(ダウンロードサイズ)
+        private const float HardDownloadCapMB = 10f; // Quest/Android のアップロード上限(圧縮後ダウンロードサイズ)
+        private const float HardUncompressedCapMB = 40f; // Quest/Android のアップロード上限(展開後・非圧縮)。QuestLimits.HardUncompressedSizeCapMB と同値
 
         private static bool _shownThisSession;
         private static AvatarStudioMeasureReportWindow _instance;
@@ -1018,16 +1072,44 @@ namespace RARA.AvatarStudio
                     return;
                 }
 
+                // 圧縮後(オンディスク)ダウンロードサイズ。Quest は10MB判定。
                 float mb = a.buildSizeBytes / (1024f * 1024f);
                 Color prev = GUI.color;
                 bool overCap = isQuest && mb > HardDownloadCapMB;
                 if (isQuest) GUI.color = overCap ? AvatarStudioUI.OverLimitColor : AvatarStudioUI.UploadOkColor;
                 string verdict = isQuest
-                    ? (overCap ? "  ⚠ 10MB超過(Quest/Androidはアップロード不可)" : "  ✓ 10MB以内")
+                    ? (overCap ? "  ⚠ 圧縮後10MB超過(アップロード不可)" : "  ✓ 圧縮後10MB以内")
                     : string.Empty;
-                EditorGUILayout.LabelField(mb.ToString("F2", CultureInfo.InvariantCulture) + " MB" + verdict,
+                EditorGUILayout.LabelField("圧縮後 " + mb.ToString("F2", CultureInfo.InvariantCulture) + " MB" + verdict,
                     EditorStyles.miniLabel);
                 GUI.color = prev;
+            }
+
+            // 展開後(非圧縮)サイズ。Quest のみ40MB判定。SDK API で実測できた場合は実測値、
+            // できない場合は未取得(推定はサイズ診断側で表示)。
+            if (isQuest)
+            {
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    EditorGUILayout.LabelField("展開後(非圧縮)", EditorStyles.miniBoldLabel, GUILayout.Width(110f));
+                    if (a.uncompressedBuildSizeBytes < 0)
+                    {
+                        EditorGUILayout.LabelField(
+                            "未取得(SDKビルド時のみ実測。推定はサイズ診断を参照。上限 " + HardUncompressedCapMB.ToString("F0") + "MB)",
+                            AvatarStudioUI.MiniWrapLabel);
+                    }
+                    else
+                    {
+                        float umb = a.uncompressedBuildSizeBytes / (1024f * 1024f);
+                        bool overU = umb > HardUncompressedCapMB;
+                        Color prev = GUI.color;
+                        GUI.color = overU ? AvatarStudioUI.OverLimitColor : AvatarStudioUI.UploadOkColor;
+                        string verdict = overU ? "  ⚠ 40MB超過(アップロード不可)" : "  ✓ 40MB以内";
+                        EditorGUILayout.LabelField("実測 " + umb.ToString("F2", CultureInfo.InvariantCulture) + " MB" + verdict,
+                            EditorStyles.miniLabel);
+                        GUI.color = prev;
+                    }
+                }
             }
         }
 

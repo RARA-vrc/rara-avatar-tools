@@ -167,9 +167,12 @@ namespace RARA.QuestConverter
                     result.textureWarnings.Add("サイズ推定に失敗しました: " + sizeEx.Message);
                 }
 
-                // アップロード可否はサイズのみで判定する(ランク非依存)。ダウンロードサイズ上限
-                // (QuestLimits.HardDownloadSizeCapMB)超過見込みのときだけ不可。推定失敗時はブロック扱いにしない。
-                result.canUploadToAndroid = !(result.sizeEstimate != null && result.sizeEstimate.overCap);
+                // アップロード可否はサイズのみで判定する(ランク非依存)。SDKは圧縮後ダウンロードサイズ上限
+                // (QuestLimits.HardDownloadSizeCapMB=10MB)と展開後(非圧縮)サイズ上限
+                // (QuestLimits.HardUncompressedSizeCapMB=40MB)のいずれかの超過でアップロードをブロックする。
+                // どちらか一方でも超過見込みなら不可。推定失敗時はブロック扱いにしない。
+                result.canUploadToAndroid = !(result.sizeEstimate != null &&
+                    (result.sizeEstimate.overCap || result.sizeEstimate.overUncompressedCap));
             }
             catch (Exception ex)
             {

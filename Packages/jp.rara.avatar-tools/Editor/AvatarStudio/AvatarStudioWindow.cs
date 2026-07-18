@@ -615,7 +615,9 @@ namespace RARA.AvatarStudio
         private void DrawStructureSection(GameObject root)
         {
             bool changed = false;
-            changed |= AvatarStudioPreviewPanels.DrawTogglePanel(root, _settings, _cache);
+            // トグルの非表示固定で減る専有アセットのサイズチップ用に Quest 変換設定(縮小計画含む)を渡す。
+            QuestConvertSettings toggleQuest = AvatarStudioMapping.BuildQuestConvertSettings(_settings);
+            changed |= AvatarStudioPreviewPanels.DrawTogglePanel(root, _settings, toggleQuest, _cache);
             EditorGUILayout.Space(4f);
             changed |= AvatarStudioPreviewPanels.DrawSkinnedMeshMergePanel(root, _settings, _cache);
 

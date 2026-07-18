@@ -393,6 +393,17 @@ namespace RARA.QuestConverter
 
         /// <summary>Androidアバターのダウンロードサイズ上限(ビルド後圧縮、MB)。超過するとアップロード/表示不可。</summary>
         public const int HardDownloadSizeCapMB = 10;
+
+        /// <summary>
+        /// Androidアバターの展開後(非圧縮)アセットバンドルサイズ上限(MB)。圧縮後10MBとは独立した
+        /// アップロード上限で、超過するとSDKがアップロードをブロックする
+        /// (VRCSdkControlPanelAvatarBuilder が ValidationEditorHelpers.CheckIfUncompressedAssetBundleFileTooLarge で判定)。
+        /// SDKの数値はソースにハードコードされておらず VRChat のリモート設定
+        /// (CONTENT_AVATAR_UNCOMPRESSED_ASSET_BUNDLE_SIZE_LIMIT_MOBILE)由来のため定数化はできないが、
+        /// 2026-07時点で確認できたモバイル値は 40.00MB(アップロードエラー "… > 40.00 MB" と一致)。
+        /// 圧縮後の HardDownloadSizeCapMB と同様、確認済みのモバイル上限を定数として扱う。
+        /// </summary>
+        public const int HardUncompressedSizeCapMB = 40;
     }
 
     /// <summary>Quest(Android)アバターの互換性定義と検出ユーティリティ。</summary>
