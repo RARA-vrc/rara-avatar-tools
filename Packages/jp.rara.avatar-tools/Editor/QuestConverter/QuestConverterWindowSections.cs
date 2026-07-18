@@ -4004,7 +4004,7 @@ namespace RARA.QuestConverter
             {
                 EditorGUILayout.LabelField("このツールで できること", EditorStyles.miniBoldLabel);
                 EditorGUILayout.LabelField(
-                    "・シェーダー変換(lilToon / NonToon等の質感をテクスチャへベイク)\n" +
+                    "・シェーダー変換(lilToon / NonToon / Poiyomi Toon / Unity Standard・Unlit / VRM MToon 等の質感をテクスチャへベイク)\n" +
                     "・影ランプ生成 / エミッション変換\n" +
                     "・パーティクルの近似変換(加算/乗算)\n" +
                     "・半透明マテリアルの自動再現(乗算/加算パーティクルで近似。既定処理は 再現/非表示/不透明 から選択)\n" +

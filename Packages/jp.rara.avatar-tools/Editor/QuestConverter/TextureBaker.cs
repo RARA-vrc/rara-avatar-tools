@@ -433,7 +433,8 @@ namespace RARA.QuestConverter
             bool adjust = poiMat.HasProperty(QuestCompat.PoiyomiColorAdjustToggleProp) && poiMat.GetFloat(QuestCompat.PoiyomiColorAdjustToggleProp) > 0.5f;
 
             float saturation = adjust && poiMat.HasProperty(QuestCompat.PoiyomiSaturationProp) ? poiMat.GetFloat(QuestCompat.PoiyomiSaturationProp) : 0f;
-            float brightness = adjust && poiMat.HasProperty(QuestCompat.PoiyomiBrightnessProp) ? poiMat.GetFloat(QuestCompat.PoiyomiBrightnessProp) : 1f;
+            // Poiyomi の _MainBrightness は中立0(Range -1..2)で base*(_MainBrightness+1) として適用されるため、中立の既定は 0f
+            float brightness = adjust && poiMat.HasProperty(QuestCompat.PoiyomiBrightnessProp) ? poiMat.GetFloat(QuestCompat.PoiyomiBrightnessProp) : 0f;
             float gamma = adjust && poiMat.HasProperty(QuestCompat.PoiyomiGammaProp) ? poiMat.GetFloat(QuestCompat.PoiyomiGammaProp) : 1f;
             float hueShift = adjust && poiMat.HasProperty(QuestCompat.PoiyomiHueShiftProp) ? poiMat.GetFloat(QuestCompat.PoiyomiHueShiftProp) : 0f;
 
@@ -467,7 +468,8 @@ namespace RARA.QuestConverter
                 bakeMat = new Material(bakeShader);
                 bakeMat.SetColor("_MultiplyColor", mainColor); // アルファも維持(col.a = mainCol.a * _MultiplyColor.a)
                 bakeMat.SetFloat("_Saturation", saturation);
-                bakeMat.SetFloat("_MainBrightness", brightness);
+                // Poiyomi の中立0 明度を、ベイクシェーダーの乗算係数(中立1)へ +1 して渡す(base*(_MainBrightness+1) と一致)
+                bakeMat.SetFloat("_MainBrightness", brightness + 1f);
                 bakeMat.SetFloat("_MainGamma", gamma);
                 bakeMat.SetFloat("_MainHueShift", hueShift);
 
@@ -488,8 +490,8 @@ namespace RARA.QuestConverter
 
         /// <summary>
         /// Poiyomi の Main Color Adjust を単色に対して CPU 側で適用する(メインテクスチャが無い場合用)。
-        /// 順序・式は RARA_QuestBake.shader の "PoiyomiColorAdjust" パスと一致させる
-        /// (色相シフト → 彩度 lerp → 明度乗算 → ガンマ)。アルファは維持する。
+        /// 順序・式は RARA_QuestBake.shader の "PoiyomiColorAdjust" パスへ渡す係数(brightness+1)と一致させる
+        /// (色相シフト → 彩度 lerp → 明度((brightness+1)乗算・中立0)→ ガンマ)。アルファは維持する。
         /// </summary>
         private static Color ApplyPoiyomiAdjust(Color c, float saturation, float brightness, float gamma, float hueShift)
         {
@@ -504,9 +506,9 @@ namespace RARA.QuestConverter
             rgb.g = Mathf.Lerp(luma, rgb.g, factor);
             rgb.b = Mathf.Lerp(luma, rgb.b, factor);
 
-            rgb.r = Mathf.Clamp01(Mathf.Pow(Mathf.Max(rgb.r * brightness, 0f), gamma));
-            rgb.g = Mathf.Clamp01(Mathf.Pow(Mathf.Max(rgb.g * brightness, 0f), gamma));
-            rgb.b = Mathf.Clamp01(Mathf.Pow(Mathf.Max(rgb.b * brightness, 0f), gamma));
+            rgb.r = Mathf.Clamp01(Mathf.Pow(Mathf.Max(rgb.r * (brightness + 1f), 0f), gamma));
+            rgb.g = Mathf.Clamp01(Mathf.Pow(Mathf.Max(rgb.g * (brightness + 1f), 0f), gamma));
+            rgb.b = Mathf.Clamp01(Mathf.Pow(Mathf.Max(rgb.b * (brightness + 1f), 0f), gamma));
             rgb.a = c.a;
             return rgb;
         }

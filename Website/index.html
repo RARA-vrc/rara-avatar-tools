@@ -492,7 +492,7 @@
         <p>金属パーツやツヤのある面に使う「マットキャップ(MatCap)」を、Quest / iOS でも近い見た目で再現します。⑥ マテリアルの Quest 列で設定します。</p>
 
         <h3>Toon Standard への自動引き継ぎ(既定)</h3>
-        <p>lilToon のマットキャップは <b>1.1.0</b> から、変換先の Toon Standard が持つ内蔵マットキャップへ自動で引き継がれます(設定不要)。NonToon・Poiyomi でも従来どおりマットキャップは近似変換されます(NonToon は乗算 / 加算の2枠を Toon Standard の1枠へ近似)。</p>
+        <p>lilToon のマットキャップは <b>1.1.0</b> から、変換先の Toon Standard が持つ内蔵マットキャップへ自動で引き継がれます(設定不要)。NonToon も従来どおり近似変換され(乗算 / 加算の2枠を Toon Standard の1枠へ近似)、VRM MToon の加算スフィア(SphereAdd)も加算マットキャップとして引き継がれます。<b>Poiyomi のマットキャップは自動では引き継がれません</b>(変換レポートに表示)。金属パーツなど映り込みを残したい場合は、マテリアル別指定「MatCap Lit(金属向け)」を選ぶと Poiyomi のマットキャップ画像を引き継いで変換できます。</p>
         <ul>
           <li><b>引き継がれるもの</b> — マットキャップ画像 / 合成モード(<b>乗算はそのまま乗算</b>、通常・加算・スクリーンは<b>加算で近似</b>)/ 強さ / マスク。</li>
           <li><b>引き継がれないもの</b> — 2ndマットキャップ(2枚目)、カスタム法線・視差(パララックス)・カスタム UV などの高度なオプション(変換レポートに警告)。</li>
@@ -601,7 +601,7 @@
     <div class="cards">
       <div class="card">
         <h3>対応シェーダー</h3>
-        <p>lilToon / NonToon(jp.lilxyzw)/ Poiyomi(ロック済みも可)/ Standard 系。前髪影(FakeShadow)やアウトライン専用などのエフェクト専用シェーダーは、Quest で再現できないため自動で非表示化されます。</p>
+        <p>lilToon / NonToon(jp.lilxyzw)/ Poiyomi Toon(ロック済みも可)/ Unity Standard・Unlit / VRM MToon(VRoid)。lilToon が最も忠実で、他はプロパティ読み取り+ティント焼き込みの近似変換です。前髪影(FakeShadow)やアウトライン専用などのエフェクト専用シェーダーは、Quest で再現できないため自動で非表示化されます。</p>
       </div>
       <div class="card">
         <h3>Quest 変換先</h3>
@@ -617,6 +617,9 @@
       </div>
     </div>
 
+    <div class="note">
+      <b>変換元シェーダーの拡充(1.3.0)。</b>Unity Standard/Unlit と VRM MToon(VRoid)を変換元として追加し、Poiyomi Toon はロック済みマテリアルまで対応しました。各ファミリーで <b>メイン色・ノーマル・エミッション・カットアウト/透過方針・カリング</b> を引き継ぎます(マットキャップの自動引き継ぎは lilToon・NonToon・MToon の SphereAdd=加算のみ。Poiyomi のマットキャップは自動では引き継がれず、「MatCap Lit(金属向け)」指定で引き継げます)。ただし <b>lilToon が最も忠実</b>で、それ以外は「プロパティ読み取り+ティント焼き込み」の近似です。シェーダー固有の色調補正・デカール・ラメ等は非対応(変換レポートに警告)、Unity Standard のメタリックは無視(金属パーツは MatCap Lit を推奨)、アウトラインは従来どおり外れます。
+    </div>
     <div class="note">
       <b>AAO(Avatar Optimizer)の導入を強く推奨。</b>
       メッシュ・スロットの統合や非表示メッシュ削減はビルド時に AAO が担当します。導入は

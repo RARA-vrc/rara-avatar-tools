@@ -554,6 +554,8 @@ namespace RARA.QuestConverter
         public const string PoiyomiHueShiftProp = "_MainHueShift";
         public const string PoiyomiBumpMapProp = "_BumpMap";
         public const string PoiyomiBumpScaleProp = "_BumpScale";
+        /// <summary>マットキャップ(映り込み)テクスチャ。ロック時も残る素のマテリアルプロパティ(HasProperty ガード/タグ復元で参照)。MatCap Lit 指定変換の映り込み元に使う。</summary>
+        public const string PoiyomiMatcapProp = "_Matcap";
         public const string PoiyomiCutoffProp = "_Cutoff";
         public const string PoiyomiAlphaPremultiplyProp = "_AlphaPremultiply";
         public const string PoiyomiCullProp = "_Cull";
@@ -613,6 +615,88 @@ namespace RARA.QuestConverter
             string path = AssetDatabase.GUIDToAssetPath(guid);
             if (string.IsNullOrEmpty(path)) return null;
             return AssetDatabase.LoadAssetAtPath<Texture>(path);
+        }
+
+        // ================================================================
+        // VRM MToon(VRM0.x "VRM/MToon" / VRM1.0 "VRM10/MToon10")
+        // ================================================================
+        // 【重要】このプロジェクトには MToon/UniVRM がインポートされていないため、以下のプロパティ名は
+        // すべて Santarh/MToon(UniVRMへvendored)ドキュメント由来であり、参照は必ず HasProperty で
+        // ガードする。VRM1.0(MToon10)は一部プロパティ名が異なる(_SphereAdd→_MatcapTexture 等)ため、
+        // 欠落時は汎用の tint ベイクへ縮退する(property-read + tint ベイクのみ。GPUベイクは行わない)。
+
+        // ---- MToon プロパティ名(全て HasProperty ガード必須) ----
+        public const string MToonMainTexProp = "_MainTex";
+        public const string MToonColorProp = "_Color";
+        /// <summary>影(トゥーン陰)の色。Toon Standard には色付きシャドウ枠が無いため近似(既定ランプ)。</summary>
+        public const string MToonShadeColorProp = "_ShadeColor";
+        public const string MToonShadeTextureProp = "_ShadeTexture";
+        /// <summary>陰の硬さ(1=硬いトゥーン段 / 0=なだらか)。ランプの近似ヒントとしてのみ参照。</summary>
+        public const string MToonShadeToonyProp = "_ShadeToony";
+        public const string MToonShadeShiftProp = "_ShadeShift";
+        public const string MToonBumpMapProp = "_BumpMap";
+        public const string MToonBumpScaleProp = "_BumpScale";
+        public const string MToonEmissionColorProp = "_EmissionColor";
+        public const string MToonEmissionMapProp = "_EmissionMap";
+        /// <summary>加算スフィア(マットキャップ相当)。Toon Standard の加算マットキャップへ引き継ぐ。</summary>
+        public const string MToonSphereAddProp = "_SphereAdd";
+        /// <summary>VRM1.0(MToon10)でのマットキャップ名(_SphereAdd の後継。欠落時ガード)。</summary>
+        public const string MToonMatcapTextureProp = "_MatcapTexture";
+        /// <summary>アウトライン幅モード(0=None / 1=World / 2=Screen)。0以外=アウトラインあり。</summary>
+        public const string MToonOutlineWidthModeProp = "_OutlineWidthMode";
+        /// <summary>描画モード(RenderMode。0=Opaque / 1=Cutout / 2=Transparent / 3=TransparentWithZWrite)。</summary>
+        public const string MToonBlendModeProp = "_BlendMode";
+        public const string MToonCutoffProp = "_Cutoff";
+        /// <summary>カリング(Unity CullMode。Off=0/Front=1/Back=2。Toon Standard _Culling と同定義)。</summary>
+        public const string MToonCullModeProp = "_CullMode";
+        /// <summary>MToonマーカー(非ゼロ int)。名前判定の補助にのみ使う。</summary>
+        public const string MToonVersionProp = "_MToonVersion";
+        public const string MToonRimColorProp = "_RimColor";
+
+        /// <summary>
+        /// VRM MToon シェーダーか(シェーダー名に "mtoon" を含む・大文字小文字無視)。
+        /// VRM0.x の "VRM/MToon" も VRM1.0 の "VRM10/MToon10" もこの部分一致で拾える。
+        /// </summary>
+        public static bool IsMToonShader(Shader shader)
+        {
+            return shader != null && shader.name.IndexOf("mtoon", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        // ================================================================
+        // Unity 標準(Standard / Standard (Specular setup))・Unlit
+        // ================================================================
+
+        /// <summary>Unity ビルトイン Standard シェーダー名(メタリック設定)。</summary>
+        public const string UnityStandardShaderName = "Standard";
+        /// <summary>Unity ビルトイン Standard シェーダー名(スペキュラ設定)。</summary>
+        public const string UnityStandardSpecularShaderName = "Standard (Specular setup)";
+
+        // ---- Standard プロパティ名(全て HasProperty ガード。Unlit系は _MainTex / _Color のみ持つ) ----
+        public const string StandardModeProp = "_Mode";      // 0=Opaque/1=Cutout/2=Fade/3=Transparent
+        public const string StandardCutoffProp = "_Cutoff";
+        public const string StandardBumpMapProp = "_BumpMap";
+        public const string StandardBumpScaleProp = "_BumpScale";
+        public const string StandardMetallicProp = "_Metallic";
+        public const string StandardGlossinessProp = "_Glossiness";
+        public const string StandardSmoothnessProp = "_Smoothness";
+        public const string StandardMetallicGlossMapProp = "_MetallicGlossMap";
+
+        /// <summary>Unity ビルトイン Standard / Standard (Specular setup) シェーダーか(名前完全一致)。</summary>
+        public static bool IsUnityStandardShader(Shader shader)
+        {
+            if (shader == null) return false;
+            return string.Equals(shader.name, UnityStandardShaderName, StringComparison.Ordinal) ||
+                   string.Equals(shader.name, UnityStandardSpecularShaderName, StringComparison.Ordinal);
+        }
+
+        /// <summary>
+        /// Unity ビルトイン Unlit 系シェーダーか("Unlit/" 前方一致)。
+        /// Unlit/Color(色のみ)・Unlit/Texture・Unlit/Transparent・Unlit/Transparent Cutout を拾う。
+        /// URP の "Universal Render Pipeline/Unlit" 等は前方一致しないため対象外(必要になれば別途)。
+        /// </summary>
+        public static bool IsUnlitShader(Shader shader)
+        {
+            return shader != null && shader.name.StartsWith("Unlit/", StringComparison.Ordinal);
         }
 
         // ================================================================
@@ -690,6 +774,17 @@ namespace RARA.QuestConverter
             {
                 string decidedBy;
                 return ClassifyPoiyomiTransparency(mat, out decidedBy);
+            }
+
+            // MToon: SubShader の RenderType タグは "Opaque" 固定で、半透明でもキューが 2460(<3000)の
+            // ことがあるため、_BlendMode(0=不透明/1=カットアウト/2=半透明/3=半透明+ZWrite)で分類する。
+            // _BlendMode が無い(VRM1.0 の MToon10 で名称が異なる等)場合は下の汎用タグ/キュー判定へ委ねる。
+            if (IsMToonShader(mat.shader) && mat.HasProperty(MToonBlendModeProp))
+            {
+                int blend = Mathf.RoundToInt(mat.GetFloat(MToonBlendModeProp));
+                if (blend == 2 || blend == 3) return TransparencyClass.Transparent;
+                if (blend == 1) return TransparencyClass.Cutout;
+                return TransparencyClass.Opaque;
             }
 
             // 汎用シェーダー: RenderTypeタグ(TransparentCutoutを先に判定)→ レンダーキュー

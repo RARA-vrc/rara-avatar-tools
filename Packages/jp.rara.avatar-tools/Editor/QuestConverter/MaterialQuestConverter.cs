@@ -165,6 +165,14 @@ namespace RARA.QuestConverter
                     {
                         result = ConvertPoiyomi(src, settings, outputDir, assets, report, forcedTarget);
                     }
+                    else if (QuestCompat.IsMToonShader(src.shader))
+                    {
+                        result = ConvertMToon(src, settings, outputDir, assets, report, forcedTarget);
+                    }
+                    else if (QuestCompat.IsUnityStandardShader(src.shader) || QuestCompat.IsUnlitShader(src.shader))
+                    {
+                        result = ConvertUnityBuiltin(src, settings, outputDir, assets, report, forcedTarget);
+                    }
                     else if (forcedTarget == QuestShaderTarget.ToonStandard)
                     {
                         // 非lilToon→Toon Standard は簡易パス(ベイク済みテクスチャ+フラットランプ)
@@ -227,6 +235,14 @@ namespace RARA.QuestConverter
                         else if (QuestCompat.IsPoiyomiShader(src.shader))
                         {
                             result = ConvertPoiyomi(src, settings, outputDir, assets, report, settings.shaderTarget);
+                        }
+                        else if (QuestCompat.IsMToonShader(src.shader))
+                        {
+                            result = ConvertMToon(src, settings, outputDir, assets, report, settings.shaderTarget);
+                        }
+                        else if (QuestCompat.IsUnityStandardShader(src.shader) || QuestCompat.IsUnlitShader(src.shader))
+                        {
+                            result = ConvertUnityBuiltin(src, settings, outputDir, assets, report, settings.shaderTarget);
                         }
                         else
                         {
@@ -1170,6 +1186,268 @@ namespace RARA.QuestConverter
         }
 
         // ================================================================
+        // Unity Standard / Unlit / VRM MToon 共通の簡易ビルダー
+        // ================================================================
+        // これらの系統はシェーダー専用のGPUベイクを持たない(1.3.0 wave1 方針: property-read + tint ベイクのみ)。
+        // メインは汎用ベイク(BakeGeneric = メイン×_Color、必要ならエミッションをメインへ加算)で焼き、
+        // ノーマル・マットキャップ・ランプ・カリングはプロパティ読み取りで既存プラミングへ配線する
+        // (lilToon/Poiyomi のようなシェーダー専用GPUベイクは行わない。近似はレポートで明示する)。
+
+        /// <summary>
+        /// 汎用ベイク(メイン×tint、エミッションはメインへ焼き込み)を土台に Toon Standard マテリアルを組む。
+        /// ・mainStProp: メインテクスチャのST転写元プロパティ(無ければ null)。
+        /// ・cullProp: カリング元プロパティ(Off=0/Front=1/Back=2。無ければ/未所持なら既定Back)。
+        /// ・normalMap/normalScale: ノーマルマップ(無ければ null)。
+        /// ・matcapTex/matcapType/matcapStrength: マットキャップ(無ければ null。type 0=加算/1=乗算)。
+        /// ・useDefaultRamp: true=SDK既定2バンドランプ / false=フラット(均一)ランプ。
+        /// エミッションはメインへ焼き込み済みのため Toon Standard 側は無効化する(汎用Toon Standardパスと同じ扱い)。
+        /// </summary>
+        private static Material BuildToonStandardFromGeneric(Material src, QuestConvertSettings settings, string outputDir, ConversionAssetContext assets, ConversionReport report,
+            string mainStProp, string cullProp, Texture normalMap, float normalScale, Texture matcapTex, int matcapType, float matcapStrength, bool useDefaultRamp)
+        {
+            Shader shader = Shader.Find(QuestCompat.ToonStandardShaderName);
+            if (shader == null)
+            {
+                report.Error(string.Format("シェーダー '{0}' が見つかりません。VRChat SDKのインポート状態を確認してください。", QuestCompat.ToonStandardShaderName));
+                return null;
+            }
+
+            // メイン(×tint)+エミッション焼き込みを汎用ベイクで作る(property-read + tint ベイク)
+            Texture2D baked = TextureBaker.BakeGeneric(src, GetBakeMaxSize(src, settings, report), settings.bakeEmission, report);
+            Texture2D mainTex = PersistBakedOrFallback(baked, src, "_main", true, settings, outputDir, assets, report);
+
+            var mat = new Material(shader);
+            if (mainTex != null) mat.SetTexture("_MainTex", mainTex);
+            if (mainStProp != null) CopyTextureST(src, mainStProp, mat, "_MainTex");
+            mat.SetColor("_Color", Color.white); // 色はベイク済みのため白
+
+            // カリング(Off=0/Front=1/Back=2 で Toon Standard _Culling と同定義)
+            if (cullProp != null && src.HasProperty(cullProp))
+            {
+                mat.SetInt("_Culling", Mathf.Clamp(Mathf.RoundToInt(src.GetFloat(cullProp)), 0, 2));
+            }
+
+            // 影ランプ: トゥーン陰のある系統(Standard/MToon)は既定2バンド、Unlitはフラット(均一)
+            string rampResource = useDefaultRamp ? QuestCompat.DefaultShadowRampResource : QuestCompat.FlatShadowRampResource;
+            Texture2D ramp = Resources.Load<Texture2D>(rampResource);
+            if (ramp != null)
+            {
+                mat.SetTexture("_Ramp", ramp);
+            }
+            else
+            {
+                report.Warn(string.Format("'{0}': SDK既定の影ランプ({1})が読み込めませんでした。影は白ランプ(フラット)になります。", src.name, rampResource));
+            }
+
+            // ライト下限: 暗所で真っ黒(消えた見え)を防ぐ床(lilToon/NonToon/Poiyomi変換と同じ 0.05)
+            mat.SetFloat("_MinBrightness", 0.05f);
+
+            // ノーマルマップ(再ベイクせず元アセットを流用。縮小計画があれば縮小コピーを生成)
+            if (normalMap != null)
+            {
+                mat.SetTexture("_BumpMap", ResolveReusedTexture(normalMap, src.name, "ノーマルマップ", true, false, true, settings, outputDir, assets, report));
+                mat.SetFloat("_BumpScale", normalScale);
+                mat.EnableKeyword(KeywordNormalMaps);
+            }
+
+            // エミッションはメインへ焼き込み済みのため無効化(汎用Toon Standardパスと同じ。白発光バグ防止)
+            mat.SetColor("_EmissionColor", Color.black);
+            mat.SetFloat("_EmissionStrength", 0f);
+
+            // マットキャップ(映り込み用ルックアップ画像。sRGBで扱いノーマル変換はしない)
+            if (matcapTex != null)
+            {
+                mat.SetTexture("_Matcap", ResolveReusedTexture(matcapTex, src.name, "マットキャップ", false, true, true, settings, outputDir, assets, report));
+                mat.SetInt("_MatcapType", matcapType);
+                mat.SetFloat("_MatcapStrength", Mathf.Clamp01(matcapStrength));
+                mat.EnableKeyword(KeywordMatcap);
+            }
+
+            // リムは生成元情報が無いため明示的に無効化(_RimIntensity 既定0.5の放置で意図しないリムが光るのを防ぐ)
+            mat.SetFloat("_RimIntensity", 0f);
+
+            return FinalizeMaterial(mat, src, outputDir, assets, report);
+        }
+
+        /// <summary>
+        /// 汎用ベイク(メイン×tint+エミッション焼き込み)を土台に Toon Lit マテリアルを組む(陰影・質感は失われる)。
+        /// cullProp が Cull Off(0)を示す場合は両面描画が失われる旨を警告する。
+        /// </summary>
+        private static Material BuildToonLitFromGeneric(Material src, QuestConvertSettings settings, string outputDir, ConversionAssetContext assets, ConversionReport report, string mainStProp, string cullProp)
+        {
+            Shader shader = Shader.Find(QuestCompat.ToonLitShaderName);
+            if (shader == null)
+            {
+                report.Error(string.Format("シェーダー '{0}' が見つかりません。VRChat SDKのインポート状態を確認してください。", QuestCompat.ToonLitShaderName));
+                return null;
+            }
+
+            Texture2D baked = TextureBaker.BakeGeneric(src, GetBakeMaxSize(src, settings, report), settings.bakeEmission, report);
+            Texture2D mainTex = PersistBakedOrFallback(baked, src, "_main", true, settings, outputDir, assets, report);
+
+            var mat = new Material(shader);
+            if (mainTex != null) mat.SetTexture("_MainTex", mainTex);
+            if (mainStProp != null) CopyTextureST(src, mainStProp, mat, "_MainTex");
+
+            if (cullProp != null && src.HasProperty(cullProp) && Mathf.RoundToInt(src.GetFloat(cullProp)) == 0)
+            {
+                report.Warn(string.Format("'{0}': 両面描画(Cull Off)はToon Litでは再現されません(背面カリング固定)。", src.name));
+            }
+            return FinalizeMaterial(mat, src, outputDir, assets, report);
+        }
+
+        // ================================================================
+        // VRM MToon(VRM/MToon / VRM10/MToon10)系
+        // ================================================================
+
+        /// <summary>
+        /// MToon マテリアルを target(Toon Standard / Toon Lit)へ変換する。
+        /// アルベドはメイン×_Color を tint ベイク(シェーダー専用GPUベイクはしない)。エミッションはメインへ焼き込む。
+        /// 影(_ShadeColor/_ShadeToony/_ShadeShift)は Toon Standard に色付き影枠が無いため既定2バンドランプで近似し、
+        /// 加算スフィア(_SphereAdd / MToon10 _MatcapTexture)は Toon Standard の加算マットキャップへ引き継ぐ。
+        /// アウトライン・リム・UVアニメ等は再現しない(警告で明示する)。
+        /// 半透明(_BlendMode)は Convert 側で Emulate/Hide/不透明化へ振り分け済みのため通常ここには来ないが、
+        /// 透過保護された髪・大型メッシュや強制指定で来た場合は不透明化警告を出す。
+        /// </summary>
+        private static Material ConvertMToon(Material src, QuestConvertSettings settings, string outputDir, ConversionAssetContext assets, ConversionReport report, QuestShaderTarget target)
+        {
+            QuestCompat.TransparencyClass tclass = QuestCompat.ClassifyTransparency(src);
+            if (tclass == QuestCompat.TransparencyClass.Transparent)
+            {
+                report.Warn(string.Format("MToon: 『{0}』は半透明設定ですが、Toon Standard/Toon Litは半透明非対応のため不透明として変換します。", src.name));
+            }
+            else if (tclass == QuestCompat.TransparencyClass.Cutout)
+            {
+                report.Warn(string.Format("MToon: 『{0}』はカットアウト設定ですが、Toon Standard/Toon Litは不透明のため塗りつぶして変換します(透過部が板状に見える可能性があります)。", src.name));
+            }
+
+            Material result;
+            if (target == QuestShaderTarget.ToonStandard)
+            {
+                Texture bump = src.HasProperty(QuestCompat.MToonBumpMapProp) ? src.GetTexture(QuestCompat.MToonBumpMapProp) : null;
+                float bumpScale = src.HasProperty(QuestCompat.MToonBumpScaleProp) ? src.GetFloat(QuestCompat.MToonBumpScaleProp) : 1f;
+                // 加算スフィア(_SphereAdd / MToon10 _MatcapTexture)→ 加算マットキャップ
+                Texture sphere = GetMToonMatcapTexture(src);
+
+                result = BuildToonStandardFromGeneric(src, settings, outputDir, assets, report,
+                    QuestCompat.MToonMainTexProp, QuestCompat.MToonCullModeProp, bump, bumpScale, sphere, 0, 1f, true);
+
+                if (result != null)
+                {
+                    report.Info(string.Format("MToon: 『{0}』の影(Shade色・Toony)はToon Standardに色付き影枠が無いため既定ランプで近似しました。", src.name));
+                    if (sphere != null)
+                    {
+                        report.Info(string.Format("MToon: 『{0}』の加算スフィア(SphereAdd)を加算マットキャップとして引き継ぎました。", src.name));
+                    }
+                }
+            }
+            else
+            {
+                result = BuildToonLitFromGeneric(src, settings, outputDir, assets, report, QuestCompat.MToonMainTexProp, QuestCompat.MToonCullModeProp);
+                if (result != null)
+                {
+                    report.Info(string.Format("MToon: 『{0}』をToon Lit(アルベドのみ)へ変換しました。陰影・スフィア・リム等は反映されません。", src.name));
+                }
+            }
+
+            if (result != null)
+            {
+                WarnUnsupportedMToonFeatures(src, report);
+            }
+            return result;
+        }
+
+        /// <summary>MToon の加算スフィア(_SphereAdd)を返す。無ければ VRM1.0 の _MatcapTexture を試す(いずれも HasProperty ガード)。</summary>
+        private static Texture GetMToonMatcapTexture(Material src)
+        {
+            Texture sphere = src.HasProperty(QuestCompat.MToonSphereAddProp) ? src.GetTexture(QuestCompat.MToonSphereAddProp) : null;
+            if (sphere != null) return sphere;
+            return src.HasProperty(QuestCompat.MToonMatcapTextureProp) ? src.GetTexture(QuestCompat.MToonMatcapTextureProp) : null;
+        }
+
+        /// <summary>変換先で失われる MToon 機能を明示する。</summary>
+        private static void WarnUnsupportedMToonFeatures(Material src, ConversionReport report)
+        {
+            // _OutlineWidthMode は MToon では float 型の enum(None=0/World=1/Screen=2)のため GetFloat で読む
+            float outlineMode = src.HasProperty(QuestCompat.MToonOutlineWidthModeProp) ? src.GetFloat(QuestCompat.MToonOutlineWidthModeProp) : 0f;
+            if (Mathf.RoundToInt(outlineMode) != 0)
+            {
+                report.Warn(string.Format("'{0}': アウトラインは失われます(Toon Standard (Outline)はPC専用)。", src.name));
+            }
+            Color rim = src.HasProperty(QuestCompat.MToonRimColorProp) ? src.GetColor(QuestCompat.MToonRimColorProp) : Color.black;
+            if (rim.maxColorComponent > 0.0001f)
+            {
+                report.Info(string.Format("MToon: 『{0}』のリムライトは変換されません(必要なら生成マテリアルで手動調整)。", src.name));
+            }
+        }
+
+        // ================================================================
+        // Unity 標準(Standard)・Unlit 系
+        // ================================================================
+
+        /// <summary>
+        /// Unity ビルトイン Standard / Unlit マテリアルを target(Toon Standard / Toon Lit)へ変換する。
+        /// アルベドはメイン×_Color を tint ベイク(シェーダー専用GPUベイクはしない)。エミッションはメインへ焼き込む。
+        /// Standard はノーマルを引き継ぎ、トゥーン陰が無いため既定2バンドランプで近似する。
+        /// Unlit は陰影が無いためフラット(均一)ランプで近似する(ノーマル・マットキャップ無し)。
+        /// メタリック・スムースネスは Toon Standard に相当機能が無いため無視し、金属パーツは MatCap Lit 指定を案内する。
+        /// </summary>
+        private static Material ConvertUnityBuiltin(Material src, QuestConvertSettings settings, string outputDir, ConversionAssetContext assets, ConversionReport report, QuestShaderTarget target)
+        {
+            bool isUnlit = QuestCompat.IsUnlitShader(src.shader);
+            string label = isUnlit ? "Unlit" : "Standard";
+
+            QuestCompat.TransparencyClass tclass = QuestCompat.ClassifyTransparency(src);
+            if (tclass == QuestCompat.TransparencyClass.Transparent)
+            {
+                report.Warn(string.Format("{0}: 『{1}』は半透明設定ですが、Toon Standard/Toon Litは半透明非対応のため不透明として変換します。", label, src.name));
+            }
+            else if (tclass == QuestCompat.TransparencyClass.Cutout)
+            {
+                report.Warn(string.Format("{0}: 『{1}』はカットアウト設定ですが、Toon Standard/Toon Litは不透明のため塗りつぶして変換します(透過部が板状に見える可能性があります)。", label, src.name));
+            }
+
+            Material result;
+            if (target == QuestShaderTarget.ToonStandard)
+            {
+                // Unlit はノーマルを持たない。Standard は _BumpMap を引き継ぐ。
+                Texture bump = (!isUnlit && src.HasProperty(QuestCompat.StandardBumpMapProp)) ? src.GetTexture(QuestCompat.StandardBumpMapProp) : null;
+                float bumpScale = src.HasProperty(QuestCompat.StandardBumpScaleProp) ? src.GetFloat(QuestCompat.StandardBumpScaleProp) : 1f;
+                // Unlit=フラットランプ(陰影なし) / Standard=既定2バンド(トゥーン陰で近似)
+                result = BuildToonStandardFromGeneric(src, settings, outputDir, assets, report,
+                    "_MainTex", "_Cull", bump, bumpScale, null, 0, 0f, !isUnlit);
+            }
+            else
+            {
+                result = BuildToonLitFromGeneric(src, settings, outputDir, assets, report, "_MainTex", "_Cull");
+            }
+
+            if (result != null)
+            {
+                if (isUnlit)
+                {
+                    report.Info(string.Format("Unlit: 『{0}』をメインテクスチャ(×色)から近似変換しました。", src.name));
+                }
+                else
+                {
+                    WarnUnsupportedStandardFeatures(src, report);
+                }
+            }
+            return result;
+        }
+
+        /// <summary>変換先で失われる Standard 機能を明示する(メタリック・スムースネス等。金属パーツは MatCap Lit を案内)。</summary>
+        private static void WarnUnsupportedStandardFeatures(Material src, ConversionReport report)
+        {
+            float metallic = src.HasProperty(QuestCompat.StandardMetallicProp) ? src.GetFloat(QuestCompat.StandardMetallicProp) : 0f;
+            bool hasMetalMap = src.HasProperty(QuestCompat.StandardMetallicGlossMapProp) && src.GetTexture(QuestCompat.StandardMetallicGlossMapProp) != null;
+            if (metallic > 0.1f || hasMetalMap)
+            {
+                report.Info(string.Format("Standard: 『{0}』のメタリック・スムースネスはToon Standardでは再現されません。金属パーツはマテリアル設定で変換方法を「MatCap Lit(金属向け)」に指定すると映り込みで近似できます。", src.name));
+            }
+        }
+
+        // ================================================================
         // MatCap Lit(金属パーツ向け。VRChat/Mobile/MatCap Lit)
         // ================================================================
 
@@ -1252,7 +1530,8 @@ namespace RARA.QuestConverter
 
         /// <summary>
         /// 元マテリアルからマットキャップテクスチャを解決する(MatCap Lit変換用)。
-        /// lilToon は _MatCapTex、NonToon は乗算枠優先(無ければ加算枠)。いずれも「割り当てがあれば」採用する
+        /// lilToon は _MatCapTex、NonToon は乗算枠優先(無ければ加算枠)、Poiyomi は _Matcap(ロック時はタグ復元)、
+        /// MToon は _SphereAdd/_MatcapTexture。いずれも「割り当てがあれば」採用する
         /// (MatCap Lit はユーザーが金属表現を明示選択した変換先のため、_UseMatCap トグルの有効/無効では絞らない)。
         /// 無ければ null(白マットキャップで変換)。MatCap Lit は乗算合成のみのため合成モードは問わない。
         /// </summary>
@@ -1267,6 +1546,15 @@ namespace RARA.QuestConverter
                 Texture multiplyTex = src.HasProperty(QuestCompat.NonToonMatCapMultiplyProp) ? src.GetTexture(QuestCompat.NonToonMatCapMultiplyProp) : null;
                 if (multiplyTex != null) return multiplyTex;
                 return src.HasProperty(QuestCompat.NonToonMatCapAddProp) ? src.GetTexture(QuestCompat.NonToonMatCapAddProp) : null;
+            }
+            if (QuestCompat.IsPoiyomiShader(src.shader))
+            {
+                // Poiyomi の _Matcap はロック済みでも残る素のプロパティ(剥離時はタグ復元)。割り当てがあれば映り込み元に使う
+                return QuestCompat.GetPoiyomiTexture(src, QuestCompat.PoiyomiMatcapProp);
+            }
+            if (QuestCompat.IsMToonShader(src.shader))
+            {
+                return GetMToonMatcapTexture(src);
             }
             return null;
         }
