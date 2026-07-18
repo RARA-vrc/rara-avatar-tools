@@ -111,7 +111,7 @@ namespace RARA.PCOptimizer
             new GUIContent("Excellent", "最も軽いランク。三角数32,000以下など、最も厳しい目標です"),
             new GUIContent("Good(推奨)", "PCで軽量とされるランク。三角数70,000以下。本ツールが主に目指す目標です"),
             new GUIContent("Medium", "中程度のランク"),
-            new GUIContent("Poor", "重いランク。これを超えると Very Poor になり、既定の表示設定では他ユーザーに非表示になりやすくなります(PCではアップロード自体は可能)"),
+            new GUIContent("Poor(最低ライン・Very Poor回避)", "重いランク。これを超えると Very Poor になり、既定の表示設定では他ユーザーに非表示になりやすくなります(PCではアップロード自体は可能)"),
         };
 
         // Phase 3: RARA メニューは統合ウィンドウの2項目のみへ整理。旧UIはメニューから外したが、
@@ -920,7 +920,7 @@ namespace RARA.PCOptimizer
                     return "§5 マテリアル統合(アトラス) または §6 トグル整理";
                 case PCRankLimits.PCStat.SkinnedMeshes:
                 case PCRankLimits.PCStat.MeshRenderers:
-                    return "§6 メッシュ・トグル整理(表示で固定 → AAO結合)";
+                    return "§6 メッシュ・トグル整理(常時表示 → AAO結合)";
                 case PCRankLimits.PCStat.Bones:
                     return "AAOのTrace and Optimizeで未使用ボーンを自動削減(§8で有効化)";
                 case PCRankLimits.PCStat.PhysBoneComponents:

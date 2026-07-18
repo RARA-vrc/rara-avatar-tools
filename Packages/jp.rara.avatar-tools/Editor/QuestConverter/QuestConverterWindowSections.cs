@@ -45,8 +45,8 @@ namespace RARA.QuestConverter
             new GUIContent("自動(推奨)", "診断結果から最適な変換方法を自動で選びます。迷ったらこのままでOK"),
             new GUIContent("Toon Standard", "VRChat/Mobile/Toon Standard へ変換(不透明。影ランプ・ノーマル・エミッション対応)"),
             new GUIContent("Toon Lit", "VRChat/Mobile/Toon Lit へ変換(最軽量。陰影はテクスチャへベイク)"),
-            new GUIContent("パーティクル加算", "Particles/Additive へ変換。黒が透明になる加算合成(光り物・ホロ向け)"),
-            new GUIContent("パーティクル乗算", "Particles/Multiply へ変換。白が透明になる乗算合成(チーク・頬染め向け)"),
+            new GUIContent("加算(半透明)", "Particles/Additive へ変換。黒が透明になる加算合成(光り物・ホロ向け)"),
+            new GUIContent("乗算(半透明)", "Particles/Multiply へ変換。白が透明になる乗算合成(チーク・頬染め向け)"),
             new GUIContent("非表示", "Quest版では不可視マテリアルに差し替えて見えなくします"),
             new GUIContent("変換しない", "元のマテリアルのまま残します(非対応シェーダーのままだと Quest では正しく表示されない原因になります)"),
             new GUIContent("MatCap Lit(金属向け)", "VRChat/Mobile/MatCap Lit へ変換。金属パーツ向け(乗算合成のマットキャップ・不透明のみ・アトラス統合外でスロットを1つ使います)"),
@@ -440,8 +440,8 @@ namespace RARA.QuestConverter
             {
                 case MaterialOverride.ToonStandard: return "Toon Standard へ変換(手動指定)";
                 case MaterialOverride.ToonLit: return "Toon Lit へ変換(手動指定)";
-                case MaterialOverride.ParticleAdditive: return "パーティクル加算へ変換(手動指定)";
-                case MaterialOverride.ParticleMultiply: return "パーティクル乗算へ変換(手動指定)";
+                case MaterialOverride.ParticleAdditive: return "加算(半透明)へ変換(手動指定)";
+                case MaterialOverride.ParticleMultiply: return "乗算(半透明)へ変換(手動指定)";
                 case MaterialOverride.Hide: return "非表示化(手動指定)";
                 case MaterialOverride.Keep: return "変換しない(手動指定)";
                 case MaterialOverride.MatCapLit: return "MatCap Lit へ変換(手動指定・金属向け)";
@@ -1611,15 +1611,15 @@ namespace RARA.QuestConverter
         private static readonly GUIContent[] ToggleChoiceLabels =
         {
             new GUIContent("トグル維持", "現状のままトグルで切り替えられます(メッシュ・マテリアルスロットは減りません)"),
-            new GUIContent("表示で固定", "常時表示にしてトグルを外し、AAOビルド時に結合対象にします(スキンメッシュ・マテリアルスロットが減ります)"),
-            new GUIContent("非表示で固定", "このメッシュを削除します(EditorOnly化。Quest/PC両方から除外され、揺れ・スロットも消えます)"),
+            new GUIContent("常時表示", "常時表示にしてトグルを外し、AAOビルド時に結合対象にします(スキンメッシュ・マテリアルスロットが減ります)"),
+            new GUIContent("非表示除去(削除)", "このメッシュを削除します(EditorOnly化。Quest/PC両方から除外され、揺れ・スロットも消えます)"),
         };
 
         /// <summary>
         /// 衣装・トグル整理セクション。ToggleConsolidator.DetectToggleGroups で検出した
         /// トグル(FXのm_IsActive / MAオブジェクトトグルで切り替わる衣装・アクセサリ)を
-        /// グループごとに「トグル維持 / 表示で固定 / 非表示で固定」から選ばせる。
-        /// 「表示で固定」はAAO結合対象にしてメッシュ/スロットを削減、「非表示で固定」はメッシュ削除。
+        /// グループごとに「トグル維持 / 常時表示 / 非表示除去(削除)」から選ばせる。
+        /// 「常時表示」はAAO結合対象にしてメッシュ/スロットを削減、「非表示除去(削除)」はメッシュ削除。
         /// 選択は settings.toggleChoices に groupId でupsert保存される。QuestとPCの両方に効く。
         /// </summary>
         private void DrawOutfitToggleSection()
@@ -1639,8 +1639,8 @@ namespace RARA.QuestConverter
                 {
                     EditorGUILayout.HelpBox(
                         "トグルで切り替える衣装/アクセサリは、そのままだとメッシュ・マテリアルスロットが減りません。" +
-                        "ここで「表示で固定」にするとAAOビルド時に結合され、スキンメッシュ/スロットを大きく削減できます(トグルは無くなります)。" +
-                        "「非表示で固定」はそのメッシュを削除します。",
+                        "ここで「常時表示」にするとAAOビルド時に結合され、スキンメッシュ/スロットを大きく削減できます(トグルは無くなります)。" +
+                        "「非表示除去(削除)」はそのメッシュを削除します。",
                         MessageType.Info);
                 }
 
@@ -1865,7 +1865,7 @@ namespace RARA.QuestConverter
             using (new EditorGUILayout.HorizontalScope())
             {
                 if (GUILayout.Button(new GUIContent("現在の表示状態で固定(全トグル)",
-                    "表示中のトグルは「表示で固定」、非表示のトグルは「非表示で固定」に一括設定します"), GUILayout.Height(22f)))
+                    "表示中のトグルは「常時表示」、非表示のトグルは「非表示除去(削除)」に一括設定します"), GUILayout.Height(22f)))
                 {
                     LockAllTogglesToCurrentState();
                 }
@@ -2054,7 +2054,7 @@ namespace RARA.QuestConverter
             if (ApplyToggleChoice(groupId, choice)) SaveSettings();
         }
 
-        /// <summary>検出中の各トグルを、現在の表示状態に応じて 表示中→表示で固定 / 非表示→非表示で固定 に一括設定する。</summary>
+        /// <summary>検出中の各トグルを、現在の表示状態に応じて 表示中→常時表示 / 非表示→非表示除去(削除) に一括設定する。</summary>
         private void LockAllTogglesToCurrentState()
         {
             if (_toggleGroups == null) return;
@@ -3093,17 +3093,17 @@ namespace RARA.QuestConverter
         }
 
         // ================================================================
-        // セクション10: ポリゴン削減(メッシュ簡略化で目標ポリゴン数へ)
-        //   ・目標ランク(7,500 / 10,000 / 15,000 / 20,000 = Quest StatsLevels の polyCount)に合わせて
-        //     メッシュごとの削減目標を自動配分する。顔(リップシンク対象)・髪は強く保護される。
-        //   ・「自動で配分計画を作成」で PolygonBudgetPlanner.BuildPlan を呼び、UI作業コピー
-        //     (_decimationPlanRows。currentTris/カテゴリ付き)を作る。行の編集は都度
-        //     _settings.decimationPlan(rendererPath+targetTris)へ同期し保存する。
-        //   ・変換時は AvatarQuestConverter が _settings.decimationPlan を読んで簡略化を適用する。
-        //   ・実装は Decimation 名前空間(PolygonBudgetPlanner / MeshDecimatorUnity)へ委譲する。
+        // セクション10: ポリゴン削減(Meshia連携)
+        //   ・ポリゴン削減は Meshia Mesh Simplification(Ram.Type-0 / MIT・NDMF)へ委譲する。自前のメッシュ
+        //     簡略化(1.5系までの配分計画方式)は 1.6.0 で廃止した(エンジンコードは残置・不使用)。
+        //   ・目標ランク(7,500 / 10,000 / 15,000 / 20,000 = Quest StatsLevels の polyCount)+カスタムを選び、
+        //     _settings.meshiaTargetTriangles(全体目標三角形数)へ保存する。
+        //   ・変換時は AvatarQuestConverter(step 9.6)が複製へ Meshia の Cascading コンポーネントを付与し、
+        //     全体目標と各エントリの按分目標を設定する。実際の削減はビルド時(NDMF)に適用される。
+        //   ・Meshia / Modular Avatar 未導入時は導入案内を出す(MeshiaCompat.IsCascadingAvailable で判定)。
         // ================================================================
 
-        /// <summary>ポリゴン削減の目標ランク別プリセット(Quest StatsLevels の polyCount。Excellent/Good/Medium/Poor)。</summary>
+        /// <summary>目標ランク別プリセット(Quest StatsLevels の polyCount。Excellent/Good/Medium/Poor)。</summary>
         private static readonly int[] DecimationRankPresets = { 7500, 10000, 15000, 20000 };
 
         /// <summary>目標ランク選択トグルのラベル(DecimationRankPresetsの並び順と一致させること)。</summary>
@@ -3115,26 +3115,16 @@ namespace RARA.QuestConverter
             new GUIContent("Poor 20,000", "Poor 圏内の上限。20,000ポリゴン以下(まずはここを目標にすると崩れにくい)"),
         };
 
-        // カテゴリ別バッジ色(ダーク/ライト両スキンで読める中間トーン)
-        private static readonly Color CategoryFaceColor = new Color(0.95f, 0.45f, 0.5f);   // 顔(最も強く保護)
-        private static readonly Color CategoryHairColor = new Color(0.9f, 0.62f, 0.35f);   // 髪
-        private static readonly Color CategoryBodyColor = new Color(0.5f, 0.72f, 0.9f);    // 素体
-        private static readonly Color CategoryClothesColor = new Color(0.55f, 0.8f, 0.5f); // 衣装
-        private static readonly Color CategoryOtherColor = new Color(0.72f, 0.72f, 0.76f); // その他
+        /// <summary>Meshia Mesh Simplification(Ram.Type-0 / MIT)の公式ドキュメント(導入手順を含む)。</summary>
+        private const string MeshiaDocsUrl = "https://ramtype0.github.io/Meshia.MeshSimplification/";
 
-        /// <summary>削減計画のUI作業コピー(currentTris/カテゴリ付き。非シリアライズ。作成ボタンで構築)。</summary>
-        private List<Decimation.PolygonPlanEntry> _decimationPlanRows;
-
-        /// <summary>作成直後の自動配分目標値(rendererPath→targetTris)。行の「戻す」で復元する。</summary>
-        private readonly Dictionary<string, int> _decimationSuggestedTargets = new Dictionary<string, int>();
-
-        /// <summary>現在の作業計画を作成したときの目標ポリゴン数(-1=未作成)。目標変更検知に使う。</summary>
-        private int _decimationPlanBuiltForTarget = -1;
+        /// <summary>旧バージョンの削減計画があるときの移行通知を、このウィンドウで一度だけ出すためのフラグ。</summary>
+        private bool _decimationMigrationNoticeShown;
 
         private void DrawPolygonReductionSection()
         {
-            if (!DrawSectionFoldout(10, "ポリゴン削減",
-                "目標ポリゴン数に合わせてメッシュを自動で簡略化します(顔・髪は強く保護)。",
+            if (!DrawSectionFoldout(10, "ポリゴン削減(Meshia連携)",
+                "ポリゴン削減は Meshia Mesh Simplification に委譲します(削減はビルド時に適用)。",
                 FoldKeyPolygon))
             {
                 return;
@@ -3142,441 +3132,148 @@ namespace RARA.QuestConverter
             using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
                 if (_settings == null) _settings = new QuestConvertSettings(); // 念のため(リロード直後など)
-                EnsureDecimationSettingsLists();
+
+                // 旧バージョンの削減計画が残っていれば、移行済みである旨を一度だけ通知(適用はしない)。
+                if (!_decimationMigrationNoticeShown &&
+                    _settings.decimationPlan != null && _settings.decimationPlan.Count > 0)
+                {
+                    EditorGUILayout.HelpBox(
+                        "ポリゴン削減は Meshia 連携へ移行しました(旧バージョンの削減計画は適用されません)。",
+                        MessageType.Info);
+                    _decimationMigrationNoticeShown = true;
+                }
 
                 if (DrawExplainFoldout("RARA.QuestConverter.Fold.Explain.Polygon"))
                 {
                     EditorGUILayout.HelpBox(
-                        "頂点を間引いてポリゴン数を減らします。既存の頂点だけを残す方式なので、UV・法線・ボーンウェイト・" +
-                        "ブレンドシェイプ(表情)はそのまま保持され、破綻を抑えられます。" +
-                        "顔(リップシンク対象)と髪は既定で強く保護され、控えめにしか削減されません。" +
-                        "元アバターは変更されず、削減は複製のメッシュにのみ適用されます。",
+                        "ポリゴン削減は Meshia Mesh Simplification(無料・NDMF)に委譲します。変換時に複製へ Meshia の" +
+                        "簡略化コンポーネントを付与し、目標ポリゴン数を設定します。実際の削減はビルド時(アップロード/Play時)に" +
+                        "適用されるため、エディタ上の三角形数には出ませんが、変換直後の即時実測レポートには反映されます。" +
+                        "元アバターは変更されません。",
                         MessageType.Info);
                 }
 
-                // まず無料の削減を促す注記(同じ目標でも削る量が減り、画質を保ちやすくなる)
-                EditorGUILayout.HelpBox(
-                    "先に『メッシュ削減(AAO連携)』と『衣装・トグル整理』で不要なメッシュを消してから使うと、" +
-                    "同じ目標でも削る量が減り、画質を保ちやすくなります。",
-                    MessageType.None);
-
-                // 有効化トグル
-                EditorGUI.BeginChangeCheck();
-                bool enable = EditorGUILayout.ToggleLeft(
-                    new GUIContent("ポリゴン削減を有効にする",
-                        "有効にすると、下で作成した削減計画が変換時に適用されます(無効なら計画があっても削減しません)"),
-                    _settings.enableDecimation);
-                if (EditorGUI.EndChangeCheck())
+                if (!MeshiaCompat.IsCascadingAvailable())
                 {
-                    _settings.enableDecimation = enable;
-                    SaveSettings(); // 変換内容に影響する(診断は古い扱いになる)
-                }
-
-                if (!_settings.enableDecimation)
-                {
-                    EditorGUILayout.LabelField(
-                        "有効にすると、目標ランクを選んで削減計画を作成できます(ポリゴン削減は既定でオフです)。", EditorStyles.miniLabel);
-                    DrawDecimationDisabledOverBudgetHint();
+                    DrawMeshiaNotInstalledGuidance();
                     return;
                 }
-
-                DrawDecimationTargetPicker();
-                DrawDecimationPlanControls();
-                DrawDecimationPlanTable();
+                DrawMeshiaDelegationPanel();
             }
         }
 
-        /// <summary>目標ランク(プリセット)トグル + 目標ポリゴン数の数値入力 + 現在→削減後(予測)の一行。</summary>
-        private void DrawDecimationTargetPicker()
+        /// <summary>Meshia(+Modular Avatar)未導入時の案内と導入リンクを描画する。</summary>
+        private void DrawMeshiaNotInstalledGuidance()
+        {
+            EditorGUILayout.HelpBox(
+                "ポリゴン削減には Meshia Mesh Simplification(無料)と Modular Avatar の導入が必要です。" +
+                "導入すると、このセクションから目標ポリゴン数を設定して複製へ簡略化を追加できます。",
+                MessageType.Info);
+            if (GUILayout.Button(new GUIContent("Meshia を導入(VPM)",
+                "Meshia Mesh Simplification の導入ページを開きます: " + MeshiaDocsUrl), GUILayout.Height(24f)))
+            {
+                Application.OpenURL(MeshiaDocsUrl);
+            }
+            EditorGUILayout.LabelField("導入後にこのセクションから設定できます。", EditorStyles.miniLabel);
+        }
+
+        /// <summary>
+        /// Meshia 導入済み時の委譲パネル。現在の三角形数 vs 目標を示し、複製へ Meshia 簡略化を付与する設定
+        /// (または選択中アバターに既にある Cascading コンポーネントの目標更新)を提供する。
+        /// </summary>
+        private void DrawMeshiaDelegationPanel()
+        {
+            DrawMeshiaTargetPicker();
+
+            // 現在 → 目標(診断のポリゴン数=除外反映済みを基準にする)
+            int? currentTotal = GetDiagnosticsPolyCount();
+            if (currentTotal.HasValue)
+            {
+                bool over = currentTotal.Value > _settings.meshiaTargetTriangles;
+                var prev = GUI.color;
+                GUI.color = over ? OverLimitColor : UploadOkColor;
+                EditorGUILayout.LabelField(
+                    "現在の三角形数 " + FormatTri(currentTotal.Value) + " / 目標 " + FormatTri(_settings.meshiaTargetTriangles),
+                    _wrapLabel);
+                GUI.color = prev;
+                if (!over)
+                {
+                    EditorGUILayout.LabelField(
+                        "現在の三角形数は目標以下です(Meshiaを付けても大きくは削減されません)。", _miniWrapLabel);
+                }
+            }
+            else
+            {
+                EditorGUILayout.LabelField("診断すると現在の三角形数が表示されます。", EditorStyles.miniLabel);
+            }
+
+            // 選択中アバターに既に Cascading コンポーネントがあるか(手動付与・変換済み複製など)。
+            Component existing = _avatar != null ? MeshiaCompat.FindCascading(_avatar.gameObject) : null;
+            if (existing != null)
+            {
+                int cur = MeshiaCompat.GetCascadingTarget(existing);
+                EditorGUILayout.HelpBox(
+                    "このアバターには既に Meshia 簡略化が付いています" +
+                    (cur > 0 ? "(現在の目標 " + FormatTri(cur) + " 三角形)" : "") +
+                    "。Inspectorで調整できます。",
+                    MessageType.Info);
+                if (GUILayout.Button(new GUIContent("Meshiaの目標を更新(目標: " + FormatTri(_settings.meshiaTargetTriangles) + ")",
+                    "既存の Meshia 簡略化コンポーネントの全体目標を更新します"), GUILayout.Height(24f)))
+                {
+                    MeshiaCompat.UpdateCascadingTarget(existing, _settings.meshiaTargetTriangles);
+                }
+            }
+            else
+            {
+                EditorGUI.BeginChangeCheck();
+                bool enable = EditorGUILayout.ToggleLeft(
+                    new GUIContent("変換時に複製へ Meshia 簡略化を追加する(目標: " + FormatTri(_settings.meshiaTargetTriangles) + ")",
+                        "有効にすると、変換で作られる複製へ Meshia 簡略化コンポーネントを付与します(元アバターは変更しません)"),
+                    _settings.enableMeshiaSimplification);
+                if (EditorGUI.EndChangeCheck())
+                {
+                    _settings.enableMeshiaSimplification = enable;
+                    SaveSettings(); // 変換内容に影響する(診断は古い扱いになる)
+                }
+                if (!_settings.enableMeshiaSimplification)
+                {
+                    EditorGUILayout.LabelField(
+                        "オフのときは複製へ Meshia は付与されません(ポリゴン削減は行われません)。", EditorStyles.miniLabel);
+                }
+            }
+
+            EditorGUILayout.LabelField(
+                "削減はビルド時(NDMF)に適用されます。エディタの数値には出ませんが、変換直後の即時実測には反映されます。",
+                _miniWrapLabel);
+        }
+
+        /// <summary>目標ランク(プリセット)トグル + 目標三角形数の数値入力(_settings.meshiaTargetTriangles と双方向)。</summary>
+        private void DrawMeshiaTargetPicker()
         {
             EditorGUILayout.Space(2f);
-
-            // 目標ランクのトグル(プリセットへ同期。カスタム値のときは選択なし)
-            int presetIndex = GetDecimationPresetIndex(_settings.decimationTargetTriangles);
+            int presetIndex = GetDecimationPresetIndex(_settings.meshiaTargetTriangles);
             using (new EditorGUILayout.HorizontalScope())
             {
                 EditorGUILayout.LabelField(
-                    new GUIContent("目標ランク", "到達したいポリゴン数の目安。ボタンで目標ポリゴン数が設定されます"),
+                    new GUIContent("目標ランク", "到達したいポリゴン数の目安。ボタンで目標三角形数が設定されます"),
                     GUILayout.Width(72f));
                 int newIndex = GUILayout.Toolbar(presetIndex, DecimationRankLabels);
                 if (newIndex != presetIndex && newIndex >= 0 && newIndex < DecimationRankPresets.Length)
                 {
-                    _settings.decimationTargetTriangles = DecimationRankPresets[newIndex];
+                    _settings.meshiaTargetTriangles = DecimationRankPresets[newIndex];
                     SaveSettings();
                 }
             }
 
-            // 目標ポリゴン数(数値での微調整。ランクボタンと双方向)
             EditorGUI.BeginChangeCheck();
             int newTarget = EditorGUILayout.IntField(
-                new GUIContent("目標ポリゴン数", "この数値以下に収まるよう配分します(ランクボタンで既定値に設定できます)"),
-                _settings.decimationTargetTriangles);
+                new GUIContent("目標三角形数", "この数値へ向けて Meshia が簡略化します(ランクボタンで既定値に設定できます)"),
+                _settings.meshiaTargetTriangles);
             if (EditorGUI.EndChangeCheck())
             {
-                _settings.decimationTargetTriangles = Mathf.Max(1, newTarget);
+                _settings.meshiaTargetTriangles = Mathf.Max(1, newTarget);
                 SaveSettings();
             }
-
-            // 現在 → 削減後(予測) / 目標(診断のポリゴン数=除外反映済みを基準にする)
-            int? currentTotal = GetDiagnosticsPolyCount();
-            if (!currentTotal.HasValue)
-            {
-                EditorGUILayout.LabelField("診断すると現在のポリゴン数が表示されます。", EditorStyles.miniLabel);
-                return;
-            }
-
-            int projected = Mathf.Max(0, currentTotal.Value - ComputeDecimationReduction());
-            bool over = projected > _settings.decimationTargetTriangles;
-            var prev = GUI.color;
-            GUI.color = over ? OverLimitColor : UploadOkColor;
-            EditorGUILayout.LabelField(
-                "現在 " + FormatTri(currentTotal.Value) + " → 削減後(予測) " + FormatTri(projected) +
-                " / 目標 " + FormatTri(_settings.decimationTargetTriangles),
-                _wrapLabel);
-            GUI.color = prev;
-
-            if (currentTotal.Value <= _settings.decimationTargetTriangles &&
-                (_decimationPlanRows == null || _decimationPlanRows.Count == 0))
-            {
-                EditorGUILayout.LabelField(
-                    "現在のポリゴン数は目標以下です。削減は不要です。", _miniWrapLabel);
-            }
-
-            // 作業計画は作成時の目標に合わせて配分済み。以後に目標を変えても計画は再配分されないため、
-            // 目標が緩んだ(削り過ぎ)/厳しくなった(未達)どちらの向きでもズレを明示して再作成を促す。
-            if (_decimationPlanRows != null && _decimationPlanRows.Count > 0 &&
-                _decimationPlanBuiltForTarget > 0 &&
-                _decimationPlanBuiltForTarget != _settings.decimationTargetTriangles)
-            {
-                EditorGUILayout.HelpBox(
-                    "目標ポリゴン数が変更されました(計画は " + FormatTri(_decimationPlanBuiltForTarget) +
-                    " 向けに配分済み)。現在の目標へ合わせるには「自動で配分計画を作成」で再作成してください。",
-                    MessageType.Info);
-            }
-        }
-
-        /// <summary>配分計画の作成/クリアボタンと、保存済み計画があるが作業コピーが無いときの案内。</summary>
-        private void DrawDecimationPlanControls()
-        {
-            EditorGUILayout.Space(2f);
-            if (_avatar == null)
-            {
-                EditorGUILayout.LabelField("アバターを指定すると削減計画を作成できます。", EditorStyles.miniLabel);
-                return;
-            }
-
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                if (GUILayout.Button(new GUIContent("自動で配分計画を作成",
-                    "目標ポリゴン数に合わせて、メッシュごとの削減目標を自動配分します(顔・髪は保護)")))
-                {
-                    BuildDecimationPlan();
-                    GUIUtility.ExitGUI(); // リストを差し替えたので、この描画パスはここで終える
-                }
-                using (new EditorGUI.DisabledScope(!HasDecimationPlan()))
-                {
-                    if (GUILayout.Button(new GUIContent("計画をクリア", "作成した削減計画を破棄します"), GUILayout.Width(90f)))
-                    {
-                        ClearDecimationPlan();
-                        GUIUtility.ExitGUI();
-                    }
-                }
-            }
-
-            // スクリプト再読込直後など、保存済み計画はあるが作業コピー(現在数・カテゴリ)が無いとき
-            if (_decimationPlanRows == null && _settings.decimationPlan != null && _settings.decimationPlan.Count > 0)
-            {
-                EditorGUILayout.LabelField(
-                    "保存済みの削減計画: " + _settings.decimationPlan.Count + " メッシュ。" +
-                    "『自動で配分計画を作成』で再計算すると、メッシュごとに調整できます(計画は変換時に適用されます)。",
-                    _miniWrapLabel);
-            }
-        }
-
-        /// <summary>メッシュごとの削減目標テーブル(空=削減不要)と、目標超過の赤警告を描画する。</summary>
-        private void DrawDecimationPlanTable()
-        {
-            if (_decimationPlanRows == null) return; // まだ作成していない(controls側で案内)
-            if (_decimationPlanRows.Count == 0)
-            {
-                EditorGUILayout.HelpBox(
-                    "削減対象のメッシュはありません(現在のポリゴン数が目標以下です)。", MessageType.Info);
-                return;
-            }
-
-            EditorGUILayout.Space(2f);
-            EditorGUILayout.LabelField(
-                "メッシュごとの削減目標(顔・髪は保護のため控えめに配分されます)", EditorStyles.miniBoldLabel);
-
-            // 行の描画中はリストを変更せず、除外は行番号を控えてループ後に反映する(レイアウト崩れ防止)
-            int removeIndex = -1;
-            for (int i = 0; i < _decimationPlanRows.Count; i++)
-            {
-                if (DrawDecimationPlanRow(_decimationPlanRows[i])) removeIndex = i;
-            }
-            if (removeIndex >= 0)
-            {
-                _decimationPlanRows.RemoveAt(removeIndex);
-                SyncDecimationPlanToSettings();
-                SaveSettings();
-                GUIUtility.ExitGUI();
-            }
-
-            DrawDecimationBudgetWarning();
-        }
-
-        /// <summary>削減計画1行(名前+カテゴリ+ピン+除外 / 現在→目標スライダー+戻す / 保護下限)を描画する。除外要求時にtrue。</summary>
-        private bool DrawDecimationPlanRow(Decimation.PolygonPlanEntry entry)
-        {
-            if (entry == null || string.IsNullOrEmpty(entry.rendererPath)) return false;
-            bool removeRequested = false;
-            using (new EditorGUILayout.VerticalScope(GUI.skin.box))
-            {
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    EditorGUILayout.LabelField(
-                        new GUIContent(ShortRendererName(entry.rendererPath), "パス: " + entry.rendererPath),
-                        GUILayout.MinWidth(70f));
-                    DrawCategoryBadge(entry.category);
-                    GUILayout.FlexibleSpace();
-                    DrawDecimationPingButton(entry.rendererPath);
-                    if (GUILayout.Button(new GUIContent("除外", "このメッシュを削減対象から外します(元のまま残します)"),
-                        GUILayout.Width(44f)))
-                    {
-                        removeRequested = true;
-                    }
-                }
-
-                int current = Mathf.Max(1, entry.currentTris);
-                int qualityMin = Mathf.Clamp(
-                    Mathf.CeilToInt(current * Mathf.Clamp01(entry.qualityFloor)), 1, current);
-                // 予算超過時、PolygonBudgetPlanner は非顔エントリを品質下限より下(サブメッシュ数まで)へ
-                // 強制することがある。スライダー下限を品質下限で固定すると、実際の計画値を隠したうえ、
-                // スライダーに触れた瞬間に値が品質下限へ吊り上がり、より浅い削減が保存されてしまう。
-                // そこで実際の計画値(entry.targetTris)を下回らない範囲でスライダー下限を決める。
-                int plannedTarget = Mathf.Clamp(entry.targetTris, 1, current);
-                int sliderMin = Mathf.Min(qualityMin, plannedTarget);
-                bool belowQualityFloor = sliderMin < qualityMin;
-
-                if (sliderMin >= current)
-                {
-                    // 完全保護(品質下限が高く、これ以上は削れない)
-                    EditorGUILayout.LabelField(
-                        "現在 " + FormatTri(current) + " — 保護のため削減されません", EditorStyles.miniLabel);
-                }
-                else
-                {
-                    using (new EditorGUILayout.HorizontalScope())
-                    {
-                        EditorGUILayout.LabelField("現在 " + FormatTri(current), GUILayout.Width(96f));
-                        EditorGUILayout.LabelField("→", GUILayout.Width(14f));
-                        EditorGUI.BeginChangeCheck();
-                        int newTarget = EditorGUILayout.IntSlider(
-                            Mathf.Clamp(entry.targetTris, sliderMin, current), sliderMin, current);
-                        if (EditorGUI.EndChangeCheck())
-                        {
-                            entry.targetTris = Mathf.Clamp(newTarget, sliderMin, current);
-                            SyncDecimationPlanToSettings();
-                            SaveSettings();
-                        }
-                        using (new EditorGUI.DisabledScope(!HasSuggestedTarget(entry.rendererPath)))
-                        {
-                            if (GUILayout.Button(new GUIContent("戻す", "自動配分の目標値に戻します"), GUILayout.Width(44f)))
-                            {
-                                entry.targetTris = Mathf.Clamp(
-                                    GetSuggestedTarget(entry.rendererPath, entry.targetTris), sliderMin, current);
-                                SyncDecimationPlanToSettings();
-                                SaveSettings();
-                            }
-                        }
-                    }
-                    EditorGUILayout.LabelField(
-                        belowQualityFloor
-                            ? "下限 " + FormatTri(sliderMin) + "(予算超過のため品質下限を下回る配分です)"
-                            : "下限 " + FormatTri(sliderMin) + "(保護のためこれより下げられません)",
-                        EditorStyles.miniLabel);
-                }
-            }
-            return removeRequested;
-        }
-
-        /// <summary>
-        /// ポリゴン削減がオフのまま、現在のポリゴン数が目標を超えているときに、削減の有効化が必要である旨を
-        /// 琥珀で知らせ「有効にする」ボタンを出す(既定オフのまま超過に気づけるように)。診断前は何も出さない。
-        /// </summary>
-        private void DrawDecimationDisabledOverBudgetHint()
-        {
-            int? currentTotal = GetDiagnosticsPolyCount();
-            if (!currentTotal.HasValue || currentTotal.Value <= _settings.decimationTargetTriangles) return;
-
-            var prev = GUI.color;
-            GUI.color = NoteYellowColor;
-            EditorGUILayout.LabelField(
-                "目標ランク到達にはポリゴン削減の有効化が必要です(現在 " + FormatTri(currentTotal.Value) +
-                " / 目標 " + FormatTri(_settings.decimationTargetTriangles) + ")。",
-                _wrapLabel);
-            GUI.color = prev;
-
-            if (GUILayout.Button(new GUIContent("ポリゴン削減を有効にする",
-                "ポリゴン削減を有効化します(既定はオフ。顔・髪は強く保護されます)"), GUILayout.Height(24f)))
-            {
-                _settings.enableDecimation = true;
-                SaveSettings(); // 変換内容に影響する(診断は古い扱いになる)
-            }
-        }
-
-        /// <summary>計画を適用しても目標を超える場合の赤警告(顔は保護のため削れないことを添える)。</summary>
-        private void DrawDecimationBudgetWarning()
-        {
-            int? currentTotal = GetDiagnosticsPolyCount();
-            if (!currentTotal.HasValue) return; // 現在値が無ければ判定不能
-            int projected = Mathf.Max(0, currentTotal.Value - ComputeDecimationReduction());
-            if (projected <= _settings.decimationTargetTriangles) return;
-
-            var prev = GUI.color;
-            GUI.color = OverLimitColor;
-            EditorGUILayout.HelpBox(
-                "この計画を適用しても、予測 " + FormatTri(projected) + " ポリゴンで目標 " +
-                FormatTri(_settings.decimationTargetTriangles) + " を超えています。\n" +
-                "顔以外のメッシュの目標をさらに下げるか、メッシュ削減(AAO連携)・衣装整理・Quest除外で先に減らしてください" +
-                "(顔は表情保護のため強くは削れません)。",
-                MessageType.Warning);
-            GUI.color = prev;
-        }
-
-        /// <summary>カテゴリ名(顔/髪/素体/衣装/その他)に応じた色付きバッジを描画する。</summary>
-        private void DrawCategoryBadge(string category)
-        {
-            string label = string.IsNullOrEmpty(category) ? Decimation.PolygonBudgetPlanner.CategoryOther : category;
-            Color color;
-            string tip;
-            if (label == Decimation.PolygonBudgetPlanner.CategoryFace)
-            {
-                color = CategoryFaceColor;
-                tip = "顔(リップシンク/表情対象)。既定で最も強く保護され、控えめにしか削減されません";
-            }
-            else if (label == Decimation.PolygonBudgetPlanner.CategoryHair)
-            {
-                color = CategoryHairColor;
-                tip = "髪。形が崩れやすいため強めに保護されます";
-            }
-            else if (label == Decimation.PolygonBudgetPlanner.CategoryBody)
-            {
-                color = CategoryBodyColor;
-                tip = "素体(肌)";
-            }
-            else if (label == Decimation.PolygonBudgetPlanner.CategoryClothes)
-            {
-                color = CategoryClothesColor;
-                tip = "衣装・アクセサリ";
-            }
-            else
-            {
-                color = CategoryOtherColor;
-                tip = "その他のメッシュ";
-            }
-            DrawBadge(label, color, tip);
-        }
-
-        /// <summary>対象レンダラー(rendererPath)の指すGameObjectをピン表示するボタンを描画する。</summary>
-        private void DrawDecimationPingButton(string rendererPath)
-        {
-            Transform resolved = _avatar != null ? QuestCompat.FindByPath(_avatar.transform, rendererPath) : null;
-            using (new EditorGUI.DisabledScope(resolved == null))
-            {
-                if (GUILayout.Button(new GUIContent("ピン", "シーン上の該当メッシュをハイライト表示します"), GUILayout.Width(36f)))
-                {
-                    if (resolved != null) EditorGUIUtility.PingObject(resolved.gameObject);
-                }
-            }
-        }
-
-        /// <summary>「自動で配分計画を作成」: PolygonBudgetPlannerで配分し、作業コピーと設定へ反映する。</summary>
-        private void BuildDecimationPlan()
-        {
-            if (_avatar == null) return;
-            try
-            {
-                List<Decimation.PolygonPlanEntry> plan =
-                    Decimation.PolygonBudgetPlanner.BuildPlan(
-                        _avatar.gameObject, _settings.decimationTargetTriangles, _settings);
-                _decimationPlanRows = plan ?? new List<Decimation.PolygonPlanEntry>();
-
-                // 自動配分値を控えておく(行の「戻す」で復元する)
-                _decimationSuggestedTargets.Clear();
-                foreach (Decimation.PolygonPlanEntry e in _decimationPlanRows)
-                {
-                    if (e == null || string.IsNullOrEmpty(e.rendererPath)) continue;
-                    _decimationSuggestedTargets[e.rendererPath] = e.targetTris;
-                }
-
-                _decimationPlanBuiltForTarget = _settings.decimationTargetTriangles;
-                SyncDecimationPlanToSettings();
-                SaveSettings();
-            }
-            catch (Exception ex)
-            {
-                _decimationPlanRows = null;
-                _decimationPlanBuiltForTarget = -1;
-                Debug.LogError("[RARA QuestConverter] 削減計画の作成に失敗しました: " + ex);
-                EditorUtility.DisplayDialog("ポリゴン削減",
-                    "削減計画の作成に失敗しました。Consoleを確認してください。", "OK");
-            }
-        }
-
-        /// <summary>作成した削減計画を破棄する(作業コピー・保存計画の両方)。</summary>
-        private void ClearDecimationPlan()
-        {
-            _decimationPlanRows = null;
-            _decimationPlanBuiltForTarget = -1;
-            _decimationSuggestedTargets.Clear();
-            if (_settings.decimationPlan != null) _settings.decimationPlan.Clear();
-            SaveSettings();
-        }
-
-        /// <summary>UI作業コピー(_decimationPlanRows)を保存用の decimationPlan(パス+目標数)へ同期する。</summary>
-        private void SyncDecimationPlanToSettings()
-        {
-            EnsureDecimationSettingsLists();
-            _settings.decimationPlan.Clear();
-            if (_decimationPlanRows == null) return;
-            foreach (Decimation.PolygonPlanEntry e in _decimationPlanRows)
-            {
-                if (e == null || string.IsNullOrEmpty(e.rendererPath)) continue;
-                _settings.decimationPlan.Add(new PolygonPlanEntryData
-                {
-                    rendererPath = e.rendererPath,
-                    targetTris = e.targetTris,
-                });
-            }
-        }
-
-        /// <summary>設定の削減計画リストのnullガード(旧設定JSON読込対策)。</summary>
-        private void EnsureDecimationSettingsLists()
-        {
-            if (_settings.decimationPlan == null) _settings.decimationPlan = new List<PolygonPlanEntryData>();
-        }
-
-        /// <summary>作業コピーまたは保存計画のいずれかに削減計画があるか。</summary>
-        private bool HasDecimationPlan()
-        {
-            if (_decimationPlanRows != null && _decimationPlanRows.Count > 0) return true;
-            return _settings != null && _settings.decimationPlan != null && _settings.decimationPlan.Count > 0;
-        }
-
-        /// <summary>作業コピーの各行 (currentTris - targetTris) の合計 = 予測削減三角形数。</summary>
-        private int ComputeDecimationReduction()
-        {
-            if (_decimationPlanRows == null) return 0;
-            int total = 0;
-            foreach (Decimation.PolygonPlanEntry e in _decimationPlanRows)
-            {
-                if (e == null) continue;
-                int cur = Mathf.Max(0, e.currentTris);
-                int tgt = Mathf.Clamp(e.targetTris, 0, cur);
-                total += cur - tgt;
-            }
-            return total;
         }
 
         /// <summary>診断結果のポリゴン数(除外反映済み)を取り出す。未診断・解析不可ならnull。</summary>
@@ -3591,27 +3288,6 @@ namespace RARA.QuestConverter
                 }
             }
             return null;
-        }
-
-        /// <summary>rendererPath に自動配分の控え値があるか。</summary>
-        private bool HasSuggestedTarget(string rendererPath)
-        {
-            return rendererPath != null && _decimationSuggestedTargets.ContainsKey(rendererPath);
-        }
-
-        /// <summary>rendererPath の自動配分の控え値(無ければfallback)。</summary>
-        private int GetSuggestedTarget(string rendererPath, int fallback)
-        {
-            if (rendererPath != null && _decimationSuggestedTargets.TryGetValue(rendererPath, out int v)) return v;
-            return fallback;
-        }
-
-        /// <summary>レンダラー相対パスの末尾セグメント(表示用の短い名前)。</summary>
-        private static string ShortRendererName(string rendererPath)
-        {
-            if (string.IsNullOrEmpty(rendererPath)) return "(不明)";
-            int slash = rendererPath.LastIndexOf('/');
-            return slash >= 0 && slash < rendererPath.Length - 1 ? rendererPath.Substring(slash + 1) : rendererPath;
         }
 
         /// <summary>目標ポリゴン数がプリセット(7500/10000/15000/20000)のどれかなら添字、なければ-1(カスタム)。</summary>
@@ -3900,7 +3576,7 @@ namespace RARA.QuestConverter
                 }
                 if (lockVisible + lockHidden > 0)
                 {
-                    lines.Add("衣装・トグル整理: 表示で固定 " + lockVisible + " / 非表示で固定 " + lockHidden +
+                    lines.Add("衣装・トグル整理: 常時表示 " + lockVisible + " / 非表示除去(削除) " + lockHidden +
                               "(トグルを外してメッシュ・スロットを削減)");
                 }
             }
@@ -3926,11 +3602,11 @@ namespace RARA.QuestConverter
                 }
             }
 
-            // ポリゴン削減: 有効かつ配分計画があるときのみ(顔・髪は保護)
-            if (_settings.enableDecimation && _settings.decimationPlan != null && _settings.decimationPlan.Count > 0)
+            // ポリゴン削減(Meshia連携): 有効かつ Meshia 導入時のみ(削減はビルド時に適用)
+            if (_settings.enableMeshiaSimplification && MeshiaCompat.IsCascadingAvailable())
             {
-                lines.Add("ポリゴン削減: " + _settings.decimationPlan.Count + " メッシュを簡略化(目標 " +
-                          FormatTri(_settings.decimationTargetTriangles) + " ポリゴン・顔/髪は保護)");
+                lines.Add("ポリゴン削減(Meshia): 複製へ簡略化を付与(目標 " +
+                          FormatTri(_settings.meshiaTargetTriangles) + " 三角形・削減はビルド時)");
             }
 
             int excludeCount = _settings.questExcludePaths != null ? _settings.questExcludePaths.Count : 0;
@@ -4341,7 +4017,7 @@ namespace RARA.QuestConverter
                     "・表情デカール(チーク/涙/アイハイライト)の再現/非表示化(Questで不透明の板に見えるのを防ぐ。顔本体・目・眉は残す)\n" +
                     "・アトラス統合(複数マテリアルを1枚に統合。影ランプ統一で、ランプが個別生成されるアバターもスロット削減)\n" +
                     "・隠れた肌などのメッシュ削減(AAOのブレンドシェイプ削除。服の下に隠れて見えない部分を削除)\n" +
-                    "・衣装/アクセサリのトグル整理(表示で固定してメッシュ・スロットを結合 / 非表示で固定して削除)\n" +
+                    "・衣装/アクセサリのトグル整理(常時表示してメッシュ・スロットを結合 / 非表示除去(削除)して削除)\n" +
                     "・非対応コンポーネントの整理\n" +
                     "・マテリアル差し替えアニメーションの追随",
                     _wrapLabel);
@@ -4610,7 +4286,7 @@ namespace RARA.QuestConverter
                 case "スキンメッシュ数":
                 case "基本メッシュ数":
                 case "マテリアルスロット数":
-                    return "衣装整理で『表示で固定』, またはアトラス統合";
+                    return "衣装整理で『常時表示』, またはアトラス統合";
                 case "テクスチャメモリ(MB)":
                     return "サイズ診断の『10MB自動調整』, 単色極限縮小";
                 case "ボーン数":

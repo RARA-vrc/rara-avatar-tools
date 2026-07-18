@@ -183,8 +183,14 @@ namespace RARA.AvatarStudio
         [Tooltip("Quest: ポリゴン削減の目標三角形数(目安: Excellent 7500 / Good 10000 / Medium 15000 / Poor 20000)")]
         public int questDecimationTargetTriangles = 20000;
 
-        [Tooltip("Quest: ポリゴン削減の配分計画(レンダラーごとの目標三角形数)。「自動で配分計画を作成」で生成し、行ごとに編集・除外できる")]
+        [Tooltip("Quest: ポリゴン削減の配分計画。【1.6.0で廃止】ポリゴン削減はMeshia連携へ移行したため適用されない(JSON互換のため残置)")]
         public List<PolygonPlanEntryData> questDecimationPlan = new List<PolygonPlanEntryData>();
+
+        [Tooltip("Quest: Meshia連携。変換時に複製へ Meshia 簡略化コンポーネントを付与する。実際の削減はビルド時(NDMF)に適用される。既定はオフ")]
+        public bool questEnableMeshiaSimplification = false;
+
+        [Tooltip("Quest: Meshia連携の目標三角形数(目安: Excellent 7500 / Good 10000 / Medium 15000 / Poor 20000)")]
+        public int questMeshiaTargetTriangles = 20000;
 
         [Tooltip("Quest: マージから除外するPhysBoneの識別パス(プレビューで「マージしない」を選んだもの)")]
         public List<string> questPhysBoneNoMergePaths = new List<string>();

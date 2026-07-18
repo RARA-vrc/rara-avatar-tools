@@ -122,9 +122,11 @@ namespace RARA.AvatarStudio
             quest.questExcludePaths = s.questExcludePaths;                       // 参照共有
             quest.removeHiddenMeshByBlendShape = s.questRemoveHiddenMeshByBlendShape;
             quest.hiddenMeshRendererPaths = s.questHiddenMeshRendererPaths;      // 参照共有
-            quest.enableDecimation = s.questEnableDecimation;
-            quest.decimationTargetTriangles = s.questDecimationTargetTriangles;
-            quest.decimationPlan = s.questDecimationPlan;                        // 参照共有
+            quest.enableDecimation = s.questEnableDecimation;                    // 【1.6.0で廃止】変換時に適用されない(JSON互換)
+            quest.decimationTargetTriangles = s.questDecimationTargetTriangles;  // 【1.6.0で廃止】(JSON互換)
+            quest.decimationPlan = s.questDecimationPlan;                        // 参照共有・【1.6.0で廃止】(JSON互換)
+            quest.enableMeshiaSimplification = s.questEnableMeshiaSimplification; // Meshia連携
+            quest.meshiaTargetTriangles = s.questMeshiaTargetTriangles;          // Meshia連携
             quest.trimPhysBonesToPoorLimit = s.questTrimPhysBonesToPoorLimit;
 
             // ---- Quest変換パラメータ(統合UIで露出。QuestConvertSettings同名フィールドへ1:1写像) ----

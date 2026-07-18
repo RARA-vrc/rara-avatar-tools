@@ -318,23 +318,14 @@ namespace RARA.QuestConverter
                     }
                 }
 
-                // --- 3.8. ポリゴン削減(メッシュ簡略化) ---
-                // 配分計画(settings.decimationPlan)に従い、各レンダラーのメッシュをQEMエッジcollapse
-                // (端点配置のみ=頂点は元メッシュの部分集合)で簡略化する。UV・法線・ボーンウェイト・
-                // ブレンドシェイプ差分は部分集合として不変のまま保たれる(補間しない)= ビセーム・表情は保たれる。
-                // 実行位置の根拠(研究):
-                //  ・step 3.6/3.7/3.75(透過処理)は三角形数・髪名でメッシュを判定するため、その後に置く
-                //    (削減で髪・衣装が小型オーバーレイ(600三角形以下)扱いされ誤って非表示化される事故を防ぐ)。
-                //  ・step 4.5 アトラス化(UV0再配置・サブメッシュ結合)より前に置く(削減後のUV/トポロジーを壊さない。
-                //    アトラス化はレンダラーの sharedMesh を実行時に読むため、差し替え済みの簡略化メッシュを自然に使う)。
-                //  ・step 9.5 AAO隠面削除(同じSMRメッシュを触る)より前。
-                //  ・衣装・トグル整理(3.55)・AAO(9.5)と同様、QuestConvert / ConsolidateOnly の両モードで実行する
-                //    (if(questConvert)ブロックの外)。透過処理はここまでで完了済み。
-                // EditorOnly化済み(Quest除外・トグル非表示・透過非表示)のレンダラーは絶対に削減しない。
-                if (settings.enableDecimation && settings.decimationPlan != null && settings.decimationPlan.Count > 0)
+                // --- 3.8. ポリゴン削減(Meshia連携へ移行)---
+                // 1.6.0 でポリゴン削減は Meshia Mesh Simplification 連携へ移行した。旧バージョンの配分計画
+                // (settings.decimationPlan)はもう適用しない(自前のメッシュ簡略化は廃止)。読み込んだ設定に
+                // 旧計画が残っている場合のみ、移行済みである旨を一度だけ通知する。実際の削減は step 9.6 で
+                // 複製へ付与する Meshia コンポーネントがビルド時(NDMF)に行う。
+                if (settings.decimationPlan != null && settings.decimationPlan.Count > 0)
                 {
-                    EditorUtility.DisplayProgressBar(ProgressTitle, "ポリゴンを削減中...", 0.14f);
-                    ApplyPolygonDecimation(clone, settings, outputDir, assets, report);
+                    report.Info("ポリゴン削減は Meshia 連携へ移行しました(旧バージョンの削減計画は適用されません)。");
                 }
 
                 // --- 4〜6.5. マテリアル/アニメーション/コンポーネント参照の Quest 変換 ---
@@ -658,6 +649,39 @@ namespace RARA.QuestConverter
                 if (settings.ensureTraceAndOptimize)
                 {
                     AAOMeshRemovalHelper.EnsureTraceAndOptimize(clone, report);
+                }
+
+                // --- 9.6. ポリゴン削減(Meshia簡略化コンポーネントの付与)---
+                // ポリゴン削減は Meshia(Ram.Type-0 / MIT)へ委譲する。複製の子GameObjectへ Cascading
+                // コンポーネントを付与し、全体目標三角形数と各エントリの按分目標を設定する。実際の削減は
+                // ビルド時(NDMF)に行われるため、エディタ上の数値には出ない(即時実測レポート 1.4.0 には反映される)。
+                //  ・両モード(QuestConvert / ConsolidateOnly)で実行する(if(questConvert)ブロックの外)。
+                //  ・Meshia の Cascading は ENABLE_MODULAR_AVATAR 下でのみ存在するため、未導入時は何もしない
+                //    (UIがVPM導入を案内する)。EditorOnly化済みレンダラーは Meshia 側の IsValidTarget が自動除外する。
+                //  ・複製が既に Cascading を持つ(元アバターに付いていた等)場合は重複付与を避けて目標を更新する。
+                if (settings.enableMeshiaSimplification && MeshiaCompat.IsCascadingAvailable())
+                {
+                    EditorUtility.DisplayProgressBar(ProgressTitle, "Meshia簡略化を付与中...", 0.945f);
+                    int meshiaTarget = Mathf.Max(1, settings.meshiaTargetTriangles);
+                    Component existingCascading = MeshiaCompat.FindCascading(clone);
+                    if (existingCascading != null)
+                    {
+                        MeshiaCompat.ConfigureCascading(existingCascading, meshiaTarget);
+                        report.Info($"Meshia簡略化: 既存のコンポーネントの目標を更新しました(目標 {meshiaTarget} 三角形。削減はビルド時に適用)。");
+                    }
+                    else
+                    {
+                        Component added = MeshiaCompat.AddCascading(clone, meshiaTarget);
+                        if (added != null)
+                        {
+                            Undo.RegisterCreatedObjectUndo(added.gameObject, UndoLabel);
+                            report.Info($"Meshia簡略化を複製へ追加しました(目標 {meshiaTarget} 三角形。削減はビルド時(NDMF)に適用)。");
+                        }
+                        else
+                        {
+                            report.Warn("Meshia簡略化の付与に失敗しました(Meshia / Modular Avatar の導入状態を確認してください)。");
+                        }
+                    }
                 }
 
                 // --- 9.8. Network ID割り当て(PC/Quest間の揺れ物の掴み同期) ---
@@ -2513,159 +2537,6 @@ namespace RARA.QuestConverter
             return filter != null ? filter.sharedMesh : null;
         }
 
-        // ================================================================
-        // ポリゴン削減(メッシュ簡略化) step 3.8
-        // ================================================================
-
-        /// <summary>
-        /// 配分計画(settings.decimationPlan)に従って複製アバターの各レンダラーのメッシュを簡略化し、
-        /// 生成メッシュを安定パスへ保存してレンダラーへ差し替える(元アバターは触らない)。
-        /// ・計画のパスは複製上で解決する。見つからない/対象外はスキップして警告する。
-        /// ・EditorOnly化済み(Quest除外・トグル非表示・透過非表示)のレンダラーは絶対に削減しない(警告してスキップ)。
-        /// ・現在の三角形数が目標以下のレンダラーは削減不要としてスキップ(無警告)。
-        /// ・保存名は {元メッシュ名}_QuestDecim_{計画ハッシュ8桁} とし、計画が変わると別アセット(別GUID)になる。
-        ///   これにより計画変更時も古い _Quest クローンの参照メッシュを上書きで壊さない(アトラスのlayoutHashと同じ狙い)。
-        /// 実際のメッシュ簡略化(QEMエッジcollapse・部分集合化)は MeshDecimatorUnity.Decimate に委ねる。
-        /// </summary>
-        private static void ApplyPolygonDecimation(GameObject clone, QuestConvertSettings settings, string outputDir, ConversionAssetContext assets, ConversionReport report)
-        {
-            if (settings.decimationPlan == null || settings.decimationPlan.Count == 0) return;
-
-            string planHash = ComputeDecimationPlanHash(settings.decimationPlan);
-            string meshFolder = outputDir + "/Meshes";
-            QuestConverterUtility.EnsureFolder(meshFolder);
-
-            int reducedCount = 0;
-            foreach (PolygonPlanEntryData entry in settings.decimationPlan)
-            {
-                if (entry == null || string.IsNullOrEmpty(entry.rendererPath)) continue;
-                if (entry.targetTris < 1) continue;
-
-                Transform target = QuestCompat.FindByPath(clone.transform, entry.rendererPath);
-                if (target == null)
-                {
-                    report.Warn($"ポリゴン削減: レンダラーが複製内に見つかりません(スキップ): {entry.rendererPath}");
-                    continue;
-                }
-                Renderer renderer = target.GetComponent<Renderer>();
-                if (renderer == null || (!(renderer is SkinnedMeshRenderer) && !(renderer is MeshRenderer)))
-                {
-                    report.Warn($"ポリゴン削減: 対象がスキンメッシュ/メッシュレンダラーではありません(スキップ): {entry.rendererPath}");
-                    continue;
-                }
-                // EditorOnly化済み(Quest除外・トグル非表示・透過非表示)のレンダラーは絶対に削減しない。
-                if (IsInEditorOnlySubtree(renderer.transform, clone.transform))
-                {
-                    report.Warn($"ポリゴン削減: 除外(EditorOnly)のレンダラーのためスキップ: {entry.rendererPath}");
-                    continue;
-                }
-                // Unity Cloth は SkinnedMeshRenderer と同じGameObjectに付き、その coefficients(ClothSkinningCoefficient[])
-                // は元メッシュの頂点数に束縛される。ここでメッシュを差し替えると係数配列が新頂点数と一致せず
-                // シミュレーションが壊れる(Unityコンソールに coefficients 不一致エラー)。しかも Cloth を除去する
-                // ComponentRemover は QuestConvert かつ removeUnsupportedComponents 時の後段(step7)でしか走らないため、
-                // ConsolidateOnly では Cloth が残り続け不整合が永続化する。Cloth 付きレンダラーは削減対象から除外する。
-                if (renderer.GetComponent<Cloth>() != null)
-                {
-                    report.Warn($"ポリゴン削減: Cloth付きのため頂点数不整合を避けてスキップ: {entry.rendererPath}");
-                    continue;
-                }
-
-                Mesh mesh = GetRendererMesh(renderer);
-                if (mesh == null)
-                {
-                    report.Warn($"ポリゴン削減: メッシュが見つかりません(スキップ): {entry.rendererPath}");
-                    continue;
-                }
-                int before = GetMeshTriangleCount(mesh);
-                if (before <= entry.targetTris) continue; // 既に目標以下 → 削減不要(無警告)
-
-                Mesh reduced = MeshDecimatorUnity.Decimate(mesh, entry.targetTris, null, report);
-                if (reduced == null)
-                {
-                    report.Warn($"ポリゴン削減: 簡略化に失敗しました(スキップ): {entry.rendererPath}");
-                    continue;
-                }
-                reduced.name = mesh.name + "_QuestDecim_" + planHash;
-
-                // 実行間で安定したパスへ GUID を保持したまま上書き保存(アトラスと同じ保存イディオム)。
-                string path = assets.Claim(meshFolder + "/" + QuestConverterUtility.SanitizeAssetName(reduced.name) + ".asset");
-                Mesh savedMesh = QuestAssetPersistence.SaveOrOverwriteMesh(reduced, path);
-                // 既存アセットへ上書きした場合、メモリ上の一時メッシュは不要(未アセットのみ破棄する)。
-                if (savedMesh != null && !ReferenceEquals(savedMesh, reduced) && reduced != null && !AssetDatabase.Contains(reduced))
-                {
-                    UnityEngine.Object.DestroyImmediate(reduced);
-                }
-                if (savedMesh == null) savedMesh = reduced;
-
-                AssignRendererMesh(renderer, savedMesh);
-                int after = GetMeshTriangleCount(savedMesh);
-                report.Info($"ポリゴン削減: {entry.rendererPath} {before}→{after}(メッシュ: {path})");
-                reducedCount++;
-            }
-
-            if (reducedCount == 0)
-            {
-                report.Info("ポリゴン削減: 削減されたレンダラーはありません(計画が空、または全て現在数が目標以下でした)。");
-            }
-        }
-
-        /// <summary>
-        /// レンダラーの共有メッシュだけを差し替える(SkinnedMeshRenderer / MeshFilter)。マテリアルは触らない。
-        /// バウンズはジオメトリ不変(簡略化メッシュは元バウンズを引き継ぐ)ため localBounds は触らない。
-        /// </summary>
-        private static void AssignRendererMesh(Renderer renderer, Mesh newMesh)
-        {
-            var smr = renderer as SkinnedMeshRenderer;
-            if (smr != null)
-            {
-                Undo.RecordObject(smr, UndoLabel);
-                smr.sharedMesh = newMesh;
-                return;
-            }
-            var filter = renderer.GetComponent<MeshFilter>();
-            if (filter != null)
-            {
-                Undo.RecordObject(filter, UndoLabel);
-                filter.sharedMesh = newMesh;
-            }
-        }
-
-        /// <summary>
-        /// 配分計画全体の決定的ハッシュ(8桁hex)。エントリを (rendererPath, targetTris) で安定ソートし、
-        /// FNV-1a 32bit で畳み込む。計画が1つでも変わると別ハッシュ=別アセット名になり、
-        /// 計画変更時も古い _Quest クローンが参照する簡略化メッシュを上書きで壊さない
-        /// (MaterialAtlasser の layoutHash と同じ狙い)。
-        /// </summary>
-        private static string ComputeDecimationPlanHash(List<PolygonPlanEntryData> plan)
-        {
-            var ordered = new List<PolygonPlanEntryData>();
-            foreach (PolygonPlanEntryData e in plan)
-            {
-                if (e == null || string.IsNullOrEmpty(e.rendererPath)) continue;
-                ordered.Add(e);
-            }
-            ordered.Sort((a, b) =>
-            {
-                int byPath = string.CompareOrdinal(a.rendererPath, b.rendererPath);
-                if (byPath != 0) return byPath;
-                return a.targetTris.CompareTo(b.targetTris);
-            });
-
-            uint hash = 2166136261u; // FNV-1a 32bit
-            foreach (PolygonPlanEntryData e in ordered)
-            {
-                foreach (char c in e.rendererPath) hash = (hash ^ c) * 16777619u;
-                hash = (hash ^ '|') * 16777619u;
-                uint t = unchecked((uint)e.targetTris);
-                for (int i = 0; i < 4; i++)
-                {
-                    hash = (hash ^ (t & 0xFFu)) * 16777619u;
-                    t >>= 8;
-                }
-                hash = (hash ^ '\n') * 16777619u; // エントリ区切り(連結の曖昧さ回避)
-            }
-            return hash.ToString("x8");
-        }
     }
 }
 #endif

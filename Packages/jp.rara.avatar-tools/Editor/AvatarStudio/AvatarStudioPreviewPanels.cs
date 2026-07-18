@@ -16,7 +16,7 @@
 //         mergePhysBones, physBoneLooseMerge, physBoneRemovePaths
 //   PC : pcTargetRank, pcEnableAtlas, pcTexturePlan
 //   Quest: transparentHandling, shaderTarget, materialOverrides, questTextureSizePlan,
-//          questEnableDecimation, questDecimationTargetTriangles, questDecimationPlan
+//          questEnableMeshiaSimplification, questMeshiaTargetTriangles(ポリゴン削減はMeshia連携)
 //   (いずれも AvatarStudioSettings.cs で確認済みの実名。)
 //
 // 【エンジン設定の受け渡し】エンジンのプレビュー API が QuestConvertSettings / PCOptimizeSettings を要求する
@@ -96,13 +96,6 @@ namespace RARA.AvatarStudio
             new GUIContent("Poor 20,000", "Poor 圏内の上限。20,000ポリゴン以下(まずはここを目標にすると崩れにくい)"),
         };
 
-        // ポリゴン削減カテゴリ別バッジ色(ダーク/ライト両スキンで読める中間トーン。旧ウィンドウと同系統)。
-        private static readonly Color CategoryFaceColor = new Color(0.95f, 0.45f, 0.5f);
-        private static readonly Color CategoryHairColor = new Color(0.9f, 0.62f, 0.35f);
-        private static readonly Color CategoryBodyColor = new Color(0.5f, 0.72f, 0.9f);
-        private static readonly Color CategoryClothesColor = new Color(0.55f, 0.8f, 0.5f);
-        private static readonly Color CategoryOtherColor = new Color(0.72f, 0.72f, 0.76f);
-
         // Questマテリアル状態バッジ色(旧QuestConverterウィンドウの DrawMaterialBadges と同一値)。
         private static readonly Color BadgeTransparentColor = new Color(0.95f, 0.55f, 0.25f);
         private static readonly Color BadgeCutoutColor = new Color(0.85f, 0.72f, 0.25f);
@@ -168,7 +161,7 @@ namespace RARA.AvatarStudio
             bool changed = false;
             EnsureList(ref s.toggleChoices);
             EnsureList(ref s.questTextureSizePlan);
-            string[] labels = { "維持", "常時表示", "非表示除去" };
+            string[] labels = { "トグル維持", "常時表示", "非表示除去(削除)" };
 
             // サイズ寄与(グループ+アバター単位でキャッシュ)と、参考用の全体推定(テクスチャパネルと同じ "questsize" スロットを共有)。
             SizeEstimateResult est = cache.GetOrBuild("questsize",
@@ -195,7 +188,7 @@ namespace RARA.AvatarStudio
             using (new EditorGUILayout.HorizontalScope())
             {
                 if (GUILayout.Button(new GUIContent("現在の表示状態で固定(全トグル)",
-                    "表示中のトグルは「常時表示」、非表示のトグルは「非表示除去」に一括設定します"), GUILayout.Height(22f)))
+                    "表示中のトグルは「常時表示」、非表示のトグルは「非表示除去(削除)」に一括設定します"), GUILayout.Height(22f)))
                 {
                     foreach (ToggleGroup g in groups)
                     {
@@ -204,8 +197,8 @@ namespace RARA.AvatarStudio
                     }
                     changed = true;
                 }
-                if (GUILayout.Button(new GUIContent("すべて維持に戻す",
-                    "検出中のトグルをすべて「維持」に戻します"), GUILayout.Height(22f)))
+                if (GUILayout.Button(new GUIContent("すべてトグル維持に戻す",
+                    "検出中のトグルをすべて「トグル維持」に戻します"), GUILayout.Height(22f)))
                 {
                     foreach (ToggleGroup g in groups)
                     {
@@ -502,7 +495,7 @@ namespace RARA.AvatarStudio
             // モード選択ドロップダウン(常時1コントロール。値変更は次回OnGUIへ反映)。
             int modeIdx = EditorGUILayout.Popup(
                 new GUIContent("SkinnedMesh統合",
-                    "統合しない / 顔以外を統合(顔以外のSMRを1つへ) / グループ指定(レンダラーをグループ1..8ごとに統合)。顔(ビセーム/まばたき)は常に自動保護されます。"),
+                    "統合しない / 顔以外を統合(顔以外のSMRを1つへ) / グループ指定(レンダラーをグループ1..8ごとに統合)。顔(口パク・まばたき)は常に自動保護されます。"),
                 (int)capturedMode, SmrMergeModeLabels);
             if (modeIdx != (int)capturedMode)
             {
@@ -519,7 +512,7 @@ namespace RARA.AvatarStudio
                     "ビルド時に1つへ統合し、SkinnedMesh数を2まで削減できます(表示/非表示トグルは無効化されます)。",
                     MessageType.Info);
                 if (GUILayout.Button(new GUIContent("顔以外を統合を有効にする",
-                    "顔(ビセーム/まばたき)以外の SkinnedMeshRenderer を1つへ統合するモードに切り替えます"), GUILayout.Height(28f)))
+                    "顔(口パク・まばたき)以外の SkinnedMeshRenderer を1つへ統合するモードに切り替えます"), GUILayout.Height(28f)))
                 {
                     s.mergeSkinnedMeshesMode = SkinnedMeshMergeMode.MergeExceptFace;
                     changed = true;
@@ -707,11 +700,14 @@ namespace RARA.AvatarStudio
 
             using (new EditorGUILayout.HorizontalScope())
             {
-                bool merge = GUILayout.Toggle(s.mergePhysBones, "設定一致チェーンをマージ", "Button", GUILayout.Width(180f));
+                bool merge = GUILayout.Toggle(s.mergePhysBones,
+                    new GUIContent("同じ設定の揺れものをまとめて数を削減",
+                        "同一設定のPhysBoneチェーンを1つにまとめ、PhysBoneコンポーネント数を減らします。上限を超えそうなときに有効化してください"),
+                    "Button", GUILayout.Width(260f));
                 if (merge != s.mergePhysBones) { s.mergePhysBones = merge; changed = true; }
                 using (new EditorGUI.DisabledScope(!s.mergePhysBones))
                 {
-                    bool loose = GUILayout.Toggle(s.physBoneLooseMerge, "設定違いも先頭へ統一(ルーズ)", "Button", GUILayout.Width(210f));
+                    bool loose = GUILayout.Toggle(s.physBoneLooseMerge, "設定が異なるチェーンもマージ(先頭の設定に統一)", "Button", GUILayout.Width(260f));
                     if (loose != s.physBoneLooseMerge) { s.physBoneLooseMerge = loose; changed = true; }
                 }
             }
@@ -790,7 +786,7 @@ namespace RARA.AvatarStudio
             if (s.targetQuest && projected > QuestLimits.PoorPhysBoneComponents)
             {
                 EditorGUILayout.HelpBox(
-                    "モバイルでは上限超過で全ての揺れが停止します(Quest上限 " + QuestLimits.PoorPhysBoneComponents +
+                    "モバイルでは上限超過で全てのPhysBone・コンタクト・コンストレイントが無効化されます(Quest上限 " + QuestLimits.PoorPhysBoneComponents +
                     "本 / 現在の選択後 " + projected + "本)。「優先度で自動選択」か各行の「削除」で " +
                     QuestLimits.PoorPhysBoneComponents + "本以下にしてください。",
                     MessageType.Error);
@@ -1585,7 +1581,9 @@ namespace RARA.AvatarStudio
         }
 
         // ================================================================
-        // 5. ポリゴン削減(Decimation.PolygonBudgetPlanner.BuildPlan)
+        // 5. ポリゴン削減(Meshia連携)
+        //   ポリゴン削減は Meshia Mesh Simplification へ委譲する。目標三角形数を設定し、変換時に複製へ
+        //   Cascading コンポーネントを付与する(実際の削減はビルド時=NDMF)。自前の配分計画方式は 1.6.0 で廃止。
         // ================================================================
         public static bool DrawPolygonPanel(GameObject avatarRoot, AvatarStudioSettings s, QuestConvertSettings quest, AvatarStudioPreviewCache cache)
         {
@@ -1593,221 +1591,96 @@ namespace RARA.AvatarStudio
             if (quest == null) quest = new QuestConvertSettings();
 
             bool changed = false;
-            EnsureList(ref s.questDecimationPlan);
 
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                bool enable = GUILayout.Toggle(s.questEnableDecimation, "ポリゴン削減を有効化", "Button", GUILayout.Width(170f));
-                if (enable != s.questEnableDecimation) { s.questEnableDecimation = enable; changed = true; }
-            }
-
-            // Meshia(Ram.Type-0 / MIT)併用の検出。Meshia はビルド時にさらにメッシュを簡略化するため、
-            // 本ツールのポリゴン削減と同一レンダラーへ重ねると削りすぎになりうる。検出はアバター単位で
-            // キャッシュし、同一フレームの Layout/Repaint でコントロール数が食い違わないようにする
-            // (毎イベント再計算せず、キャッシュ値でHelpBox+ボタンの有無を安定させる)。
-            bool meshiaPresent = cache.GetOrBuild("meshia", avatarRoot.GetInstanceID().ToString(),
-                () => new bool[] { MeshiaCompat.IsPresent(avatarRoot) })?[0] ?? false;
-            if (meshiaPresent)
+            // 旧バージョンの削減計画が残っていれば移行済みである旨を通知(適用はしない)。
+            if (s.questDecimationPlan != null && s.questDecimationPlan.Count > 0)
             {
                 EditorGUILayout.HelpBox(
-                    "Meshia検出: ビルド時にさらに削減されます。本ツールのポリゴン削減と併用する場合は削りすぎに注意(どちらか一方を主にする)。",
+                    "ポリゴン削減は Meshia 連携へ移行しました(旧バージョンの削減計画は適用されません)。", MessageType.Info);
+            }
+
+            // Meshia(+Modular Avatar)未導入時は導入案内。
+            if (!MeshiaCompat.IsCascadingAvailable())
+            {
+                EditorGUILayout.HelpBox(
+                    "ポリゴン削減には Meshia Mesh Simplification(無料)と Modular Avatar の導入が必要です。導入後にこのパネルから設定できます。",
                     MessageType.Info);
-                if (GUILayout.Button(new GUIContent("Meshiaのドキュメントを開く",
-                    "Meshia Mesh Simplification の公式ドキュメントを開きます: " + AvatarStudioUI.MeshiaDocsUrl), GUILayout.Width(200f)))
+                if (GUILayout.Button(new GUIContent("Meshia を導入(VPM)",
+                    "Meshia の導入ページを開きます: " + AvatarStudioUI.MeshiaDocsUrl), GUILayout.Width(200f)))
                 {
                     Application.OpenURL(AvatarStudioUI.MeshiaDocsUrl);
                 }
+                return false;
             }
 
-            using (new EditorGUI.DisabledScope(!s.questEnableDecimation))
+            // 目標ランク(プリセット)+ カスタム。
+            int presetIndex = GetDecimationPresetIndex(s.questMeshiaTargetTriangles);
+            using (new EditorGUILayout.HorizontalScope())
             {
-                // 目標ランクのプリセットトグル(カスタム値のときは選択なし=-1)。
-                int presetIndex = GetDecimationPresetIndex(s.questDecimationTargetTriangles);
-                using (new EditorGUILayout.HorizontalScope())
+                EditorGUILayout.LabelField(new GUIContent("目標ランク", "到達したいポリゴン数の目安。ボタンで目標三角形数が設定されます"), GUILayout.Width(72f));
+                int newIndex = GUILayout.Toolbar(presetIndex, DecimationRankLabels);
+                if (newIndex != presetIndex && newIndex >= 0 && newIndex < DecimationRankPresets.Length)
                 {
-                    EditorGUILayout.LabelField(new GUIContent("目標ランク", "到達したいポリゴン数の目安。ボタンで目標三角形数が設定されます"), GUILayout.Width(72f));
-                    int newIndex = GUILayout.Toolbar(presetIndex, DecimationRankLabels);
-                    if (newIndex != presetIndex && newIndex >= 0 && newIndex < DecimationRankPresets.Length)
-                    {
-                        s.questDecimationTargetTriangles = DecimationRankPresets[newIndex];
-                        changed = true;
-                    }
-                }
-
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    EditorGUILayout.LabelField("目標三角形数", GUILayout.Width(84f));
-                    int newTarget = EditorGUILayout.IntField(s.questDecimationTargetTriangles, GUILayout.Width(90f));
-                    if (newTarget < 1) newTarget = 1;
-                    if (newTarget != s.questDecimationTargetTriangles) { s.questDecimationTargetTriangles = newTarget; changed = true; }
-                    if (GUILayout.Button("自動で配分計画を作成", GUILayout.Width(170f)))
-                    {
-                        List<PolygonPlanEntry> built = PolygonBudgetPlanner.BuildPlan(avatarRoot, s.questDecimationTargetTriangles, quest);
-                        s.questDecimationPlan.Clear();
-                        if (built != null)
-                        {
-                            foreach (PolygonPlanEntry e in built)
-                            {
-                                if (e == null) continue;
-                                s.questDecimationPlan.Add(new PolygonPlanEntryData { rendererPath = e.rendererPath, targetTris = e.targetTris });
-                            }
-                        }
-                        changed = true;
-                        cache.Bump();
-                    }
-                    using (new EditorGUI.DisabledScope(s.questDecimationPlan.Count == 0))
-                    {
-                        if (GUILayout.Button(new GUIContent("計画クリア", "保存済みの配分計画をすべて破棄します"), GUILayout.Width(90f)))
-                        {
-                            s.questDecimationPlan.Clear();
-                            changed = true;
-                        }
-                    }
+                    s.questMeshiaTargetTriangles = DecimationRankPresets[newIndex];
+                    changed = true;
                 }
             }
-
-            if (!s.questEnableDecimation)
+            using (new EditorGUILayout.HorizontalScope())
             {
-                EditorGUILayout.LabelField("ポリゴン削減は既定でオフです(顔・髪は強く保護されます)。", EditorStyles.miniLabel);
-
-                // 現在の三角形数が目標ランクの予算を超えているのに削減がオフなら、必要性を琥珀で知らせ有効化ボタンを出す
-                // (発見しやすいが、有効化はあくまでユーザーの明示操作にする)。
-                int currentTris = cache.GetOrBuild("polytris", avatarRoot.GetInstanceID().ToString(),
-                    () => new int[] { PolygonBudgetPlanner.CountCurrentTriangles(avatarRoot, quest) })?[0] ?? 0;
-                int budget = s.questDecimationTargetTriangles;
-                if (currentTris > budget)
-                {
-                    Color prevHint = GUI.color;
-                    GUI.color = AvatarStudioUI.NoteYellowColor;
-                    EditorGUILayout.LabelField(
-                        string.Format("目標ランク到達にはポリゴン削減の有効化が必要です(現在 {0:N0} / 目標 {1:N0})。", currentTris, budget),
-                        EditorStyles.wordWrappedMiniLabel);
-                    GUI.color = prevHint;
-                    if (GUILayout.Button(new GUIContent("ポリゴン削減を有効にする",
-                        "ポリゴン削減を有効化します(既定はオフ。顔・髪は強く保護されます)"), GUILayout.Height(24f)))
-                    {
-                        s.questEnableDecimation = true;
-                        changed = true;
-                        cache.Bump(); // 有効化で以降のプレビュー/配分を作り直す
-                    }
-                }
-                return changed;
+                EditorGUILayout.LabelField("目標三角形数", GUILayout.Width(84f));
+                int newTarget = EditorGUILayout.IntField(s.questMeshiaTargetTriangles, GUILayout.Width(90f));
+                if (newTarget < 1) newTarget = 1;
+                if (newTarget != s.questMeshiaTargetTriangles) { s.questMeshiaTargetTriangles = newTarget; changed = true; }
             }
 
-            // プレビュー配分(現在計画を表示、無ければ提案を概算表示)
-            List<PolygonPlanEntry> plan = cache.GetOrBuild(
-                "polygon", avatarRoot.GetInstanceID() + "|" + s.questDecimationTargetTriangles,
-                () => PolygonBudgetPlanner.BuildPlan(avatarRoot, s.questDecimationTargetTriangles, quest));
+            // 現在の三角形数 vs 目標(数え方は診断と同一=EditorOnly/除外を反映)。
+            int currentTris = cache.GetOrBuild("polytris", avatarRoot.GetInstanceID().ToString(),
+                () => new int[] { PolygonBudgetPlanner.CountCurrentTriangles(avatarRoot, quest) })?[0] ?? 0;
+            bool over = currentTris > s.questMeshiaTargetTriangles;
+            Color prevColor = GUI.color;
+            GUI.color = over ? AvatarStudioUI.OverLimitColor : AvatarStudioUI.UploadOkColor;
+            EditorGUILayout.LabelField(
+                string.Format("現在の三角形数 {0:N0} / 目標 {1:N0}", currentTris, s.questMeshiaTargetTriangles),
+                EditorStyles.wordWrappedLabel);
+            GUI.color = prevColor;
 
-            if (plan == null) { EditorGUILayout.HelpBox("ポリゴン配分の計算に失敗しました。", MessageType.Warning); return changed; }
-
-            if (plan.Count == 0)
+            // 選択中アバターに既に Cascading があるか(手動付与・変換済み複製など)。存在判定はアバター単位でキャッシュ。
+            bool hasCascading = cache.GetOrBuild("meshiacascading", avatarRoot.GetInstanceID().ToString(),
+                () => new bool[] { MeshiaCompat.FindCascading(avatarRoot) != null })?[0] ?? false;
+            if (hasCascading)
             {
-                EditorGUILayout.LabelField("現在のポリゴン数は目標以下です(削減不要)。", EditorStyles.miniLabel);
+                Component existing = MeshiaCompat.FindCascading(avatarRoot);
+                int cur = existing != null ? MeshiaCompat.GetCascadingTarget(existing) : -1;
+                EditorGUILayout.HelpBox(
+                    "このアバターには既に Meshia 簡略化が付いています" +
+                    (cur > 0 ? "(現在の目標 " + cur.ToString("N0") + " 三角形)" : "") + "。Inspectorで調整できます。",
+                    MessageType.Info);
+                if (GUILayout.Button(new GUIContent(
+                    "Meshiaの目標を更新(目標: " + s.questMeshiaTargetTriangles.ToString("N0") + ")",
+                    "既存の Meshia 簡略化コンポーネントの全体目標を更新します"), GUILayout.Width(240f)))
+                {
+                    if (existing != null) MeshiaCompat.UpdateCascadingTarget(existing, s.questMeshiaTargetTriangles);
+                }
             }
             else
             {
-                EditorGUILayout.LabelField(string.Format("削減対象 {0} 件(現在の保存済み計画: {1} 件)。各行の目標三角形数は編集できます。", plan.Count, s.questDecimationPlan.Count), EditorStyles.miniLabel);
-                int shown = 0;
-                foreach (PolygonPlanEntry e in plan)
+                using (new EditorGUILayout.HorizontalScope())
                 {
-                    if (e == null || string.IsNullOrEmpty(e.rendererPath)) continue;
-                    if (shown++ >= MaxRows) { EditorGUILayout.LabelField("...(以下省略)", EditorStyles.miniLabel); break; }
-                    changed |= DrawPolygonPlanRow(avatarRoot, e, s.questDecimationPlan);
+                    bool enable = GUILayout.Toggle(s.questEnableMeshiaSimplification,
+                        "変換時に複製へ Meshia 簡略化を追加", "Button", GUILayout.Width(240f));
+                    if (enable != s.questEnableMeshiaSimplification) { s.questEnableMeshiaSimplification = enable; changed = true; }
+                }
+                if (!s.questEnableMeshiaSimplification)
+                {
+                    EditorGUILayout.LabelField(
+                        "オフのときは複製へ Meshia は付与されません(ポリゴン削減は行われません)。", EditorStyles.miniLabel);
                 }
             }
 
-            EditorGUILayout.LabelField("※ 現在の数え方は診断と同一(EditorOnly/除外を反映)。顔・髪は品質下限で保護されます。概算です。", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField(
+                "削減はビルド時(NDMF)に適用されます。エディタの数値には出ませんが、即時実測には反映されます。",
+                EditorStyles.wordWrappedMiniLabel);
             return changed;
-        }
-
-        /// <summary>
-        /// ポリゴン削減の配分1行を編集可能に描画する。カテゴリバッジ・現在→目標(編集可能なIntField)・
-        /// 「戻す」(自動配分値=BuildPlanのtargetTrisへ復元)・ピンを出す。目標は品質下限〜現在数でクランプし、
-        /// s.questDecimationPlan(rendererPath→targetTris)へ upsert する。変更があれば true。
-        /// </summary>
-        private static bool DrawPolygonPlanRow(GameObject avatarRoot, PolygonPlanEntry e, List<PolygonPlanEntryData> savedPlan)
-        {
-            bool changed = false;
-            int current = Mathf.Max(1, e.currentTris);
-            // 自動配分値(BuildPlanの提案)。「戻す」の復元先・スライダー下限の基準にする。
-            int suggested = Mathf.Clamp(e.targetTris, 1, current);
-            int saved = GetSavedPolyTarget(savedPlan, e.rendererPath, suggested);
-            // 品質下限。予算超過時は自動配分が下限を下回ることがあるため、実際の値を隠さないよう下限も引き下げる。
-            int qualityMin = Mathf.Clamp(Mathf.CeilToInt(current * Mathf.Clamp01(e.qualityFloor)), 1, current);
-            int rowMin = Mathf.Clamp(Mathf.Min(qualityMin, Mathf.Min(suggested, saved)), 1, current);
-
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                DrawCategoryBadge(e.category);
-                GUILayout.Label(new GUIContent(Trunc(e.rendererPath, 36), e.rendererPath), EditorStyles.miniLabel, GUILayout.MinWidth(100f), GUILayout.MaxWidth(240f));
-                GUILayout.Label(string.Format("{0:N0} →", current), EditorStyles.miniLabel, GUILayout.Width(78f));
-
-                if (rowMin >= current)
-                {
-                    GUILayout.Label("保護のため削減なし", EditorStyles.miniLabel, GUILayout.Width(120f));
-                }
-                else
-                {
-                    int newTarget = EditorGUILayout.IntField(Mathf.Clamp(saved, rowMin, current), GUILayout.Width(84f));
-                    newTarget = Mathf.Clamp(newTarget, rowMin, current);
-                    if (newTarget != saved) { UpsertPolyTarget(savedPlan, e.rendererPath, newTarget); changed = true; }
-                    GUILayout.Label("三角", EditorStyles.miniLabel, GUILayout.Width(28f));
-                    using (new EditorGUI.DisabledScope(saved == suggested))
-                    {
-                        if (GUILayout.Button(new GUIContent("戻す", "自動配分の目標値(" + suggested.ToString("N0") + ")へ戻します"), GUILayout.Width(44f)))
-                        {
-                            UpsertPolyTarget(savedPlan, e.rendererPath, suggested);
-                            changed = true;
-                        }
-                    }
-                }
-                GUILayout.FlexibleSpace();
-                DrawPolygonPingButton(avatarRoot, e.rendererPath);
-            }
-            return changed;
-        }
-
-        /// <summary>保存済み配分計画から rendererPath の目標三角形数を返す(無ければ fallback)。</summary>
-        private static int GetSavedPolyTarget(List<PolygonPlanEntryData> plan, string rendererPath, int fallback)
-        {
-            if (plan == null || string.IsNullOrEmpty(rendererPath)) return fallback;
-            foreach (PolygonPlanEntryData d in plan)
-                if (d != null && d.rendererPath == rendererPath) return d.targetTris;
-            return fallback;
-        }
-
-        /// <summary>保存済み配分計画へ rendererPath の目標三角形数を追加/更新する。</summary>
-        private static void UpsertPolyTarget(List<PolygonPlanEntryData> plan, string rendererPath, int target)
-        {
-            if (plan == null || string.IsNullOrEmpty(rendererPath)) return;
-            foreach (PolygonPlanEntryData d in plan)
-                if (d != null && d.rendererPath == rendererPath) { d.targetTris = target; return; }
-            plan.Add(new PolygonPlanEntryData { rendererPath = rendererPath, targetTris = target });
-        }
-
-        /// <summary>カテゴリ名(顔/髪/素体/衣装/その他)に応じた色付きバッジを描画する。</summary>
-        private static void DrawCategoryBadge(string category)
-        {
-            string label = string.IsNullOrEmpty(category) ? PolygonBudgetPlanner.CategoryOther : category;
-            Color color;
-            if (label == PolygonBudgetPlanner.CategoryFace) color = CategoryFaceColor;
-            else if (label == PolygonBudgetPlanner.CategoryHair) color = CategoryHairColor;
-            else if (label == PolygonBudgetPlanner.CategoryBody) color = CategoryBodyColor;
-            else if (label == PolygonBudgetPlanner.CategoryClothes) color = CategoryClothesColor;
-            else color = CategoryOtherColor;
-            DrawBadge(label, color, "保護カテゴリ: " + label + "(顔・髪ほど強く保護されます)");
-        }
-
-        /// <summary>レンダラーパスの指すGameObjectをシーンでPing表示するボタン。</summary>
-        private static void DrawPolygonPingButton(GameObject avatarRoot, string rendererPath)
-        {
-            Transform resolved = avatarRoot != null ? QuestCompat.FindByPath(avatarRoot.transform, rendererPath) : null;
-            using (new EditorGUI.DisabledScope(resolved == null))
-            {
-                if (GUILayout.Button(new GUIContent("ピン", "シーン上の該当メッシュをハイライト表示します"), GUILayout.Width(36f)))
-                    EditorGUIUtility.PingObject(resolved.gameObject);
-            }
         }
 
         /// <summary>目標三角形数がプリセット(7500/10000/15000/20000)のどれかなら添字、なければ-1(カスタム)。</summary>
@@ -1840,7 +1713,7 @@ namespace RARA.AvatarStudio
             bool changed = false;
             using (new EditorGUILayout.HorizontalScope())
             {
-                bool enable = GUILayout.Toggle(s.pcEnableAtlas, "PCマテリアルをアトラス統合", "Button", GUILayout.Width(200f));
+                bool enable = GUILayout.Toggle(s.pcEnableAtlas, "PCマテリアルをアトラス統合(実験的)", "Button", GUILayout.Width(230f));
                 if (enable != s.pcEnableAtlas) { s.pcEnableAtlas = enable; changed = true; }
             }
 
@@ -2023,9 +1896,22 @@ namespace RARA.AvatarStudio
         // 6b. Questマテリアル変換プレビュー(AvatarQuestConverter.PreviewMaterials)
         // ================================================================
         // MaterialOverride の並び順(Auto..MatCapLit)と一致させること(index を (MaterialOverride) へキャストして使う)
-        private static readonly string[] OverrideLabels =
+        private static readonly GUIContent[] OverrideLabels =
         {
-            "自動", "Toon Standard", "Toon Lit", "加算(半透明)", "乗算(半透明)", "非表示", "変換しない", "MatCap Lit(金属向け)",
+            new GUIContent("自動(推奨)", "診断結果から最適な変換方法を自動で選びます。迷ったらこのままでOK"),
+            new GUIContent("Toon Standard", "VRChat/Mobile/Toon Standard へ変換(不透明。影ランプ・ノーマル・エミッション対応)"),
+            new GUIContent("Toon Lit", "VRChat/Mobile/Toon Lit へ変換(最軽量。陰影はテクスチャへベイク)"),
+            new GUIContent("加算(半透明)", "Particles/Additive へ変換。黒が透明になる加算合成(光り物・ホロ向け)"),
+            new GUIContent("乗算(半透明)", "Particles/Multiply へ変換。白が透明になる乗算合成(チーク・頬染め向け)"),
+            new GUIContent("非表示", "Quest版では不可視マテリアルに差し替えて見えなくします"),
+            new GUIContent("変換しない", "元のマテリアルのまま残します(非対応シェーダーのままだと Quest では正しく表示されない原因になります)"),
+            new GUIContent("MatCap Lit(金属向け)", "VRChat/Mobile/MatCap Lit へ変換。金属パーツ向け(乗算合成のマットキャップ・不透明のみ・アトラス統合外でスロットを1つ使います)"),
+        };
+
+        // 半透明(TransparentHandling)の日本語ラベル(enum の並び Emulate, Hide, Opaque と一致させること)。
+        private static readonly string[] TransparentHandlingLabels =
+        {
+            "自動で半透明を再現(推奨)", "非表示にする(最軽量)", "不透明に変換",
         };
 
         public static bool DrawQuestMaterialPanel(VRCAvatarDescriptor avatar, AvatarStudioSettings s, QuestConvertSettings quest, AvatarStudioPreviewCache cache)
@@ -2043,8 +1929,9 @@ namespace RARA.AvatarStudio
                 if (!Equals(newTarget, s.shaderTarget)) { s.shaderTarget = newTarget; changed = true; }
 
                 EditorGUILayout.LabelField(new GUIContent("半透明", "半透明マテリアルのQuest版での扱い"), GUILayout.Width(48f));
-                var newTr = (TransparentHandling)EditorGUILayout.EnumPopup(s.transparentHandling, GUILayout.Width(120f));
-                if (!Equals(newTr, s.transparentHandling)) { s.transparentHandling = newTr; changed = true; }
+                int trCur = Mathf.Clamp((int)s.transparentHandling, 0, TransparentHandlingLabels.Length - 1);
+                int trNew = EditorGUILayout.Popup(trCur, TransparentHandlingLabels, GUILayout.Width(200f));
+                if (trNew != trCur) { s.transparentHandling = (TransparentHandling)trNew; changed = true; }
             }
 
             // 見え方トラブルの常設注意書き(恒久対応=この行で変換方法を指定して再生成 / 応急処置=生成複製の
@@ -2085,7 +1972,7 @@ namespace RARA.AvatarStudio
             {
                 EditorGUILayout.HelpBox(
                     "Quest版で非表示(不可視)になる予定のマテリアルが " + hiddenCount + " 件あります。" +
-                    "非表示になった衣類(ストッキング等)は、下の一覧の「不透明にする」/「乗算で再現」から個別に表示方法を選べます。",
+                    "非表示になった衣類(ストッキング等)は、下の一覧の「不透明にする」/「乗算(半透明)へ変換」から個別に表示方法を選べます。",
                     MessageType.Info);
             }
 
@@ -2131,9 +2018,9 @@ namespace RARA.AvatarStudio
                             SetOverrideMode(s.materialOverrides, guid, MaterialOverride.ToonStandard);
                             changed = true;
                         }
-                        if (GUILayout.Button(new GUIContent("乗算で再現",
+                        if (GUILayout.Button(new GUIContent("乗算(半透明)へ変換",
                             "このマテリアルを乗算パーティクルへ変換します(ストッキング等の薄い透け感を近似再現します)"),
-                            GUILayout.Width(84f)))
+                            GUILayout.Width(130f)))
                         {
                             SetOverrideMode(s.materialOverrides, guid, MaterialOverride.ParticleMultiply);
                             changed = true;
@@ -2142,7 +2029,7 @@ namespace RARA.AvatarStudio
                 }
             }
 
-            EditorGUILayout.LabelField("※ 実変換前のプレビューです。「自動」以外を選ぶと自動判定より優先されます。", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField("※ 実変換前のプレビューです。「自動(推奨)」以外を選ぶと自動判定より優先されます。", EditorStyles.miniLabel);
             return changed;
         }
 

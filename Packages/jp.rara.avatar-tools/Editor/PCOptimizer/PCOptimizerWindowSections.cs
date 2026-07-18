@@ -214,7 +214,7 @@ namespace RARA.PCOptimizer
                 EditorGUI.BeginChangeCheck();
 
                 _settings.enableAtlas = EditorGUILayout.ToggleLeft(
-                    new GUIContent("アトラス統合を有効化",
+                    new GUIContent("アトラス統合(複数テクスチャを1枚化)を有効化(実験的:まれに見た目が崩れます)",
                         "互換性のあるマテリアルを1枚のアトラステクスチャに統合し、マテリアルスロット数を削減します"),
                     _settings.enableAtlas);
 
@@ -445,8 +445,8 @@ namespace RARA.PCOptimizer
         private static readonly GUIContent[] ToggleChoiceLabels =
         {
             new GUIContent("トグル維持", "現状のままトグルで切り替えられます(メッシュ・マテリアルスロットは減りません)"),
-            new GUIContent("表示で固定", "常時表示にしてトグルを外し、AAOビルド時に結合対象にします(スキンメッシュ・マテリアルスロットが減ります)"),
-            new GUIContent("非表示で固定", "このメッシュを削除します(EditorOnly化。スロット・揺れも消えます)"),
+            new GUIContent("常時表示", "常時表示にしてトグルを外し、AAOビルド時に結合対象にします(スキンメッシュ・マテリアルスロットが減ります)"),
+            new GUIContent("非表示除去(削除)", "このメッシュを削除します(EditorOnly化。スロット・揺れも消えます)"),
         };
 
         private void DrawOutfitToggleSection()
@@ -466,8 +466,8 @@ namespace RARA.PCOptimizer
                 {
                     EditorGUILayout.HelpBox(
                         "トグルで切り替える衣装/アクセサリは、そのままだとメッシュ・マテリアルスロットが減りません。" +
-                        "「表示で固定」にするとAAO(Trace and Optimize)がビルド時に結合し、スキンメッシュ/スロットを削減できます(トグルは無くなります)。" +
-                        "「非表示で固定」はそのメッシュを削除します。",
+                        "「常時表示」にするとAAO(Trace and Optimize)がビルド時に結合し、スキンメッシュ/スロットを削減できます(トグルは無くなります)。" +
+                        "「非表示除去(削除)」はそのメッシュを削除します。",
                         MessageType.Info);
                 }
 
@@ -515,7 +515,7 @@ namespace RARA.PCOptimizer
                 using (new EditorGUILayout.HorizontalScope())
                 {
                     if (GUILayout.Button(new GUIContent("現在の表示状態で固定(全トグル)",
-                        "表示中のトグルは「表示で固定」、非表示のトグルは「非表示で固定」に一括設定します"), GUILayout.Height(22f)))
+                        "表示中のトグルは「常時表示」、非表示のトグルは「非表示除去(削除)」に一括設定します"), GUILayout.Height(22f)))
                     {
                         LockAllTogglesToCurrentState();
                     }
@@ -679,7 +679,7 @@ namespace RARA.PCOptimizer
             {
                 EditorGUILayout.HelpBox(
                     "SkinnedMesh統合は無効です。『顔以外を統合』にすると、顔以外のメッシュ(静的なMeshRenderer含む)を" +
-                    "ビルド時に1つへ統合し、SkinnedMesh数を2まで削減できます(表示/非表示トグルは無効化されます)。",
+                    "ビルド時に1つへ統合し、SkinnedMesh数を PC Good上限の2まで削減できます(表示/非表示トグルは無効化されます)。",
                     MessageType.Info);
                 if (GUILayout.Button(new GUIContent("顔以外を統合を有効にする",
                     "顔(ビセーム/まばたき)以外の SkinnedMeshRenderer を1つへ統合するモードに切り替えます"), GUILayout.Height(28f)))
@@ -1215,7 +1215,7 @@ namespace RARA.PCOptimizer
                 }
                 if (lockVisible + lockHidden > 0)
                 {
-                    lines.Add("トグル整理: 表示で固定 " + lockVisible + " / 非表示で固定 " + lockHidden + "(メッシュ・スロット削減)");
+                    lines.Add("トグル整理: 常時表示 " + lockVisible + " / 非表示除去(削除) " + lockHidden + "(メッシュ・スロット削減)");
                 }
             }
 
@@ -1642,7 +1642,7 @@ namespace RARA.PCOptimizer
         {
             if (hiddenCount <= 0) return;
             EditorGUILayout.LabelField(
-                string.Format("EditorOnly/Quest除外のため {0} 件を非表示(ビルドに含まれないため)", hiddenCount),
+                string.Format("EditorOnly(ビルド除外)のため {0} 件を非表示(ビルドに含まれないため)", hiddenCount),
                 _miniWrapLabel);
         }
 

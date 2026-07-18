@@ -76,7 +76,7 @@ namespace RARA.AvatarStudio
 
             // H5: AAO・統合はビルド時適用のため、生成直後・診断時の数値は実アップロード後より控えめに出る旨の注記。
             EditorGUILayout.LabelField(
-                "※ SkinnedMesh統合・トグル固定・Trace and Optimize などは VRChat ビルド時(AAO/NDMF)に適用されます。" +
+                "※ SkinnedMesh統合・トグル固定・Trace and Optimize などは VRChat ビルド時(AAO/NDMF=アップロード/Play時に自動で走る最適化の仕組み)に適用されます。" +
                 "そのため、この診断値や生成直後の数値は、実際のアップロード後よりやや多め(控えめな削減)に見えることがあります。",
                 EditorStyles.wordWrappedMiniLabel);
 
@@ -132,7 +132,9 @@ namespace RARA.AvatarStudio
                 {
                     EditorGUILayout.LabelField("PC総合", GUILayout.Width(52f));
                     DrawRatingChip(diag.pcOverallRating, GUILayout.Width(96f));
-                    if (AvatarStudioDiagnostics.IsOverGoal(diag.pcOverallRating, (int)settings.pcTargetRank))
+                    if (AvatarStudioDiagnostics.NormalizeRating(diag.pcOverallRating) == "verypoor")
+                        WarnMini("Very Poor(他の人には既定で表示されません)");
+                    else if (AvatarStudioDiagnostics.IsOverGoal(diag.pcOverallRating, (int)settings.pcTargetRank))
                         WarnMini("目標未達");
                     GUILayout.Space(12f);
                 }
@@ -143,7 +145,7 @@ namespace RARA.AvatarStudio
                     if (!diag.questCanUpload)
                         WarnMini("アップロード不可(サイズ上限超過)");
                     else if (AvatarStudioDiagnostics.NormalizeRating(diag.questOverallRating) == "verypoor")
-                        WarnMini("Very Poor(既定で非表示/揺れ物停止)");
+                        WarnMini("Very Poor(他の人には既定で表示されず、揺れものも停止)");
                     else if (AvatarStudioDiagnostics.IsOverGoal(diag.questOverallRating, settings.questGoalRank))
                         WarnMini("目標未達");
                 }

@@ -102,8 +102,8 @@ namespace RARA.AvatarStudio
 
             if (s.targetQuest)
             {
-                string decim = s.questEnableDecimation
-                    ? "ポリゴン削減あり(目標 " + s.questDecimationTargetTriangles + " 三角形)"
+                string decim = s.questEnableMeshiaSimplification
+                    ? "ポリゴン削減あり(Meshia連携・目標 " + s.questMeshiaTargetTriangles + " 三角形・ビルド時適用)"
                     : "ポリゴン削減なし";
                 lines.Add("Quest/iOS(Android): 元アバターを非破壊で複製し『{名前}_Quest』を生成します(目標ランク: "
                     + (QuestTargetRank)s.questGoalRank + ")。シェーダー/テクスチャのQuest対応変換・透過処理(" + TransparentLabel(s.transparentHandling)

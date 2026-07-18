@@ -196,6 +196,8 @@ namespace RARA.AvatarStudio
             s.questRemoveHiddenMeshByBlendShape = quest.removeHiddenMeshByBlendShape;
             s.questEnableDecimation = quest.enableDecimation;
             s.questDecimationTargetTriangles = quest.decimationTargetTriangles;
+            s.questEnableMeshiaSimplification = quest.enableMeshiaSimplification;
+            s.questMeshiaTargetTriangles = quest.meshiaTargetTriangles;
             s.questTrimPhysBonesToPoorLimit = quest.trimPhysBonesToPoorLimit;
             // materialOverrides / questTextureSizePlan / questExcludePaths / questHiddenMeshRendererPaths /
             // questDecimationPlan / questPhysBoneNoMergePaths はアバター固有(パス/GUID)のためシードしない。

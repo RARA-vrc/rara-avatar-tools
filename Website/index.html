@@ -319,7 +319,7 @@
     <h2>使い方の完全ガイド</h2>
     <p class="section-sub">
       ウィンドウは上から順に進めれば完了する構成です:
-      対象/プリセット → ① 診断 → ② 構成整理 → ③ PhysBone → ④ テクスチャ → ⑤ ポリゴン → ⑥ マテリアル → ⑦ 実行 → ⑧ ヘルプ。
+      対象/プリセット → ① 診断 → ② 構成整理 → ③ PhysBone → ④ テクスチャ → ⑤ ポリゴン(Meshia連携) → ⑥ マテリアル → ⑦ 実行 → ⑧ ヘルプ。
       各ステップの詳細を下の折りたたみで確認できます。
     </p>
 
@@ -396,10 +396,10 @@
     <details>
       <summary>② 構成整理 — トグル固定 / SkinnedMesh統合<span class="badge">要AAO</span></summary>
       <div class="details-body">
-        <p>トグルで切り替える衣装・アクセサリを検出し、各グループを「トグル維持 / 表示で固定 / 非表示で固定」から選びます。</p>
+        <p>トグルで切り替える衣装・アクセサリを検出し、各グループを「維持 / 常時表示 / 非表示除去」から選びます。</p>
         <ul>
-          <li><b>表示で固定</b> — 常時表示にしてトグルアニメを外す。AAO がビルド時に結合できるようになり、スキンメッシュ数・スロット数が減ります。</li>
-          <li><b>非表示で固定</b> — そのメッシュを削除(<code class="inline">EditorOnly</code>)。ビルドから外れます(AAO 不要)。</li>
+          <li><b>常時表示</b> — 常に ON 固定にしてトグルアニメを外す。AAO がビルド時に結合できるようになり、スキンメッシュ数・スロット数が減ります。</li>
+          <li><b>非表示除去</b> — そのメッシュを削除(<code class="inline">EditorOnly</code>)。ビルドから外れます(AAO 不要)。</li>
           <li><b>SkinnedMesh統合(顔以外を1つへ / グループ指定)</b> — 顔(ビセーム / まばたき)以外の SkinnedMeshRenderer を AAO の Merge Skinned Mesh で1つに統合。SkinnedMesh 数とスロット数が同時に減ります(既定:統合)。統合対象外:顔メッシュ、Cloth 付き、EditorOnly、プレビューで個別に「統合しない」を選んだメッシュ。<b>グループ指定モード</b>では、レンダラーごとにグループ1〜8を割り当て、同じグループのレンダラーだけを1つのメッシュへ統合します(素体と衣装を別メッシュに保ちたいときなどに。顔は自動保護でグループ割り当て不可、未割り当ては統合されません)。</li>
         </ul>
         <p class="hint"><b>削減サイズの目安(1.5.0)。</b>各トグルグループに「非表示固定で減る<b>専有アセット</b>」の削減量チップ(圧縮後 -◯MB / 展開後 -◯MB)を表示します。専有アセットはそのグループのサブツリー内だけが使うテクスチャ・メッシュで、素体などと共有するものは非表示にしても減らないため計上しません(共有だけのグループは「共有テクスチャのみ」と表示)。サイズ超過時は、削除候補を専有削減量の大きい順に提示するガイドも出ます(合計は入れ子の衣装グループを二重計上しません)。</p>
@@ -443,29 +443,30 @@
 
     <!-- ⑤ ポリゴン -->
     <details>
-      <summary>⑤ ポリゴン削減(Quest)— 目標ポリゴン数へ簡略化<span class="badge">既定オフ</span></summary>
+      <summary>⑤ ポリゴン削減(Meshia連携)— Meshia でビルド時に簡略化<span class="badge">1.6.0</span></summary>
       <div class="details-body">
-        <p>目標ポリゴン数(Excellent 7,500 / Good 10,000 / Medium 15,000 / Poor 20,000)を選び、「自動で配分計画を作成」でメッシュごとの削減目標を割り当てます。優先度の低いメッシュ(その他 → 衣装 → 素体 → 髪 → 顔)から順に削って目標に収めます。頂点を間引く方式なので、UV・法線・ボーンウェイト・ブレンドシェイプ(表情)はそのまま保持されます。</p>
+        <p>ポリゴン削減は <b>Meshia Mesh Simplification</b>(Ram.Type-0 氏 / MIT)へ連携する方式です。本ツール自前の頂点間引き UI は <b>1.6.0 で廃止</b> し、本ツールは目標三角形数の指定と「_Quest」複製への Meshia コンポーネント追加を担当します(実際の簡略化は Meshia がビルド時に実行)。<b>既定は無効</b>(明示的に有効化)。</p>
         <ul>
-          <li><b>ポリゴン削減は既定で無効</b>です。現在の三角形数が目標を超えているときは、パネルに琥珀の案内と「ポリゴン削減を有効にする」ボタンが出るので、そこから有効化します。</li>
-          <li>顔(リップシンク対象)と髪は品質下限で強く保護されます。各メッシュはバッジ(顔 / 髪 / 素体 / 衣装 / その他)で分類表示。</li>
-          <li>Unity Cloth 付きメッシュは削減対象から自動除外(布シミュレーション維持のため)。</li>
+          <li><b>目標三角形数</b>(目安 Excellent 7,500 / Good 10,000 / Medium 15,000 / Poor 20,000)を指定し、「<b>_Quest 複製へ Meshia を追加</b>」ボタンでワンボタン設定します。目標へ合わせた配分は Meshia 側の設定として書き込まれます。</li>
+          <li><b>反映はビルド時</b>。簡略化は NDMF ビルド時(Play / アップロード)に Meshia が実行するため、エディタの診断値・保存済み複製プレファブには出ません。結果は <b>即時実測(1.4.0 以降)/ 実測レポート(▶️ Play / SDK ビルド)</b> で確認します。</li>
+          <li><b>崩れやすい部位(顔・髪など)</b>は、追加後に Meshia コンポーネント側(<code class="inline">Meshia Cascading Avatar Mesh Simplifier</code>)で部位ごとに目標三角形数や保護設定を個別調整でき、EditMode プレビューで品質を確認できます。</li>
+          <li><b>Meshia 未導入時</b>はパネルに導入手順(VPM リポジトリ <a href="https://ramtype0.github.io/VpmRepository/" target="_blank" rel="noopener">https://ramtype0.github.io/VpmRepository/</a> の追加)を表示します。</li>
         </ul>
-        <div class="note">大きく削る場合は、先に外部ツール(Blender 等)でメッシュを整えてから本ツールで微調整するのがおすすめです。無料の削減(メッシュ削減・衣装整理・Quest除外)を先に済ませてから使うと崩れにくくなります。</div>
+        <div class="note warn"><b>移行注記。</b>旧バージョンで保存した自前のポリゴン削減計画(レンダラーごとの配分)は 1.6.0 では適用されません。ポリゴンを削りたい場合は、Meshia を導入して目標三角形数を指定し直してください。Unity Cloth 付きメッシュなど Meshia 側で扱えない対象は簡略化されません。</div>
       </div>
     </details>
 
-    <!-- Meshia 併用 -->
+    <!-- Meshia -->
     <details>
-      <summary>Meshia との併用(推奨)— 役割分担で二重削減を避ける<span class="badge">併用</span></summary>
+      <summary>Meshia(ポリゴン削減の実体)について — 目標指定 → ワンボタンで複製へ追加<span class="badge">1.6.0</span></summary>
       <div class="details-body">
-        <p><b>Meshia Mesh Simplification</b>(Ram.Type-0 氏 / MIT)は、NDMF で <b>ビルド時(Play / アップロード)</b> にメッシュを高品質に簡略化するツールです。レンダラー単位の <code class="inline">Meshia Mesh Simplifier</code>、または(Modular Avatar 導入時)アバター単位の <code class="inline">Meshia Cascading Avatar Mesh Simplifier</code> で、目標三角形数などをレンダラーごとに細かく指定できます。導入は VPM リポジトリ <a href="https://ramtype0.github.io/VpmRepository/" target="_blank" rel="noopener">https://ramtype0.github.io/VpmRepository/</a> を VCC / ALCOM に追加して行います(<a href="https://ramtype0.github.io/Meshia.MeshSimplification/" target="_blank" rel="noopener">公式ドキュメント</a>)。</p>
+        <p><b>Meshia Mesh Simplification</b>(Ram.Type-0 氏 / MIT)は、NDMF で <b>ビルド時(Play / アップロード)</b> にメッシュを高品質に簡略化するツールです。<b>1.6.0 から、本ツールの ⑤ ポリゴン削減はこの Meshia へ連携する方式</b> になりました。目標三角形数を指定すると、本ツールが「_Quest」複製の子オブジェクトへ Meshia のアバター単位コンポーネント(<code class="inline">Meshia Cascading Avatar Mesh Simplifier</code>)をワンボタンで追加・設定します(この自動付与には Modular Avatar が必要です。未導入時はパネルに導入案内が出るだけで付与されません)。導入は VPM リポジトリ <a href="https://ramtype0.github.io/VpmRepository/" target="_blank" rel="noopener">https://ramtype0.github.io/VpmRepository/</a> を VCC / ALCOM に追加して行います(<a href="https://ramtype0.github.io/Meshia.MeshSimplification/" target="_blank" rel="noopener">公式ドキュメント</a>)。</p>
         <ul>
-          <li><b>品質重視(Meshia を主に)</b> — 崩れやすい / 見せ場のモデルは Meshia にレンダラー単位で任せ、EditMode プレビューで品質を追い込みます。本ツールのポリゴン削減はオフのまま(または Meshia を付けたレンダラーは本ツールの対象から外す)にして二重削減を避けます。</li>
-          <li><b>手早く予算内(本ツールを主に)</b> — 目標ランクへ収めたいだけなら、本ツールのポリゴン削減だけを使います(目標三角形数へ自動配分・顔 / 髪を保護・_Quest 複製へ即時適用)。Meshia は付けません。ワンショットで完結し、二重削減の心配がない既定運用です。</li>
-          <li><b>役割分担(併用)</b> — 顔・髪など品質が要る部位だけ Meshia で丁寧に指定し、残りは本ツールの予算配分で目標まで詰めます。<b>同一レンダラーに両方を効かせない</b>(レンダラー単位でどちらか一方へ割り当てる)のが最も安全です。</li>
+          <li><b>ワンボタン運用(推奨)</b> — 目標三角形数を指定して「_Quest 複製へ Meshia を追加」を押すだけ。顔・髪を含む配分は本ツールが目標へ合わせて設定します。追加後に Meshia コンポーネント側で個別の微調整もできます。</li>
+          <li><b>レンダラー単位で追い込む</b> — 崩れやすい / 見せ場の部位は、追加された <code class="inline">Meshia Cascading Avatar Mesh Simplifier</code> で部位ごとに目標三角形数や保護設定を調整します(さらに細かく詰めたいときは、レンダラー単位の <code class="inline">Meshia Mesh Simplifier</code> を手動で足す方法もあります)。EditMode プレビューで品質を確認できます。</li>
+          <li><b>二重指定に注意</b> — 同一レンダラーに、本ツールが追加した Meshia と手動で足した Meshia の両方を効かせないでください(レンダラー単位でどちらか一方にする)。両方が同じ目標へ強くかかると、ビルド後に <b>削りすぎ</b> になります。</li>
         </ul>
-        <div class="note warn">Meshia の削減は <b>ビルド時</b> に反映されるため、<b>エディタ / 診断のポリゴン数には出ません</b>(EditMode プレビューはありますが、実メッシュの差し替えはビルド時です)。本ツールと Meshia の両方を同じ目標へ強くかけると、ビルド後に目標を大きく下回って <b>削りすぎ</b> になります。併用時はどちらか一方に予算(目標三角形数)を持たせ、本ツールの目標は Meshia 適用後に残る想定数を差し引いて設定してください。⑤ ポリゴン削減パネルは Meshia コンポーネントを検出すると併用注意を表示します。</div>
+        <div class="note warn">Meshia の削減は <b>ビルド時</b> に反映されるため、<b>エディタ / 診断のポリゴン数には出ません</b>(EditMode プレビューはありますが、実メッシュの差し替えはビルド時です)。最終的な三角形数は <b>即時実測(1.4.0 以降)/ 実測レポート(▶️ Play / SDK ビルド)</b> で確認してください。⑤ ポリゴン削減パネルは、手動で追加された Meshia コンポーネントを検出すると二重指定の注意を表示します。</div>
         <div class="note ok"><b>謝辞。</b>Meshia Mesh Simplification(MIT License / Ram.Type-0 氏)に感謝します。</div>
       </div>
     </details>
@@ -499,7 +500,6 @@
         <ul>
           <li><b>引き継がれるもの</b> — マットキャップ画像 / 合成モード(<b>乗算はそのまま乗算</b>、通常・加算・スクリーンは<b>加算で近似</b>)/ 強さ / マスク。</li>
           <li><b>引き継がれないもの</b> — 2ndマットキャップ(2枚目)、カスタム法線・視差(パララックス)・カスタム UV などの高度なオプション(変換レポートに警告)。</li>
-          <li><b>オフにする</b> — Quest 変換設定の詳細設定でマットキャップの引き継ぎをオフにできます。</li>
         </ul>
 
         <h3>MatCap Lit(金属パーツ向けの変換先)</h3>
@@ -586,12 +586,12 @@
       <summary>軽くなる仕組み — 何をすると何が減るか</summary>
       <div class="details-body">
         <ul>
-          <li><b>トグル固定(表示で固定)</b> — 表示アニメを常時 ON に固定 → AAO がビルド時に同一メッシュへ結合でき、SkinnedMesh 数が減る(要 AAO)。</li>
-          <li><b>トグル固定(非表示で固定)</b> — 使わない衣装を EditorOnly 化 → ビルドから外れ SkinnedMesh 数が減る(AAO 不要)。</li>
+          <li><b>トグル固定(常時表示)</b> — 表示アニメを常時 ON に固定 → AAO がビルド時に同一メッシュへ結合でき、SkinnedMesh 数が減る(要 AAO)。</li>
+          <li><b>トグル固定(非表示除去)</b> — 使わない衣装を EditorOnly 化 → ビルドから外れ SkinnedMesh 数が減る(AAO 不要)。</li>
           <li><b>SkinnedMesh 統合</b> — 顔以外を1つにまとめる → SkinnedMesh 数が減る(結合はビルド時に AAO が実施)。</li>
           <li><b>アトラス統合</b> — 複数マテリアルのテクスチャを1枚に → マテリアルスロット数が減る。</li>
           <li><b>テクスチャ縮小</b> — 解像度を下げる → テクスチャメモリ(VRAM)とダウンロードサイズが減る。</li>
-          <li><b>ポリゴン削減</b> — 頂点を間引く(ブレンドシェイプと UV は保持)→ 三角数が減る。</li>
+          <li><b>ポリゴン削減(Meshia連携)</b> — Meshia がビルド時にメッシュを簡略化(「_Quest」複製へ Meshia を追加)→ 三角数が減る。</li>
           <li><b>PhysBone 整理</b> — 揺れもの設定を選別・マージ → PhysBone コンポーネント数が減る。</li>
           <li><b>透過処理</b> — Quest には半透明シェーダーが無いため、乗算 / 加算の Particles シェーダーで見た目を近似(ランク削減ではなく Quest 対応のための処理)。</li>
         </ul>
@@ -646,6 +646,7 @@
     </div>
     <p><b>最近の更新(v1.2.0以降):</b></p>
     <ul>
+      <li><b>v1.6.0</b> — ポリゴン削減をMeshia連携へ移行(自前の削減UIを廃止し、目標を指定して複製へMeshiaコンポーネントをワンボタン追加。ビルド時適用・即時実測に反映)。UX総点検にもとづく文言改善 約20件</li>
       <li><b>v1.5.1</b> — EditorOnly / Quest除外のオブジェクトを各一覧から非表示に(「n件を非表示」の案内行つき)。アップロード手順ガイドに「_Opt / _Quest だけをアクティブ化」ボタン・ビルドターゲット不一致の警告・Multi-Platform Build &amp; Publish 非対応の注意を追加</li>
       <li><b>v1.5.0</b> — 削減サイズの見える化: 衣装・トグルグループごとに「非表示固定で約 -X MB(圧縮後/展開後)」を表示。展開後(非圧縮)40MB上限の推定・判定を追加し、自動調整が圧縮後10MB・展開後40MBの両上限対応に</li>
       <li><b>v1.4.2</b> — 顔が真っ白(のっぺらぼう)になる問題を修正。顔のマテリアルを自動保護し、透過設定でも常に不透明で変換(チーク・涙などの重ねは従来どおり乗算/加算で近似)</li>

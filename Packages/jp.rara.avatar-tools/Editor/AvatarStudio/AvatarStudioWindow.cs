@@ -365,19 +365,19 @@ namespace RARA.AvatarStudio
             EditorGUILayout.LabelField("プリセット", EditorStyles.miniBoldLabel);
             using (new EditorGUILayout.HorizontalScope())
             {
-                if (GUILayout.Button(new GUIContent("雑にQuest対応", "Questのみ / 目標Poor / 透過は乗算・加算で近似(ストッキング等の透けも保持)。完全に消したいマテリアルは⑥マテリアルの各行で『非表示』を選択。ポリゴン削減は既定オフ・必要なときにパネルで有効化"), GUILayout.Height(24f)))
+                if (GUILayout.Button(new GUIContent("おまかせQuest対応(Questだけなら まずこれ)", "Questのみ / 目標Poor / 透過は乗算・加算で近似(ストッキング等の透けも保持)。完全に消したいマテリアルは⑥マテリアルの各行で『非表示』を選択。ポリゴン削減は既定オフ・必要なときにパネルで有効化"), GUILayout.Height(24f)))
                 {
                     ApplyPreset(Preset.RoughQuest);
                 }
-                if (GUILayout.Button(new GUIContent("PCをPoorに", "PCのみ / 目標Poor"), GUILayout.Height(24f)))
+                if (GUILayout.Button(new GUIContent("PCを最低Poorまで軽量化(Very Poor回避)", "PCのみ / 目標Poor"), GUILayout.Height(24f)))
                 {
                     ApplyPreset(Preset.PcPoor);
                 }
-                if (GUILayout.Button(new GUIContent("PCをGoodに", "PCのみ / 目標Good"), GUILayout.Height(24f)))
+                if (GUILayout.Button(new GUIContent("PCをGoodまで軽量化", "PCのみ / 目標Good"), GUILayout.Height(24f)))
                 {
                     ApplyPreset(Preset.PcGood);
                 }
-                if (GUILayout.Button(new GUIContent("フル両対応(おすすめ)", "PC(Good)とQuest(Poor)の両方"), GUILayout.Height(24f)))
+                if (GUILayout.Button(new GUIContent("フル両対応(PC+Quest)", "PC(Good)とQuest(Poor)の両方(推奨)"), GUILayout.Height(24f)))
                 {
                     ApplyPreset(Preset.FullBoth);
                 }
@@ -395,10 +395,10 @@ namespace RARA.AvatarStudio
                     _settings.targetPC = false;
                     _settings.targetQuest = true;
                     _settings.questGoalRank = (int)QuestTargetRank.Poor;
-                    // ポリゴン削減は既定オフ。プリセットでは有効化せず、目標ランクの目安三角形数のみ用意する
-                    // (超過時はポリゴンパネルの琥珀ヒントから明示的に有効化してもらう)。
-                    _settings.questEnableDecimation = false;
-                    _settings.questDecimationTargetTriangles = QuestRankToTriangles(QuestTargetRank.Poor);
+                    // ポリゴン削減(Meshia連携)は既定オフ。プリセットでは有効化せず、目標ランクの目安三角形数のみ用意する
+                    // (超過時はポリゴンパネルから明示的に有効化してもらう)。
+                    _settings.questEnableMeshiaSimplification = false;
+                    _settings.questMeshiaTargetTriangles = QuestRankToTriangles(QuestTargetRank.Poor);
                     // 透過は既定で「近似(乗算/加算のParticlesシェーダー)」。ストッキング等の透けも保持され、
                     // 意図せず不可視化されない。完全に消したい場合は⑥マテリアルの各行で「非表示」を個別選択する。
                     _settings.transparentHandling = TransparentHandling.Emulate;
@@ -421,9 +421,9 @@ namespace RARA.AvatarStudio
                     _settings.targetQuest = true;
                     _settings.pcTargetRank = PCTargetRank.Good;
                     _settings.questGoalRank = (int)QuestTargetRank.Poor;
-                    // ポリゴン削減は既定オフ。プリセットでは有効化しない(超過時はパネルの琥珀ヒントから有効化)。
-                    _settings.questEnableDecimation = false;
-                    _settings.questDecimationTargetTriangles = QuestRankToTriangles(QuestTargetRank.Poor);
+                    // ポリゴン削減(Meshia連携)は既定オフ。プリセットでは有効化しない(超過時はパネルから有効化)。
+                    _settings.questEnableMeshiaSimplification = false;
+                    _settings.questMeshiaTargetTriangles = QuestRankToTriangles(QuestTargetRank.Poor);
                     _settings.transparentHandling = TransparentHandling.Emulate;
                     break;
             }
@@ -546,10 +546,10 @@ namespace RARA.AvatarStudio
             switch (label)
             {
                 case "三角数(ポリゴン)":
-                    return "AAO隠面メッシュ削除・不要衣装をQuest除外・ポリゴン削減で目標へ配分";
+                    return "AAO隠面メッシュ削除・不要衣装をQuest除外・ポリゴン削減(Meshia連携)で目標へ(削減はビルド時)";
                 case "スキンメッシュ数":
                 case "メッシュ数":
-                    return "構成整理で『表示で固定』またはSkinnedMesh統合";
+                    return "構成整理で『常時表示』またはSkinnedMesh統合";
                 case "マテリアルスロット数":
                     return "アトラス統合・トグル整理・SkinnedMesh統合";
                 case "テクスチャメモリ(MB)":
@@ -751,7 +751,7 @@ namespace RARA.AvatarStudio
                     _settings.savePrefab);
                 bool ensureTao = EditorGUILayout.ToggleLeft(
                     new GUIContent("AAO(Trace and Optimize)を複製へ付与する",
-                        "無ければ複製へ追加し、ビルド時にメッシュ/スロット統合・未使用ボーン削減を有効にします"),
+                        "無ければ複製へ追加し、ビルド時にメッシュ/スロット統合・未使用ボーン削減を有効にします(AAO=Avatar Optimizer。別途導入する無料の最適化ツール)"),
                     _settings.ensureTraceAndOptimize);
                 if (savePrefab != _settings.savePrefab || ensureTao != _settings.ensureTraceAndOptimize)
                 {
@@ -830,9 +830,9 @@ namespace RARA.AvatarStudio
             using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
                 EditorGUILayout.LabelField(
-                    "・トグル固定(常時表示に固定): 表示アニメを常時ONに固定 → AAOがビルド時に同一メッシュへ結合でき、SkinnedMesh数が減る(要AAO)\n"
-                    + "・トグル固定(非表示に固定): 使わない衣装をEditorOnly化して除去 → ビルドから外れSkinnedMesh数が減る(AAO不要)\n"
-                    + "・SkinnedMesh統合: 顔(ビセーム/まばたき)以外を1つにまとめる → SkinnedMesh数が減る(Questの上限2に対応。結合はビルド時にAAOが実施)\n"
+                    "・常時表示(トグル固定): 表示アニメを常時ONに固定 → AAO(Avatar Optimizer。別途導入する無料の最適化ツール)がビルド時に同一メッシュへ結合でき、SkinnedMesh数が減る(要AAO)\n"
+                    + "・非表示除去(削除): 使わない衣装をEditorOnly化して除去 → ビルドから外れSkinnedMesh数が減る(AAO不要)\n"
+                    + "・SkinnedMesh統合: 顔(口パク・まばたき)以外を1つにまとめる → SkinnedMesh数が減る(Questの上限2に対応。結合はビルド時にAAOが実施)\n"
                     + "・アトラス統合: 複数マテリアルのテクスチャを1枚にまとめる → マテリアルスロット数が減る(同一メッシュ内は変換時、メッシュをまたぐ統合はビルド時にAAOが実施)\n"
                     + "・テクスチャ縮小: 解像度を下げる → テクスチャメモリ(VRAM)とダウンロードサイズが減る\n"
                     + "・ポリゴン削減: 頂点を間引く(表情のブレンドシェイプとUVは保持) → 三角数が減る\n"
@@ -847,8 +847,8 @@ namespace RARA.AvatarStudio
             using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
                 EditorGUILayout.LabelField(
-                    "・本ツールは anatawa12 氏の AAO と分業し、生成した複製にのみ Trace and Optimize / Merge Skinned Mesh / Remove Mesh By BlendShape を自動で追加・設定します(元アバターには追加しません)。\n"
-                    + "・SkinnedMesh統合と隠れメッシュ削減の実体はアップロード/Play時のビルド(NDMF)で実行されるため、生成直後の複製やエディタ上の数値には反映されません。\n"
+                    "・本ツールは anatawa12 氏の AAO(Avatar Optimizer。別途導入する無料の最適化ツール)と分業し、生成した複製にのみ Trace and Optimize / Merge Skinned Mesh / Remove Mesh By BlendShape を自動で追加・設定します(元アバターには追加しません)。\n"
+                    + "・SkinnedMesh統合と隠れメッシュ削減の実体はアップロード/Play時のビルド(NDMF=アップロード/Play時に自動で走る最適化の仕組み)で実行されるため、生成直後の複製やエディタ上の数値には反映されません。\n"
                     + "・AAO未導入でも本ツールは動作し、該当機能はスキップして導入案内を表示します。感謝: AAO(MIT License / anatawa12 氏)。",
                     AvatarStudioUI.WrapLabel);
                 if (GUILayout.Button(new GUIContent("AAOの公式ドキュメントを開く",
@@ -900,8 +900,8 @@ namespace RARA.AvatarStudio
 
             EditorGUILayout.Space(4f);
             EditorGUILayout.HelpBox(
-                "準備の注意: このツールにもQuest向けのポリゴン削減はありますが、大幅にポリゴンを減らす場合は、"
-                + "先に外部ツール(Blender等)でメッシュを整えておくと仕上がりが安定します。ポリゴン削減は最後の微調整に使うのがおすすめです。",
+                "準備の注意: ポリゴン削減は Meshia 連携(ビルド時に適用)で行えますが、大幅にポリゴンを減らす場合は、"
+                + "先に外部ツール(Blender等)でメッシュを整えておくと仕上がりが安定します。Meshia は最後の微調整に使うのが推奨です。",
                 MessageType.Info);
 
             // (e) 不具合報告 / Open β。X(Twitter) DM または メールで受付。
@@ -957,7 +957,7 @@ namespace RARA.AvatarStudio
                 EditorGUILayout.Space(2f);
                 foreach (string[] r in questRows) DrawRankTableRow(r);
             }
-            EditorGUILayout.LabelField("※ 代表値の目安です。実際の判定は VRChat SDK の診断結果に従ってください。アップロード可否はダウンロードサイズ上限(10MB)のみで決まり、ランクでは決まりません。Very Poor は既定でフォールバック表示になります。",
+            EditorGUILayout.LabelField("※ 代表値の目安です。実際の判定は VRChat SDK の診断結果に従ってください。Questのアップロード可否は圧縮後10MB・展開後40MBの両上限で決まり、ランクでは決まりません。Very Poor は既定でフォールバック表示になります。",
                 AvatarStudioUI.MiniWrapLabel);
         }
 

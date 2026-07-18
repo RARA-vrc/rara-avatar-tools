@@ -313,8 +313,18 @@ namespace RARA.QuestConverter
         [Tooltip("ポリゴン削減の目標三角形数(Questランク目安: Excellent 7500 / Good 10000 / Medium 15000 / Poor 20000)")]
         public int decimationTargetTriangles = 20000;
 
-        [Tooltip("ポリゴン削減の配分計画(レンダラーごとの目標三角形数)。ウィンドウの「自動で配分計画を作成」で生成し、行ごとに編集・除外できる")]
+        [Tooltip("ポリゴン削減の配分計画(レンダラーごとの目標三角形数)。【1.6.0で廃止】ポリゴン削減はMeshia連携へ移行したため、この計画は変換時に適用されない(JSON互換のため残置)")]
         public List<PolygonPlanEntryData> decimationPlan = new List<PolygonPlanEntryData>();
+
+        // 【ポリゴン削減(Meshia連携)1.6.0】
+        //   ポリゴン削減は Meshia Mesh Simplification へ委譲する。変換時に複製の子GameObjectへ Cascading
+        //   コンポーネントを付与し、全体目標三角形数を設定する。実際の削減はビルド時(NDMF)に適用される。
+        //   Meshia / Modular Avatar 未導入時は付与されない(UIが導入を案内する)。
+        [Tooltip("Meshia連携: 変換時に複製へ Meshia 簡略化コンポーネントを付与する。実際のポリゴン削減はビルド時(NDMF)に適用される。既定はオフ")]
+        public bool enableMeshiaSimplification = false;
+
+        [Tooltip("Meshia連携の目標三角形数(目安: Excellent 7500 / Good 10000 / Medium 15000 / Poor 20000)")]
+        public int meshiaTargetTriangles = 20000;
 
         [Tooltip("生成アセットの出力先ルートフォルダ")]
         public string outputFolder = "Assets/RARA/QuestConverter/Generated";

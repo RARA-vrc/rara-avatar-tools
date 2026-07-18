@@ -17,7 +17,9 @@
 // ResolveAvatarObjectReference / GetMaterialSetterEntries / GetMaterialSwapEntries)も公開する。
 #if UNITY_EDITOR
 using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Reflection;
 using UnityEditor;
 using UnityEngine;
 
@@ -288,6 +290,216 @@ namespace RARA.QuestConverter
             if (type == null) return false; // Meshia 未導入 or 当該型なし(no-op)
             Component[] found = root.GetComponentsInChildren(type, true);
             return found != null && found.Length > 0;
+        }
+
+        // ================================================================
+        // アバター単位(Cascading)コンポーネントの付与・目標設定(リフレクション専用)
+        //   ポリゴン削減を Meshia へ委譲するため、複製アバターへ Cascading コンポーネントを付与し、
+        //   全体目標三角形数(TargetTriangleCount)と各エントリの按分目標を設定する。
+        //   ビルド時(NDMF)の簡略化はエントリごとの TargetTriangleCount のみを読むため、
+        //   本ツール側で目標比の按分を明示的に複製する(Meshia のインスペクタ内 AutoAdjust は
+        //   ヘッドレスでは走らないため)。Meshia / Modular Avatar 未導入時は全メソッドが安全に no-op。
+        // ================================================================
+
+        /// <summary>Cascading コンポーネントを付与する子GameObjectの名前(付与時に生成)。</summary>
+        public const string CascadingChildName = "Meshia Mesh Simplifier";
+
+        /// <summary>
+        /// Meshia のアバター単位(Cascading)コンポーネントが利用可能か(=Meshia + Modular Avatar 導入済み)。
+        /// Cascading 型は ENABLE_MODULAR_AVATAR 下でのみコンパイルされるため、型解決可否で判定する。
+        /// </summary>
+        public static bool IsCascadingAvailable()
+        {
+            return QuestCompat.FindType(CascadingTypeName) != null;
+        }
+
+        /// <summary>root 配下(非アクティブ含む)の最初の Cascading コンポーネントを返す。無ければ null。</summary>
+        public static Component FindCascading(GameObject root)
+        {
+            if (root == null) return null;
+            Type type = QuestCompat.FindType(CascadingTypeName);
+            if (type == null) return null;
+            Component[] found = root.GetComponentsInChildren(type, true);
+            return found != null && found.Length > 0 ? found[0] : null;
+        }
+
+        /// <summary>Cascading コンポーネントの全体目標三角形数(TargetTriangleCount)。読めなければ -1。</summary>
+        public static int GetCascadingTarget(Component cascading)
+        {
+            if (cascading == null) return -1;
+            FieldInfo f = cascading.GetType().GetField("TargetTriangleCount");
+            if (f == null || f.FieldType != typeof(int)) return -1;
+            return f.GetValue(cascading) is int i ? i : -1;
+        }
+
+        /// <summary>
+        /// avatarRoot 直下に新しい子GameObjectを作り、Cascading コンポーネントを付与して目標を設定する。
+        /// Cascading はルート自身に付けられない(scope 原点=parent が必要)ため、必ず子へ付ける。
+        /// Meshia / Modular Avatar 未導入・付与失敗時は null。返り値のコンポーネントの gameObject が生成した子。
+        /// </summary>
+        public static Component AddCascading(GameObject avatarRoot, int target)
+        {
+            if (avatarRoot == null) return null;
+            Type type = QuestCompat.FindType(CascadingTypeName);
+            if (type == null) return null; // Meshia + MA 未導入
+
+            var child = new GameObject(CascadingChildName);
+            child.transform.SetParent(avatarRoot.transform, false);
+
+            Component cascading = child.AddComponent(type);
+            if (cascading == null)
+            {
+                UnityEngine.Object.DestroyImmediate(child);
+                return null;
+            }
+            ConfigureCascading(cascading, target);
+            return cascading;
+        }
+
+        /// <summary>
+        /// 既存の Cascading コンポーネントの全体目標を更新し、各エントリの按分目標を再計算する(エディタ操作用)。
+        /// Undo に登録し Dirty 化する。cascading が null なら false。
+        /// </summary>
+        public static bool UpdateCascadingTarget(Component cascading, int target)
+        {
+            if (cascading == null) return false;
+            Undo.RegisterCompleteObjectUndo(cascading, "Meshia 目標を更新");
+            bool ok = ConfigureCascading(cascading, target);
+            EditorUtility.SetDirty(cascading);
+            return ok;
+        }
+
+        /// <summary>
+        /// Cascading コンポーネントのエントリを最新化(RefreshEntries)し、全体目標三角形数と AutoAdjust を設定した上で、
+        /// 各エントリの目標を目標比で按分する。ビルド時のNDMFはエントリごとの目標のみを読むため按分は必須。
+        /// </summary>
+        public static bool ConfigureCascading(Component cascading, int target)
+        {
+            if (cascading == null) return false;
+            InvokeRefreshEntries(cascading);
+            SetTopLevel(cascading, target);
+            ApplyDistribution(cascading, target);
+            return true;
+        }
+
+        /// <summary>public な RefreshEntries()(引数なし)をリフレクションで呼ぶ(所有レンダラーからエントリを補充)。</summary>
+        private static void InvokeRefreshEntries(Component cascading)
+        {
+            MethodInfo m = cascading.GetType().GetMethod("RefreshEntries", Type.EmptyTypes);
+            if (m != null) m.Invoke(cascading, null);
+        }
+
+        /// <summary>全体目標三角形数(TargetTriangleCount)と AutoAdjustEnabled=true を設定する。</summary>
+        private static void SetTopLevel(Component cascading, int target)
+        {
+            Type type = cascading.GetType();
+            FieldInfo tgt = type.GetField("TargetTriangleCount");
+            if (tgt != null && tgt.FieldType == typeof(int)) tgt.SetValue(cascading, Mathf.Max(1, target));
+            FieldInfo auto = type.GetField("AutoAdjustEnabled");
+            if (auto != null && auto.FieldType == typeof(bool)) auto.SetValue(cascading, true);
+        }
+
+        /// <summary>
+        /// 各エントリの目標三角形数を、元メッシュの三角形数に対する目標比で按分して設定する。
+        /// 元三角形数はエントリのレンダラー実測(解決失敗時はエントリ既定の TargetTriangleCount=付与直後の全数)を用いる。
+        /// 目標が合計以上(削減不要)・保護(!Enabled / Fixed)のエントリは元三角形数のまま据え置く。
+        /// </summary>
+        private static void ApplyDistribution(Component cascading, int target)
+        {
+            IList entries = GetEntries(cascading, out Type entryType);
+            if (entries == null || entryType == null) return;
+            FieldInfo fTgt = entryType.GetField("TargetTriangleCount");
+            if (fTgt == null) return;
+            FieldInfo fEnabled = entryType.GetField("Enabled");
+            FieldInfo fFixed = entryType.GetField("Fixed");
+            FieldInfo fRef = entryType.GetField("RendererObjectReference");
+
+            int n = entries.Count;
+            var originals = new int[n];
+            long grandTotal = 0;
+            for (int i = 0; i < n; i++)
+            {
+                object e = entries[i];
+                int fallback = e != null ? Mathf.Max(0, (int)fTgt.GetValue(e)) : 0;
+                int tris = fallback;
+                if (e != null && fRef != null)
+                {
+                    Mesh mesh = GetRendererMesh(ResolveRenderer(fRef.GetValue(e), cascading));
+                    int mtc = GetMeshTriangleCount(mesh);
+                    if (mtc > 0) tris = mtc;
+                }
+                originals[i] = tris;
+                grandTotal += Mathf.Max(0, tris);
+            }
+            if (grandTotal <= 0) return;
+
+            double ratio = (double)Mathf.Max(1, target) / grandTotal;
+            for (int i = 0; i < n; i++)
+            {
+                object e = entries[i];
+                if (e == null) continue;
+                int orig = Mathf.Max(1, originals[i]);
+                bool enabled = fEnabled == null || (bool)fEnabled.GetValue(e);
+                bool isFixed = fFixed != null && (bool)fFixed.GetValue(e);
+                int newTarget = (ratio >= 1.0 || !enabled || isFixed)
+                    ? orig
+                    : Mathf.Max(1, (int)Math.Round(orig * ratio));
+                fTgt.SetValue(e, newTarget);
+            }
+        }
+
+        /// <summary>Cascading の Entries(List)を IList として取り出し、要素型を out で返す。読めなければ null。</summary>
+        private static IList GetEntries(Component cascading, out Type entryType)
+        {
+            entryType = null;
+            FieldInfo f = cascading.GetType().GetField("Entries");
+            if (f == null) return null;
+            IList list = f.GetValue(cascading) as IList;
+            if (list == null) return null;
+            Type ft = f.FieldType;
+            if (ft.IsGenericType)
+            {
+                Type[] args = ft.GetGenericArguments();
+                if (args.Length == 1) entryType = args[0];
+            }
+            if (entryType == null && list.Count > 0 && list[0] != null) entryType = list[0].GetType();
+            return list;
+        }
+
+        /// <summary>AvatarObjectReference.Get(Component) をリフレクションで呼び、指すレンダラーを解決する。失敗時 null。</summary>
+        private static Renderer ResolveRenderer(object avatarObjectReference, Component container)
+        {
+            if (avatarObjectReference == null || container == null) return null;
+            try
+            {
+                MethodInfo getMethod = avatarObjectReference.GetType().GetMethod("Get", new[] { typeof(Component) });
+                if (getMethod == null) return null;
+                var go = getMethod.Invoke(avatarObjectReference, new object[] { container }) as GameObject;
+                return go != null ? go.GetComponent<Renderer>() : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>レンダラーが参照する共有メッシュ(SkinnedMeshRenderer / MeshFilter)。</summary>
+        private static Mesh GetRendererMesh(Renderer renderer)
+        {
+            if (renderer == null) return null;
+            var smr = renderer as SkinnedMeshRenderer;
+            if (smr != null) return smr.sharedMesh;
+            var filter = renderer.GetComponent<MeshFilter>();
+            return filter != null ? filter.sharedMesh : null;
+        }
+
+        /// <summary>メッシュの総三角形数(全サブメッシュのインデックス数合計 ÷ 3)。null なら 0。</summary>
+        private static int GetMeshTriangleCount(Mesh mesh)
+        {
+            if (mesh == null) return 0;
+            long total = 0;
+            for (int i = 0; i < mesh.subMeshCount; i++) total += mesh.GetIndexCount(i);
+            return (int)Math.Min(total / 3, int.MaxValue);
         }
     }
 }

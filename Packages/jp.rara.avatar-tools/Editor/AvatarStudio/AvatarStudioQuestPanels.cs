@@ -249,7 +249,7 @@ namespace RARA.AvatarStudio
             bool atlasEnabled = s.questEnableAtlas;
 
             bool enable = EditorGUILayout.ToggleLeft(
-                new GUIContent("アトラス統合を有効化(実験的)",
+                new GUIContent("アトラス統合(複数テクスチャを1枚化)を有効化(実験的:まれに見た目が崩れます)",
                     "互換性のある変換後マテリアルを1枚のアトラステクスチャに統合し、マテリアルスロット数を削減します"),
                 s.questEnableAtlas);
             if (enable != s.questEnableAtlas) { s.questEnableAtlas = enable; changed = true; }
@@ -262,7 +262,7 @@ namespace RARA.AvatarStudio
                 if (newMax != s.questAtlasMaxSize) { s.questAtlasMaxSize = newMax; changed = true; }
 
                 bool unify = EditorGUILayout.ToggleLeft(
-                    new GUIContent("影ランプを統一してグループ化(スロット削減優先)",
+                    new GUIContent("影ランプ(トゥーンの影の濃淡)を統合(スロット削減優先)",
                         "アトラス統合時、影ランプの違いを無視してグループ化する(1グループ=1代表ランプに統一)。" +
                         "影ランプが個別生成されるアバターでもスロットを大きく削減できる。影のトーンはグループ内で共通化される"),
                     s.questAtlasUnifyRamps);
@@ -563,8 +563,8 @@ namespace RARA.AvatarStudio
             using (new EditorGUI.DisabledScope(!aaoInstalled))
             {
                 bool remove = EditorGUILayout.ToggleLeft(
-                    new GUIContent("隠れた肌などをブレンドシェイプ削除で消す",
-                        "服の下に隠れる肌などをAAOのブレンドシェイプ削除で消す(shrinkブレンドシェイプ検出時。見えない部分のみ)"),
+                    new GUIContent("隠れた肌などをブレンドシェイプ削除で消す(ブレンドシェイプ=表情などの変形データ)",
+                        "服の下に隠れる肌などをAAOのブレンドシェイプ削除で消す(肌を縮める(shrink)ブレンドシェイプ検出時。見えない部分のみ)"),
                     s.questRemoveHiddenMeshByBlendShape);
                 if (remove != s.questRemoveHiddenMeshByBlendShape) { s.questRemoveHiddenMeshByBlendShape = remove; changed = true; }
 
