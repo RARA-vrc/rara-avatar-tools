@@ -637,6 +637,15 @@ namespace RARA.QuestConverter
                     AAOMeshRemovalHelper.EnsureTraceAndOptimize(clone, report);
                 }
 
+                // --- 9.8. Network ID割り当て(PC/Quest間の揺れ物の掴み同期) ---
+                // PhysBoneの選択・マージ・トリム(step 7〜9)より後に置き、クローンの生存コンポーネントだけを対象にする。
+                // 両モード(QuestConvert / ConsolidateOnly)で実行する(PC/Quest両版に同じIDを振ることが目的のため)。
+                if (settings.assignNetworkIds)
+                {
+                    EditorUtility.DisplayProgressBar(ProgressTitle, "Network IDを割り当て中...", 0.94f);
+                    NetworkIdAssigner.AssignNetworkIds(sourceGo, sourceAvatar, clone, report);
+                }
+
                 // --- 10. 元アバターの非アクティブ化 ---
                 if (settings.deactivateOriginal)
                 {

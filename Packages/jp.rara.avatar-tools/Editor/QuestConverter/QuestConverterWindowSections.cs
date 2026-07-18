@@ -2704,6 +2704,12 @@ namespace RARA.QuestConverter
                         // 透過マテリアルの既定処理は「3. マテリアル設定」の「透過マテリアルの既定処理」
                         // ドロップダウン(再現/非表示/不透明)へ集約したため、ここには置かない。
 
+                        _settings.assignNetworkIds = EditorGUILayout.ToggleLeft(
+                            new GUIContent("Network IDを割り当てる(PC/Quest間の揺れ物の掴み同期)",
+                                "PhysBoneなどの揺れ物へNetwork IDを割り当て、PC(_Opt)版とQuest(_Quest)版で同じ揺れ物が同じIDになるようにします。" +
+                                "他ユーザーから見た掴み/ポーズ/ストレッチの同期がPC/Quest間でズレるのを防ぎます(元アバター基準で採番)。既定はオン"),
+                            _settings.assignNetworkIds);
+
                         _settings.deactivateOriginal = EditorGUILayout.ToggleLeft(
                             new GUIContent("変換後に元アバターを非アクティブ化",
                                 "変換後に元のアバターを非アクティブ化する(元アバター自体は変更されません)"),

@@ -147,6 +147,15 @@ namespace RARA.PCOptimizer
                     AAOMeshRemovalHelper.EnsureTraceAndOptimize(clone, report);
                 }
 
+                // --- 8.5. Network ID割り当て(PC/Quest間の揺れ物の掴み同期) ---
+                // 両クローンで同じ論理PhysBoneが同じIDになるようにする。PhysBone整理(step 7)より後・プレファブ保存
+                // (step 10)より前に置き、クローンの生存コンポーネントを対象にしつつ保存物へIDが含まれるようにする。
+                if (settings.assignNetworkIds)
+                {
+                    EditorUtility.DisplayProgressBar(ProgressTitle, "Network IDを割り当て中...", 0.84f);
+                    NetworkIdAssigner.AssignNetworkIds(avatar, avatar.GetComponent<VRCAvatarDescriptor>(), clone, report);
+                }
+
                 // --- 9. Windows基準でパフォーマンスを再計測し、前後を報告(目標超過はエラー+助言) ---
                 EditorUtility.DisplayProgressBar(ProgressTitle, "パフォーマンスを再計測中...", 0.85f);
                 PerfSnapshot after = PerfEval.Compute(clone);

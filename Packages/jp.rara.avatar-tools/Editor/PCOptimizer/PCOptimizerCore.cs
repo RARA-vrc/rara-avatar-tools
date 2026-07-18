@@ -108,6 +108,9 @@ namespace RARA.PCOptimizer
         [Tooltip("AAOのTrace and Optimizeが無ければ複製へ追加し、ビルド時のメッシュ/スロット統合を有効にする")]
         public bool ensureTraceAndOptimize = true;
 
+        [Tooltip("PhysBoneなどの揺れ物へNetwork IDを割り当て、PC(_Opt)版とQuest(_Quest)版で同じ揺れ物が同じIDになるようにする。他ユーザーから見た掴み/ポーズ/ストレッチの同期がPC/Quest間でズレるのを防ぐ(元アバター基準で採番。既定はオン)")]
+        public bool assignNetworkIds = true;
+
         // 【SkinnedMesh統合】顔(ビセーム/まばたき)以外の SkinnedMeshRenderer を AAO MergeSkinnedMesh で
         //   1つへ統合し、SMR数・マテリアルスロット数を削減する(PC Good上限=SMR2対策)。統合はビルド時
         //   (NDMF)にAAOが行い、ブレンドシェイプ改名・スロット再マップ・アニメ再パスもAAOが行うため、

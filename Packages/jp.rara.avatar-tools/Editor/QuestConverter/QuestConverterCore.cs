@@ -250,6 +250,9 @@ namespace RARA.QuestConverter
         [Tooltip("OptInモードで残すPhysBoneの識別パス(プレビューで「残す」を選んだもの)。マージ後(POST-MERGE)のレイアウト基準")]
         public List<string> physBoneKeepPaths = new List<string>();
 
+        [Tooltip("PhysBoneなどの揺れ物へNetwork IDを割り当て、PC(_Opt)版とQuest(_Quest)版で同じ揺れ物が同じIDになるようにする。他ユーザーから見た掴み/ポーズ/ストレッチの同期がPC/Quest間でズレるのを防ぐ(元アバター基準で採番。既定はオン)")]
+        public bool assignNetworkIds = true;
+
         [Tooltip("変換後に元のアバターを非アクティブ化する")]
         public bool deactivateOriginal = true;
 

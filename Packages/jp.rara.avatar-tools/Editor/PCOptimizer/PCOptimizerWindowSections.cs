@@ -1106,10 +1106,16 @@ namespace RARA.PCOptimizer
                     new GUIContent("AAOのTrace and Optimizeを追加(未導入時はスキップ)",
                         "AAO(Avatar Optimizer)がある場合、複製にTrace and Optimizeを追加してビルド時の未使用ボーン削減・メッシュ結合を有効にします"),
                     _settings.ensureTraceAndOptimize);
+                bool assignNetworkIds = EditorGUILayout.ToggleLeft(
+                    new GUIContent("Network IDを割り当てる(PC/Quest間の揺れ物の掴み同期)",
+                        "PhysBoneなどの揺れ物へNetwork IDを割り当て、PC(_Opt)版とQuest(_Quest)版で同じ揺れ物が同じIDになるようにします。" +
+                        "他ユーザーから見た掴み/ポーズ/ストレッチの同期がPC/Quest間でズレるのを防ぎます(元アバター基準で採番)。既定はオン"),
+                    _settings.assignNetworkIds);
                 if (EditorGUI.EndChangeCheck())
                 {
                     _settings.savePrefab = savePrefab;
                     _settings.ensureTraceAndOptimize = ensureTao;
+                    _settings.assignNetworkIds = assignNetworkIds;
                     SaveSettings();
                 }
 
