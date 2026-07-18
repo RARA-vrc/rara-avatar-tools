@@ -929,6 +929,38 @@ namespace RARA.QuestConverter
             return false;
         }
 
+        /// <summary>IsFaceLikeName が顔と判定するキーワード(部分一致・大文字小文字無視)。</summary>
+        private static readonly string[] FaceNameKeywords = { "face", "顔", "フェイス" };
+
+        /// <summary>
+        /// IsFaceLikeName が顔と判定する短いローマ字キーワード(単語一致・大文字小文字無視)。
+        /// 部分一致だと "Forehead"(額)や "Headphone" 等の無関係な名前に誤反応するため、
+        /// 前後が英字でない位置での一致のみ顔とみなす("kao_base" や "Head01" は一致する)。
+        /// </summary>
+        private static readonly string[] FaceNameWholeWordKeywords = { "kao", "head" };
+
+        /// <summary>
+        /// 名前が顔パーツを示すか(大文字小文字を区別しない)。
+        /// GameObject名・メッシュ名・マテリアル名の判定に使い、一致した場合は顔の基底マテリアル保護
+        /// (半透明の自動再現でパーティクル化され顔が真っ白=のっぺらぼうになるのを防ぐ)の候補とする。
+        /// 部分一致キーワード: face / 顔 / フェイス。
+        /// 単語一致キーワード: kao / head(前後が英字でない位置のみ。額 Forehead / Headphone 等の誤爆を防ぐ)。
+        /// null・空文字は false。
+        /// </summary>
+        public static bool IsFaceLikeName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            foreach (string keyword in FaceNameKeywords)
+            {
+                if (name.IndexOf(keyword, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            }
+            foreach (string keyword in FaceNameWholeWordKeywords)
+            {
+                if (ContainsWholeWord(name, keyword)) return true;
+            }
+            return false;
+        }
+
         /// <summary>
         /// name の中に keyword が「単語」として含まれるか(前後が英字でない位置での一致のみ。大文字小文字無視)。
         /// 例: "front_bang" や "Bang" は "bang" に一致するが、"Bangle" は一致しない。
@@ -1052,6 +1084,35 @@ namespace RARA.QuestConverter
         public static bool IsOverlayEmulationName(string name)
         {
             return ClassifyOverlayEmulation(name) != OverlayEmulationMode.None;
+        }
+
+        // ================================================================
+        // 顔のオプション重ね(オーバーレイ)の名前判定
+        // ================================================================
+
+        /// <summary>
+        /// 顔レンダラー上のオプション重ね(オーバーレイ)を示すトークン(部分一致・大文字小文字を区別しない)。
+        /// チーク・涙・ハイライト・メイク・そばかす・頬影など、顔の基底(素肌)ではなく上に重ねる演出。
+        /// これらは顔の基底マテリアル保護の対象外とし、従来どおり乗算/加算での半透明再現・非表示化へ回す
+        /// (基底=不透明で保護、オーバーレイ=乗算/加算で近似、という顔の役割分担)。
+        /// </summary>
+        public static readonly string[] FaceOverlayNameTokens =
+        {
+            "cheek", "チーク", "頬", "blush", "赤面", "照れ",
+            "tear", "涙", "namida", "泣",
+            "highlight", "ハイライト", "catchlight", "キャッチライト", "キラ",
+            "makeup", "メイク", "化粧",
+            "freckle", "そばかす",
+            "shadow", "影", "シャドウ",
+        };
+
+        /// <summary>
+        /// マテリアル名が顔のオプション重ね(チーク・涙・ハイライト・メイク・そばかす・頬影等)を示すか。
+        /// FaceOverlayNameTokens のいずれかを部分一致(大文字小文字を区別しない)で含めば true。null/空は false。
+        /// </summary>
+        public static bool IsFaceOverlayName(string name)
+        {
+            return ContainsAnyToken(name, FaceOverlayNameTokens);
         }
 
         // ================================================================

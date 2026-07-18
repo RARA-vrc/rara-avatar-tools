@@ -59,10 +59,13 @@ namespace RARA.QuestConverter
         /// suppressTransparentHide が true の場合、透過の再現・非表示化ブランチをスキップして全モードで
         /// 不透明として変換する(大型メッシュ・髪で使用される透過マテリアル用。透過→不透明化の警告は
         /// 従来どおり報告される)。手動指定の Hide は抑制されず常に非表示化する。
+        /// faceBaseProtected が true の場合も同様に不透明として変換する(顔の基底マテリアル用。
+        /// のっぺらぼう=顔が真っ白になる事故を防ぐため、半透明の自動再現でパーティクル化させない。
+        /// 透過の扱い(Emulate=乗算/加算・Hide=非表示)によらず常に不透明化する。手動指定は従来どおり優先される)。
         /// assets は生成アセットの安定パス払い出し・書き込み記録用コンテキスト
         /// (オーケストレーターが1変換につき1つ渡す。null なら単体呼び出し用に内部生成する)。
         /// </summary>
-        public static Material Convert(Material src, QuestConvertSettings settings, string outputDir, ConversionReport report, MaterialUsage usage = MaterialUsage.Default, MaterialOverride overrideMode = MaterialOverride.Auto, bool suppressTransparentHide = false, ConversionAssetContext assets = null)
+        public static Material Convert(Material src, QuestConvertSettings settings, string outputDir, ConversionReport report, MaterialUsage usage = MaterialUsage.Default, MaterialOverride overrideMode = MaterialOverride.Auto, bool suppressTransparentHide = false, ConversionAssetContext assets = null, bool faceBaseProtected = false)
         {
             // ---- (1) null ----
             if (src == null) return null;
@@ -203,10 +206,11 @@ namespace RARA.QuestConverter
                     //   Emulate: 乗算/加算のパーティクルシェーダーで半透明を再現(既定)
                     //   Hide:    不可視マテリアルへ差し替えて非表示化
                     //   Opaque:  不透明として変換(以降の通常パス。透過は失われる)
-                    // 大型メッシュ・髪の保護(suppressTransparentHide)は全モードで不透明変換を強制する
-                    // (乗算/加算は Unlit のため髪には不向き。非表示化も髪が丸ごと消えるため不可)。
+                    // 大型メッシュ・髪の保護(suppressTransparentHide)・顔の基底保護(faceBaseProtected)は
+                    // 全モードで不透明変換を強制する(乗算/加算は Unlit のため髪・顔には不向き。非表示化も
+                    // 髪が丸ごと消える/顔がのっぺらぼうになるため不可)。
                     bool isTransparent = QuestCompat.ClassifyTransparency(src) == QuestCompat.TransparencyClass.Transparent;
-                    bool emulateOrHideTransparent = isTransparent && !suppressTransparentHide;
+                    bool emulateOrHideTransparent = isTransparent && !suppressTransparentHide && !faceBaseProtected;
 
                     if (emulateOrHideTransparent && settings.transparentHandling == TransparentHandling.Hide)
                     {
@@ -219,8 +223,16 @@ namespace RARA.QuestConverter
                     }
                     else
                     {
-                        // 不透明として変換する場合(不透明マテリアル / Opaqueモードの透過 / 保護された髪の透過)
-                        if (isTransparent && suppressTransparentHide)
+                        // 不透明として変換する場合(不透明マテリアル / Opaqueモードの透過 / 保護された髪・顔の透過)。
+                        // 顔の基底保護は髪保護より優先してメッセージを出す(顔は乗算/加算では白く/暗く化けるため)。
+                        if (isTransparent && faceBaseProtected)
+                        {
+                            // 変換先は settings.shaderTarget に従う(髪と同じ経路)。既定は Toon Standard だが
+                            // Toon Lit 指定時も同じ経路で変換されるため、実際のターゲット名を報告する。
+                            string faceTargetLabel = settings.shaderTarget == QuestShaderTarget.ToonStandard ? "Toon Standard" : "Toon Lit";
+                            report.Info(string.Format("『{0}』: 顔のマテリアルのため不透明({1})で変換しました(半透明の自動再現の対象外)。", src.name, faceTargetLabel));
+                        }
+                        else if (isTransparent && suppressTransparentHide)
                         {
                             report.Info(string.Format("『{0}』は大型メッシュ/髪で使用されている透過マテリアルのため乗算/加算での再現や非表示化は行わず、不透明として変換します(透過保護)。", src.name));
                         }

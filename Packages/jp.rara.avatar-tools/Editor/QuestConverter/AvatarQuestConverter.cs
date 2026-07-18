@@ -292,6 +292,19 @@ namespace RARA.QuestConverter
                     ? CollectSuppressTransparentHideMaterials(clone, null, settings, report)
                     : new HashSet<Material>();
 
+                // --- 3.7b. 顔の基底マテリアル保護(のっぺらぼう防止)対象の収集 ---
+                // 顔レンダラー(VRCAvatarDescriptor の VisemeSkinnedMesh / eyelidsSkinnedMesh、または名前が
+                // face・顔・head 等)上の、オーバーレイ名(チーク・涙・ハイライト・メイク・そばかす・頬影)を
+                // 持たない透過マテリアル=顔の基底(素肌)は、半透明の自動再現でパーティクル化されると
+                // 明るいアルベドが加算パーティクルへ化けて顔が真っ白(のっぺらぼう)になる。これを防ぐため、
+                // 透過の扱い(Emulate/Hide)によらず常に不透明(Toon Standard)として変換する。
+                // 収集結果は suppressTransparentHide へ併合し、以降の不透明変換・アトラス判定・アニメ参照の
+                // 扱いを髪・大型メッシュ保護と共通化する(faceBaseMaterials は顔専用メッセージの選択にのみ使う)。
+                HashSet<Material> faceBaseMaterials = (questConvert && ShouldCollectSuppressTransparentHide(settings))
+                    ? CollectFaceBaseMaterials(clone, null)
+                    : new HashSet<Material>();
+                suppressTransparentHide.UnionWith(faceBaseMaterials);
+
                 // --- 3.75. Opaqueモードでの表情デカール強制非表示 ---
                 // Opaque モードは透過を一律不透明化するが、表情デカール(チーク・涙等の透過オーバーレイ)を
                 // 不透明化すると顔に赤/青の板が出るため、デカールだけは非表示化する(ピン留め契約)。
@@ -393,9 +406,9 @@ namespace RARA.QuestConverter
 
                     if (usedByMesh)
                     {
-                        // 大型メッシュ・髪で使用される透過マテリアルは非表示化を抑制して不透明変換する
-                        // (メッシュ用途のみ。手動指定の Hide は変換器側で常に優先される)
-                        Material converted = MaterialQuestConverter.Convert(src, settings, outputDir, report, MaterialUsage.Default, overrideMode, suppressTransparentHide.Contains(src), assets);
+                        // 大型メッシュ・髪で使用される透過マテリアル、および顔の基底マテリアルは非表示化・
+                        // 半透明再現を抑制して不透明変換する(メッシュ用途のみ。手動指定の Hide は変換器側で常に優先される)
+                        Material converted = MaterialQuestConverter.Convert(src, settings, outputDir, report, MaterialUsage.Default, overrideMode, suppressTransparentHide.Contains(src), assets, faceBaseMaterials.Contains(src));
                         if (converted != null && converted != src)
                         {
                             materialMap[src] = converted;
@@ -1058,6 +1071,7 @@ namespace RARA.QuestConverter
         /// </summary>
         private static int HideFullyTransparentRenderers(GameObject clone, ConversionReport report)
         {
+            HashSet<Renderer> faceRenderers = CollectStructuralFaceRenderers(clone);
             var candidates = new List<Renderer>();
             bool anyRendererKept = false;
             foreach (Renderer renderer in clone.GetComponentsInChildren<Renderer>(true))
@@ -1074,6 +1088,16 @@ namespace RARA.QuestConverter
                 {
                     string keptPath = QuestCompat.GetRelativePath(clone.transform, renderer.transform);
                     report.Info($"『{keptPath}』は透過マテリアルですが大型メッシュ/髪と判定したため非表示化しません(不透明として変換)。見た目はマテリアル設定で調整できます。");
+                    anyRendererKept = true;
+                    continue;
+                }
+                // 顔メッシュ(ビセーム/まばたきメッシュ、または名前が face・顔・head 等)も非表示化しない。
+                // 非表示にすると顔が丸ごと消えてのっぺらぼうになるため、基底マテリアルは不透明として変換する
+                // (顔の基底マテリアルは step 3.7b の CollectFaceBaseMaterials で保護集合へ入る)。
+                if (IsFaceRenderer(renderer, faceRenderers))
+                {
+                    string keptPath = QuestCompat.GetRelativePath(clone.transform, renderer.transform);
+                    report.Info($"『{keptPath}』は透過マテリアルですが顔メッシュと判定したため非表示化しません(基底は不透明として変換)。");
                     anyRendererKept = true;
                     continue;
                 }
@@ -1305,6 +1329,101 @@ namespace RARA.QuestConverter
                 if (material != null && QuestCompat.IsHairLikeName(material.name)) return true;
             }
             return false;
+        }
+
+        /// <summary>
+        /// VRCAvatarDescriptor が顔として参照するレンダラー(リップシンクの口メッシュ VisemeSkinnedMesh・
+        /// まばたき用メッシュ eyelidsSkinnedMesh)を集める。SkinnedMeshMergePlanner.CollectFaceRenderers と
+        /// 同じ構造ベースの顔判定で、顔の基底マテリアル保護(のっぺらぼう防止)・全スロット透過レンダラーの
+        /// 顔除外に使う。descriptor が無い場合は空集合。
+        /// </summary>
+        private static HashSet<Renderer> CollectStructuralFaceRenderers(GameObject root)
+        {
+            var set = new HashSet<Renderer>();
+            if (root == null) return set;
+            VRCAvatarDescriptor descriptor = root.GetComponentInChildren<VRCAvatarDescriptor>(true);
+            if (descriptor == null) return set;
+
+            // リップシンク(ビセーム/あごブレンドシェイプ)用の口メッシュ
+            if ((descriptor.lipSync == VRC.SDKBase.VRC_AvatarDescriptor.LipSyncStyle.VisemeBlendShape ||
+                 descriptor.lipSync == VRC.SDKBase.VRC_AvatarDescriptor.LipSyncStyle.JawFlapBlendShape) &&
+                descriptor.VisemeSkinnedMesh != null)
+            {
+                set.Add(descriptor.VisemeSkinnedMesh);
+            }
+
+            // アイトラッキングのまばたき(ブレンドシェイプ方式)用メッシュ
+            if (descriptor.enableEyeLook)
+            {
+                VRCAvatarDescriptor.CustomEyeLookSettings eye = descriptor.customEyeLookSettings;
+                if (eye.eyelidType == VRCAvatarDescriptor.EyelidType.Blendshapes &&
+                    eye.eyelidsSkinnedMesh != null)
+                {
+                    set.Add(eye.eyelidsSkinnedMesh);
+                }
+            }
+
+            return set;
+        }
+
+        /// <summary>
+        /// レンダラーが顔メッシュか。構造(VRCAvatarDescriptor が VisemeSkinnedMesh / eyelidsSkinnedMesh として
+        /// 登録=structuralFaceRenderers に含まれる)を優先し、無ければ GameObject 名・メッシュ名の顔トークン
+        /// (QuestCompat.IsFaceLikeName)で判定する。構造が名前より優先されるが、判定順は結果に影響しない
+        /// (どちらか一方でも該当すれば顔)。
+        /// </summary>
+        private static bool IsFaceRenderer(Renderer renderer, HashSet<Renderer> structuralFaceRenderers)
+        {
+            if (renderer == null) return false;
+            if (structuralFaceRenderers != null && structuralFaceRenderers.Contains(renderer)) return true;
+            if (QuestCompat.IsFaceLikeName(renderer.gameObject.name)) return true;
+            Mesh mesh = GetRendererMesh(renderer);
+            if (mesh != null && QuestCompat.IsFaceLikeName(mesh.name)) return true;
+            return false;
+        }
+
+        /// <summary>
+        /// 顔の基底マテリアル保護(のっぺらぼう防止)対象を収集する。Mesh/SkinnedMeshRenderer のみ対象で、
+        /// EditorOnlyサブツリー配下と extraExcludedRoots 配下は一貫して無視する(Convert では null、
+        /// プレビューでは除外シミュレーション後のルートを渡す)。
+        ///
+        /// 【保護対象】顔レンダラー(IsFaceRenderer=構造 or 名前)上、またはマテリアル名が顔を示す
+        /// (QuestCompat.IsFaceLikeName)透過(アルファブレンド)マテリアルのうち、
+        /// 顔オーバーレイ名(QuestCompat.IsFaceOverlayName=チーク・涙・ハイライト・メイク・そばかす・頬影)を
+        /// 持たないもの=顔の基底(素肌)を保護する。オーバーレイ名を持つものは顔の重ね演出のため保護せず、
+        /// 従来どおり乗算/加算での半透明再現・非表示化へ回す(基底=不透明、重ね=乗算/加算の役割分担)。
+        /// 【曖昧規則】顔レンダラー上のオーバーレイ名を持たない透過は基底とみなして保護する
+        /// (白い顔より、見える不透明の顔パーツの方がまし)。髪マテリアルは顔保護の対象外(髪保護に委ねる)。
+        /// カットアウト・不透明はそもそも半透明再現の対象外のため収集しない(顔メッセージも不要)。
+        /// </summary>
+        private static HashSet<Material> CollectFaceBaseMaterials(GameObject root, List<Transform> extraExcludedRoots)
+        {
+            var result = new HashSet<Material>();
+            if (root == null) return result;
+            HashSet<Renderer> structuralFace = CollectStructuralFaceRenderers(root);
+
+            foreach (Renderer renderer in root.GetComponentsInChildren<Renderer>(true))
+            {
+                if (!(renderer is SkinnedMeshRenderer) && !(renderer is MeshRenderer)) continue;
+                if (IsInEditorOnlySubtree(renderer.transform, root.transform)) continue;
+                if (IsUnderAny(renderer.transform, extraExcludedRoots)) continue;
+                bool rendererIsFace = IsFaceRenderer(renderer, structuralFace);
+                foreach (Material material in renderer.sharedMaterials)
+                {
+                    if (material == null) continue;
+                    // 透過(アルファブレンド)のみ保護対象。不透明・カットアウトは通常の不透明変換で十分。
+                    if (QuestCompat.ClassifyTransparency(material) != QuestCompat.TransparencyClass.Transparent) continue;
+                    // 顔レンダラー上、またはマテリアル名が顔を示すもの。
+                    if (!rendererIsFace && !QuestCompat.IsFaceLikeName(material.name)) continue;
+                    // 顔のオプション重ね(チーク・涙・ハイライト・メイク・そばかす・頬影等)は基底ではないため
+                    // 保護しない(従来どおり乗算/加算で再現/非表示化する)。
+                    if (QuestCompat.IsFaceOverlayName(material.name)) continue;
+                    // 髪マテリアルは顔保護の対象外(髪は髪の保護ロジックに委ねる)。
+                    if (QuestCompat.IsHairLikeName(material.name)) continue;
+                    result.Add(material);
+                }
+            }
+            return result;
         }
 
         /// <summary>
@@ -1918,6 +2037,14 @@ namespace RARA.QuestConverter
                     ? CollectSuppressTransparentHideMaterials(root, excludedRoots, settings, null) // プレビューはレポート無し(警告は実行時に出す)
                     : new HashSet<Material>();
 
+                // 顔の基底マテリアル保護(のっぺらぼう防止)を Convert の step 3.7b と同じ規則で
+                // シミュレートし、suppressTransparentHide へ併合する(planner==executor を保つ)。
+                // faceBaseMaterials は顔専用の予定表示(BuildMeshPlannedAction)の選択にのみ使う。
+                HashSet<Material> faceBaseMaterials = ShouldCollectSuppressTransparentHide(settings)
+                    ? CollectFaceBaseMaterials(root, excludedRoots)
+                    : new HashSet<Material>();
+                suppressTransparentHide.UnionWith(faceBaseMaterials);
+
                 // Opaqueモードでの表情デカール強制非表示を Convert(step 3.75)と同じ規則でシミュレートする。
                 // これを行わないと Opaque+デカールの予定行が「不透明として変換」を表示し、
                 // 実行時の強制Hide(ConvertToHidden)と食い違う(planner==executor を保つ)。
@@ -1981,9 +2108,10 @@ namespace RARA.QuestConverter
                         };
                         bool suppressedHide = suppressTransparentHide.Contains(src);
                         row.suppressTransparentHide = suppressedHide;
+                        bool faceBaseProtected = faceBaseMaterials.Contains(src);
                         // Auto のときのみ強制Hideされる(手動オーバーライドは Convert 側で優先される)。
                         bool forceHideDecal = mode == MaterialOverride.Auto && forceHideDecals.Contains(src);
-                        row.plannedAction = BuildPlannedAction(src, settings, mode, effectiveMeshUse, usedByParticle, transparency, isMobileAlready, isTMP, isBrokenShader, suppressedHide, forceHideDecal);
+                        row.plannedAction = BuildPlannedAction(src, settings, mode, effectiveMeshUse, usedByParticle, transparency, isMobileAlready, isTMP, isBrokenShader, suppressedHide, forceHideDecal, faceBaseProtected);
                         bool usedByMA = maReferencedMaterials.Contains(src);
                         row.atlasIneligibleReason = GetAtlasIneligibleReason(root, excludedRoots, src, settings, overrideEntry, usedByMesh, usedByParticle, usedByAnimation, usedByMA, transparency, isMobileAlready, isTMP, isBrokenShader, suppressedHide);
                         row.atlasEligible = row.atlasIneligibleReason == null;
@@ -2109,7 +2237,7 @@ namespace RARA.QuestConverter
         /// suppressTransparentHide は Convert の step 3.7(大型メッシュ・髪で使用される透過マテリアルの
         /// 非表示化抑制)に対応する(メッシュ用途の自動判定にのみ影響する)。
         /// </summary>
-        private static string BuildPlannedAction(Material src, QuestConvertSettings settings, MaterialOverride mode, bool effectiveMeshUse, bool usedByParticle, QuestCompat.TransparencyClass transparency, bool isMobileAlready, bool isTMP, bool isBrokenShader, bool suppressTransparentHide, bool forceHideDecal)
+        private static string BuildPlannedAction(Material src, QuestConvertSettings settings, MaterialOverride mode, bool effectiveMeshUse, bool usedByParticle, QuestCompat.TransparencyClass transparency, bool isMobileAlready, bool isTMP, bool isBrokenShader, bool suppressTransparentHide, bool forceHideDecal, bool faceBaseProtected)
         {
             if (isBrokenShader) return "変換しない(シェーダー破損)";
 
@@ -2133,7 +2261,7 @@ namespace RARA.QuestConverter
                 if (auxKind == QuestCompat.OverlayOnlyShaderKind.FakeShadow) return "非表示化(疑似影)";
             }
 
-            string meshAction = effectiveMeshUse ? BuildMeshPlannedAction(src, settings, mode, transparency, suppressTransparentHide) : null;
+            string meshAction = effectiveMeshUse ? BuildMeshPlannedAction(src, settings, mode, transparency, suppressTransparentHide, faceBaseProtected) : null;
             string particleAction = usedByParticle ? BuildParticlePlannedAction(src, mode) : null;
 
             if (meshAction != null && particleAction != null) return meshAction + " / パーティクル用: " + particleAction;
@@ -2142,7 +2270,7 @@ namespace RARA.QuestConverter
         }
 
         /// <summary>メッシュ用途(アニメーションのみ参照を含む)の変換予定。</summary>
-        private static string BuildMeshPlannedAction(Material src, QuestConvertSettings settings, MaterialOverride mode, QuestCompat.TransparencyClass transparency, bool suppressTransparentHide)
+        private static string BuildMeshPlannedAction(Material src, QuestConvertSettings settings, MaterialOverride mode, QuestCompat.TransparencyClass transparency, bool suppressTransparentHide, bool faceBaseProtected)
         {
             // Toon Standard / Toon Lit は透過・カットアウト非対応(不透明として変換される)
             string opaqueNote = transparency != QuestCompat.TransparencyClass.Opaque ? "・不透明として変換(透過は失われる)" : string.Empty;
@@ -2159,6 +2287,11 @@ namespace RARA.QuestConverter
             // Auto: MaterialQuestConverter のラダー(透過の扱い → lilToon → 汎用)をなぞる
             if (transparency == QuestCompat.TransparencyClass.Transparent)
             {
+                // 顔の基底マテリアルは透過の扱いによらず常に不透明変換(のっぺらぼう防止)。髪保護より優先表示。
+                if (faceBaseProtected)
+                {
+                    return "不透明として変換(顔の基底マテリアルのため半透明再現の対象外)";
+                }
                 // 保護対象の透過マテリアルは再現・非表示化が抑制され、不透明として変換される。
                 // Emulate は髪ストランド本体のみ保護(オーバーレイ名は再現へ回る)、Hide は大型メッシュ・髪を保護。
                 if (suppressTransparentHide)
