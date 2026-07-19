@@ -446,6 +446,17 @@ namespace RARA.AvatarStudio
                         s.questConvertAnimations);
                     if (anim != s.questConvertAnimations) { s.questConvertAnimations = anim; changed = true; }
 
+                    // マットキャップ引き継ぎは Toon Standard 変換時のみ意味を持つため、対象時だけ表示する
+                    // (標準の Quest 対応ツールと同じ設定 questConvertMatCap → quest.convertMatCap へ写像)。
+                    if (s.shaderTarget == QuestShaderTarget.ToonStandard)
+                    {
+                        bool matCap = EditorGUILayout.ToggleLeft(
+                            new GUIContent("マットキャップを引き継ぐ",
+                                "オフにするとマットキャップを引き継ぎません(Quest版では削除相当)。映り込みが乱れる・エラーが出る場合はオフにすると安定することがあります"),
+                            s.questConvertMatCap);
+                        if (matCap != s.questConvertMatCap) { s.questConvertMatCap = matCap; changed = true; }
+                    }
+
                     bool removeUnsupported = EditorGUILayout.ToggleLeft(
                         new GUIContent("⚠ 非対応コンポーネントを削除",
                             "生成されるQuest複製から、Android非対応コンポーネント(Cloth/Camera/Light/AudioSource等)を削除する(元アバターは変更されません)"),
@@ -567,13 +578,13 @@ namespace RARA.AvatarStudio
                         "服の下に隠れる肌などをAAOのブレンドシェイプ削除で消す(肌を縮める(shrink)ブレンドシェイプ検出時。見えない部分のみ)"),
                     s.questRemoveHiddenMeshByBlendShape);
                 if (remove != s.questRemoveHiddenMeshByBlendShape) { s.questRemoveHiddenMeshByBlendShape = remove; changed = true; }
-
-                bool ensureTao = EditorGUILayout.ToggleLeft(
-                    new GUIContent("Trace and Optimizeが無ければ複製に追加",
-                        "AAOのTrace and Optimizeが無ければ複製に追加してビルド時最適化を有効にする"),
-                    s.ensureTraceAndOptimize);
-                if (ensureTao != s.ensureTraceAndOptimize) { s.ensureTraceAndOptimize = ensureTao; changed = true; }
             }
+
+            // [S5] AAO(Trace and Optimize)付与のトグルは⑦実行の実行オプションへ一本化した。
+            // ここには重複トグルを置かず、統合先を案内するだけにする(1リリースの経過措置)。
+            EditorGUILayout.LabelField(
+                "AAO(Trace and Optimize)の付与は⑦実行の設定に統合しました。",
+                AvatarStudioUI.MiniWrapLabel);
 
             // 候補リストは機能有効かつAAO導入時のみ表示する(表示判定は描画前に捕捉した値を使う)
             if (aaoInstalled && showHiddenList)

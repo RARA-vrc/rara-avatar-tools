@@ -350,6 +350,8 @@ namespace RARA.PCOptimizer
                 }
 
                 // ---- 4. グループごとにパッキング → 合成 → マテリアル生成 ----
+                // アトラス統合で外したマットキャップ材質を集約し(実際に統合できたぶんだけ後段で数える)、まとめて1件のInfoへ出す。
+                var matcapStripped = new List<Material>();
                 for (int gi = 0; gi < mergeGroups.Count; gi++)
                 {
                     Group group = mergeGroups[gi];
@@ -357,7 +359,7 @@ namespace RARA.PCOptimizer
                     EditorUtility.DisplayProgressBar(ProgressTitle, string.Format("アトラス合成中 ({0}/{1})...", gi + 1, mergeGroups.Count), progress);
                     try
                     {
-                        BuildOneGroup(group, atlasMaxSize, blitMat, passTint, passUnpack, settings, outputDir, assets, result, report);
+                        BuildOneGroup(group, atlasMaxSize, blitMat, passTint, passUnpack, settings, outputDir, assets, result, report, matcapStripped);
                     }
                     catch (Exception ex)
                     {
@@ -369,6 +371,25 @@ namespace RARA.PCOptimizer
                             result.cellRects.Remove(cell.src);
                         }
                     }
+                }
+
+                // 外したマットキャップをまとめて通知する(名前一覧は上限あり)。映り込みを残したい場合の逃げ道も案内する。
+                // 実際にアトラスへ統合できたメンバー(result.atlasMap に残っているもの)だけを数える。パッキング/整合性/
+                // 保存失敗で除外されたセルや、例外で据え置いたグループのメンバーは元マットキャップのまま残るため、過大報告しない。
+                var matcapStrippedNames = new List<string>();
+                foreach (Material stripped in matcapStripped)
+                {
+                    if (stripped != null && result.atlasMap.ContainsKey(stripped)) matcapStrippedNames.Add(stripped.name);
+                }
+                if (matcapStrippedNames.Count > 0)
+                {
+                    const int nameCap = 20;
+                    string names = matcapStrippedNames.Count <= nameCap
+                        ? string.Join(", ", matcapStrippedNames)
+                        : string.Join(", ", matcapStrippedNames.GetRange(0, nameCap)) + string.Format(", ...他{0}件", matcapStrippedNames.Count - nameCap);
+                    report.Info(string.Format(
+                        "アトラス統合のためマットキャップを外しました: {0}件({1})。映り込みを残したい場合はそのマテリアルを『アトラス除外』に指定してください。",
+                        matcapStrippedNames.Count, names));
                 }
             }
             finally
@@ -387,11 +408,20 @@ namespace RARA.PCOptimizer
         /// atlasMaxSize アトラスに収まらない場合は、品質を潰し切るのではなく複数枚(ビン)へ分割する。
         /// これにより「単一アトラスをどんな低品質でも維持する」旧挙動(mat_face/body/hair が128pxまで崩れる)を避ける。
         /// </remarks>
-        private static void BuildOneGroup(Group group, int atlasMaxSize, Material blitMat, int passTint, int passUnpack, PCOptimizeSettings settings, string outputDir, ConversionAssetContext assets, AtlasBuildResult result, ConversionReport report)
+        private static void BuildOneGroup(Group group, int atlasMaxSize, Material blitMat, int passTint, int passUnpack, PCOptimizeSettings settings, string outputDir, ConversionAssetContext assets, AtlasBuildResult result, ConversionReport report, List<Material> matcapStripped)
         {
             // グループを1枚以上のアトラス(ビン)へ分割する(1枚に収まればビンは1つ)。
             List<List<Cell>> bins = PartitionGroupIntoBins(group, atlasMaxSize, report);
             if (bins.Count == 0) return;
+
+            // このグループは統合される(=マージ出力へ集約される)。マットキャップを持つメンバーは、マージ出力で
+            // マットキャップが外れる(白飛び回避)。ここでは候補を記録するだけ(この時点では統合の成否は未確定)。
+            // 実際に統合できたか(パッキング/整合性/保存失敗や例外で据え置かれていないか)は、後段で result.atlasMap と
+            // 突き合わせて数える。実際の無効化は CreateAtlasMaterial がマージ出力に対して行う。
+            foreach (Cell cell in group.cells)
+            {
+                if (cell.src != null && HasAtlasMatcap(cell.src)) matcapStripped.Add(cell.src);
+            }
 
             // アウトライン統合・カリング統一・質感差警告はグループ単位で一度だけ確定する(全ビン共通の代表・設定)。
             ResolveOutlineRepresentative(group, settings.atlasOutlineUnifyMode, report);
@@ -752,7 +782,6 @@ namespace RARA.PCOptimizer
             public string reason;   // !eligible 時の除外文言(実行の excluded 用)
             public BlockKind kind;  // プレビューの理由分類
             public string key;      // eligible 時のグループキー
-            public string matcapKey; // マットキャップ同一性サブキー(lilToon _UseMatCap=1 用。ComposeKey 再計算と共有)
             public Shader shader;   // 実シェーダー(理由・系統判定用)
             public int? cull;       // カリング値(混在検出用。プロパティ無しは null)
             public bool isOutline;  // アウトライン系メンバーか(代表選定用)
@@ -870,7 +899,6 @@ namespace RARA.PCOptimizer
             c.isOutline = isOutline;
             c.eyeName = IsEyeOrFaceSensitiveName(src.name);
             c.eyeGuarded = ShouldEyeGuard(src, settings.atlasOutlineUnifyMode);
-            c.matcapKey = MatcapKeyFor(src);
             c.key = GroupKeyFor(src, settings);
             return c;
         }
@@ -946,34 +974,34 @@ namespace RARA.PCOptimizer
             bool eyeGuard = ShouldEyeGuard(src, settings.atlasOutlineUnifyMode);
             string shaderKey = ShaderFamilyKey(src.shader, settings.atlasOutlineUnifyMode, eyeGuard);
             string baseKey = settings.atlasIgnoreCull ? shaderKey : shaderKey + "|" + ReadCull(src);
-            return baseKey + MatcapKeyFor(src);
+            // 1.7.0: マットキャップはアトラス統合時に外す(グループ分割の要因にしない)。異なるマットキャップ同士でも
+            // 統合できるようになり、アトラス効率が上がる(以前は _MatCapTex 同一性でグループを分けていた)。
+            return baseKey;
         }
 
         /// <summary>
-        /// lilToon で _UseMatCap=1 のマテリアルのマットキャップ同一性サブキー(それ以外は空文字)。
-        /// 統合時にマットキャップテクスチャは代表1枚へ統一される(代表プロパティ)ため、異なるマットキャップを
-        /// 1グループへ混ぜて片方を失わないよう、マットキャップテクスチャの同一性をキーへ折り込む。
-        /// マットキャップ無しのマテリアルは空文字を返し、従来どおりのグループ化を維持する。
+        /// アトラス統合で外す対象のマットキャップ(lilToon の _UseMatCap / _UseMatCap2nd)を持つか。
+        /// lilToon のマットキャップは _MatCapBlendMask 等を UV0 でサンプルするため、アトラスのUV再配置で
+        /// マスクが別セルを指し、代表プロパティへの統一とあいまって全面が金属マットキャップで白飛びする
+        /// (既知の白飛びバグ。Quest側は1.1.0でマスク除外済み、PC側は未対応だった)。統合時は必ず外す。
         /// </summary>
-        private static string MatcapKeyFor(Material src)
+        private static bool HasAtlasMatcap(Material mat)
         {
-            if (src == null || src.shader == null || !QuestCompat.IsLilToonShader(src.shader)) return string.Empty;
-            if (!(src.HasProperty("_UseMatCap") && src.GetFloat("_UseMatCap") > 0.5f)) return string.Empty;
-            Texture tex = src.HasProperty("_MatCapTex") ? src.GetTexture("_MatCapTex") : null;
-            string texId;
-            if (tex == null)
-            {
-                texId = "none";
-            }
-            else
-            {
-                string guid;
-                long localId;
-                texId = AssetDatabase.TryGetGUIDAndLocalFileIdentifier(tex, out guid, out localId) && !string.IsNullOrEmpty(guid)
-                    ? guid + ":" + localId
-                    : "iid:" + tex.GetInstanceID();
-            }
-            return "|mc:" + texId;
+            if (mat == null || mat.shader == null || !QuestCompat.IsLilToonShader(mat.shader)) return false;
+            if (mat.HasProperty("_UseMatCap") && mat.GetFloat("_UseMatCap") > 0.5f) return true;
+            if (mat.HasProperty("_UseMatCap2nd") && mat.GetFloat("_UseMatCap2nd") > 0.5f) return true;
+            return false;
+        }
+
+        /// <summary>
+        /// アトラスマテリアル(代表メンバーのコピー=マージ出力)のマットキャップを無効化する。
+        /// 元マテリアルは複製済みで無改変。UV再配置による白飛びを避けるため、統合時は必ず外す。
+        /// </summary>
+        private static void DisableAtlasMatcap(Material mat)
+        {
+            if (mat == null) return;
+            if (mat.HasProperty("_UseMatCap")) mat.SetFloat("_UseMatCap", 0f);
+            if (mat.HasProperty("_UseMatCap2nd")) mat.SetFloat("_UseMatCap2nd", 0f);
         }
 
         /// <summary>
@@ -1142,6 +1170,7 @@ namespace RARA.PCOptimizer
             public bool twoSided;                                            // カリング混在 → Cull Off(両面)
             public readonly List<string> outlineAdded = new List<string>();   // アウトラインが付与される plain メンバー(付きに統一)
             public readonly List<string> outlineRemoved = new List<string>(); // アウトラインが外れるアウトライン版メンバー(外して統合)
+            public readonly List<string> matcapRemoved = new List<string>();  // アトラス統合で外れるマットキャップ材質(lilToon _UseMatCap)
         }
 
         /// <summary>統合できないマテリアル1件の表示情報。</summary>
@@ -1219,6 +1248,7 @@ namespace RARA.PCOptimizer
             foreach (int mi in members)
             {
                 g.memberNames.Add(eligibleSrc[mi] != null ? eligibleSrc[mi].name : "(不明)");
+                if (eligibleSrc[mi] != null && HasAtlasMatcap(eligibleSrc[mi])) g.matcapRemoved.Add(eligibleSrc[mi].name);
                 if (eligible[mi].cull.HasValue) cullValues.Add(eligible[mi].cull.Value);
                 if (eligible[mi].isOutline) { anyOutline = true; if (outlineShader == null) outlineShader = eligible[mi].shader; }
                 else if (plainShader == null && IsFamilyShader(eligible[mi].shader)) plainShader = eligible[mi].shader;
@@ -1332,7 +1362,8 @@ namespace RARA.PCOptimizer
             bool eyeGuard = mode == OutlineUnifyMode.アウトライン付きに統一 && c.eyeName && IsPlainFamily(c.shader);
             string shaderKey = ShaderFamilyKey(c.shader, mode, eyeGuard);
             string baseKey = ignoreCull ? shaderKey : shaderKey + "|" + (c.cull.HasValue ? c.cull.Value.ToString() : "n");
-            return baseKey + (c.matcapKey ?? string.Empty);
+            // 1.7.0: マットキャップは統合時に外すためグループキーへ折り込まない(GroupKeyFor と同一規約)。
+            return baseKey;
         }
 
         /// <summary>シェーダーがアウトライン系統の plain(アウトライン版でない)メンバーか。</summary>
@@ -1947,6 +1978,12 @@ namespace RARA.PCOptimizer
             Material rep = group.cells[0].src;
             var mat = new Material(rep); // 質感は代表メンバーに統一(元シェーダーを保持)
             mat.name = baseName;
+
+            // アトラス統合時はマットキャップを外す(UV再配置で _MatCapBlendMask 等が別セルを指し、代表プロパティ
+            // 統一とあいまって全面が金属マットキャップで白飛びするため)。代表(先頭)メンバーのコピー=マージ出力に
+            // 対して確実に無効化する。元マテリアルは複製済みで無改変。映り込みを残したいマテリアルは『アトラス除外』
+            // を指定すれば、統合対象から外れマットキャップも保持される。
+            DisableAtlasMatcap(mat);
 
             // アウトラインを外して統合(モード1): 代表がアウトライン版しか無い場合、アトラスコピーの
             // シェーダーをプレーンlilToonへ差し替える(アウトライン専用プロパティは未使用になるだけで無害)。

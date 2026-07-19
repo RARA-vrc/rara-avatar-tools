@@ -135,6 +135,7 @@ namespace RARA.AvatarStudio
             quest.aggressiveTextureReduction = s.questAggressiveTextureReduction;
             quest.generateShadowRamp = s.questGenerateShadowRamp;
             quest.bakeEmission = s.questBakeEmission;
+            quest.convertMatCap = s.questConvertMatCap;
             quest.bakeShadowIntoMainTex = s.questBakeShadowIntoMainTex;
             quest.mapRimLighting = s.questMapRimLighting;
             quest.convertAnimations = s.questConvertAnimations;

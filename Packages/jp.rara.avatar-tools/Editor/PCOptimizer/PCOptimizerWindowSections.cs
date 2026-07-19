@@ -264,6 +264,10 @@ namespace RARA.PCOptimizer
 
                 if (_settings.enableAtlas)
                 {
+                    EditorGUILayout.HelpBox(
+                        "アトラス統合時はマットキャップを外します(UV再配置でマットキャップのマスクが壊れ、白飛びするため)。" +
+                        "映り込みを残したいマテリアルは『アトラス除外』に指定してください。",
+                        MessageType.Info);
                     DrawAtlasMergePreview();
                     DrawAtlasExcludeList();
                 }
@@ -338,6 +342,10 @@ namespace RARA.PCOptimizer
                         if (group.outlineRemoved != null && group.outlineRemoved.Count > 0)
                         {
                             EditorGUILayout.LabelField("・アトラス統合によりアウトラインが外れます: " + string.Join(", ", group.outlineRemoved), _miniWrapLabel);
+                        }
+                        if (group.matcapRemoved != null && group.matcapRemoved.Count > 0)
+                        {
+                            EditorGUILayout.LabelField("・マットキャップは外れます: " + string.Join(", ", group.matcapRemoved), _miniWrapLabel);
                         }
                     }
                 }
@@ -916,6 +924,15 @@ namespace RARA.PCOptimizer
                 _miniWrapLabel);
 
             DrawPhysBonePCRankLadder(projected);
+
+            // [LIMITS CLARITY] 目標ランクとPoor上限、超過時の崖(即Very Poor)を1行で明示する。
+            // PCはPoor上限超過でもアップロード・動作可能でランクが下がるだけ(上の説明・Questとの違いと整合させる)。
+            EditorGUILayout.LabelField(string.Format(
+                "PhysBone上限: 目標{0} {1} / Poor上限 {2}(超過するとVery Poor。PCは動作しますがランクが下がります)",
+                TargetRankName(_settings.targetRank),
+                PCRankLimits.GetLimit(_settings.targetRank, PCRankLimits.PCStat.PhysBoneComponents),
+                PCRankLimits.GetLimit(PCTargetRank.Poor, PCRankLimits.PCStat.PhysBoneComponents)),
+                _miniWrapLabel);
         }
 
         /// <summary>
@@ -1119,7 +1136,8 @@ namespace RARA.PCOptimizer
                 bool assignNetworkIds = EditorGUILayout.ToggleLeft(
                     new GUIContent("Network IDを割り当てる(PC/Quest間の揺れ物の掴み同期)",
                         "PhysBoneなどの揺れ物へNetwork IDを割り当て、PC(_Opt)版とQuest(_Quest)版で同じ揺れ物が同じIDになるようにします。" +
-                        "他ユーザーから見た掴み/ポーズ/ストレッチの同期がPC/Quest間でズレるのを防ぎます(元アバター基準で採番)。既定はオン"),
+                        "他ユーザーから見た掴み/ポーズ/ストレッチの同期がPC/Quest間でズレるのを防ぎます(元アバター基準で採番)。既定はオン。" +
+                        "※これはPC版とQuest版を対にして使うための設定です。Quest版を作らないPC単独運用では効果がありません"),
                     _settings.assignNetworkIds);
                 bool instantMeasure = EditorGUILayout.ToggleLeft(
                     new GUIContent("変換直後に即時実測する(ビルド/Play不要)",

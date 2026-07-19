@@ -2,10 +2,10 @@
 
 ## 概要
 
-VRChatアバターの軽量化とQuest/iOS対応を支援するUnityエディタ拡張ツールです。すべての操作は1つの統合ウィンドウ(Avatar Studio)で行います。Unity のメニューには次の2項目だけが追加されます。
+VRChatアバターの軽量化とQuest/iOS対応を支援するUnityエディタ拡張ツールです。すべての操作は1つの統合ウィンドウ(Avatar Studio)で行います。Unity のメニューには次の項目が追加されます。
 
-- RARA / PC軽量化ツール: 統合ウィンドウを PC 対象で開く(ウィンドウ内で Quest にも切替可)
-- RARA / Quest対応ツール: 統合ウィンドウを Quest 対象で開く(ウィンドウ内で PC にも切替可)
+- RARA / アバター軽量化・Quest・iOS対応ツール: 統合ウィンドウを開く(上部のチップで対象を PC / Quest(または両方)に切り替えて使います)
+- RARA / 実測レポート: ビルド/Play 時の実測レポートウィンドウを開く(後述)
 
 内部的には PC最適化エンジン(PC Optimizer)と Quest/iOS変換エンジン(Quest Converter)を共有しています。各機能の詳細は Docs フォルダを参照してください。
 

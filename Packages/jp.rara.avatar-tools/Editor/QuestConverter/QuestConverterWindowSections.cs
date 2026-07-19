@@ -694,16 +694,12 @@ namespace RARA.QuestConverter
                 }
             }
 
-            if (!_settings.mergePhysBones)
-            {
-                GUI.color = NoteYellowColor;
-                EditorGUILayout.LabelField(
-                    "※「9. 変換設定」の「PhysBoneをマージして削減」がオフのため、マージは実行されません(グループも各チェーンが個別に残ります)。",
-                    _miniWrapLabel);
-                GUI.color = defaultColor;
-            }
-
             DrawPhysBoneRankLadder(projected);
+
+            // [LIMITS CLARITY] Quest は Poor上限を超えると分野単位で揺れものが全停止する崖を1行で明示する。
+            EditorGUILayout.LabelField(
+                "PhysBone上限: Poor上限 " + QuestLimits.PoorPhysBoneComponents + "(超過分野があると揺れもの全停止)",
+                _miniWrapLabel);
         }
 
         /// <summary>
@@ -1047,18 +1043,32 @@ namespace RARA.QuestConverter
                     : "チェックを外した揺れものだけを削除します。残りはすべて残ります。",
                 _miniWrapLabel);
 
-            // ルーズマージトグル(変更でプレビュー再計算)
+            // [S8] マージ設定(1.7.0でセクション9からこのPhysBoneセクションへ移設。プレビューの直近で切り替えられる)。
+            // ルーズマージはマージ有効時のみ意味を持つため DisabledScope で従属させる(PCOptimizerと同じ配置)。
             EditorGUI.BeginChangeCheck();
-            bool loose = EditorGUILayout.ToggleLeft(
-                new GUIContent("設定が異なるチェーンもマージ(先頭の設定に統一)",
-                    "同じ親を持つ揺れものを、設定が違っていても先頭メンバーの設定に統一して1つにまとめます。" +
-                    "アニメ制御・パラメータ使用・カーブ設定などの安全ゲートは維持されます(それらは引き続きマージされません)"),
-                _settings.physBoneLooseMerge);
+            bool merge = EditorGUILayout.ToggleLeft(
+                new GUIContent("PhysBoneをマージして削減(揺れを維持)",
+                    "設定が一致する兄弟PhysBoneチェーンを1つのコンポーネントへマージし、揺れを維持したまま" +
+                    "コンポーネント数を削減する(Medium上限" + QuestLimits.MediumPhysBoneComponents +
+                    "/Poor上限" + QuestLimits.PoorPhysBoneComponents + "への対策)。" +
+                    "パラメータ使用・アニメーションによるON/OFF制御・カーブ設定があるものなど、" +
+                    "挙動が変わる恐れのあるPhysBoneは自動で対象外になる(理由は変換レポートに表示)"),
+                _settings.mergePhysBones);
+            bool loose = _settings.physBoneLooseMerge;
+            using (new EditorGUI.DisabledScope(!merge))
+            {
+                loose = EditorGUILayout.ToggleLeft(
+                    new GUIContent("設定が異なるチェーンもマージ(先頭の設定に統一)",
+                        "同じ親を持つ揺れものを、設定が違っていても先頭メンバーの設定に統一して1つにまとめます。" +
+                        "アニメ制御・パラメータ使用・カーブ設定などの安全ゲートは維持されます(それらは引き続きマージされません)"),
+                    _settings.physBoneLooseMerge);
+            }
             if (EditorGUI.EndChangeCheck())
             {
+                _settings.mergePhysBones = merge;
                 _settings.physBoneLooseMerge = loose;
                 SaveSettings();
-                QueuePhysBonePreviewRefresh();  // マージ結果が変わるため再計算(looseMergeをプレビューへ反映)
+                QueuePhysBonePreviewRefresh();  // マージ結果が変わるため再計算(merge/looseMergeをプレビューへ反映)
             }
 
             // 優先度で自動選択(OptInモードのみ)
@@ -3009,14 +3019,7 @@ namespace RARA.QuestConverter
                                 "Unityコンストレイントを見つけたらVRCConstraintへ変換する(SDKの変換APIを使用)"),
                             _settings.convertUnityConstraints);
 
-                        _settings.mergePhysBones = EditorGUILayout.ToggleLeft(
-                            new GUIContent("PhysBoneをマージして削減(揺れを維持)",
-                                "設定が一致する兄弟PhysBoneチェーンを1つのコンポーネントへマージし、揺れを維持したまま" +
-                                "コンポーネント数を削減する(Medium上限" + QuestLimits.MediumPhysBoneComponents +
-                                "/Poor上限" + QuestLimits.PoorPhysBoneComponents + "への対策)。" +
-                                "パラメータ使用・アニメーションによるON/OFF制御・カーブ設定があるものなど、" +
-                                "挙動が変わる恐れのあるPhysBoneは自動で対象外になる(理由は変換レポートに表示)"),
-                            _settings.mergePhysBones);
+                        // [S8] 「PhysBoneをマージして削減」トグルは 4.PhysBone設定 セクション(プレビュー直近)へ移設した。
 
                         _settings.trimPhysBonesToPoorLimit = EditorGUILayout.ToggleLeft(
                             new GUIContent("⚠ マージ後もPoor上限を超える場合に超過分を削除",

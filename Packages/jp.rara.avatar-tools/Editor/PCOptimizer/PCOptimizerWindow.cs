@@ -596,7 +596,7 @@ namespace RARA.PCOptimizer
                 GUI.color = defaultColor;
 
                 EditorGUILayout.LabelField(
-                    "※三角数(ポリゴン)は Good/Medium/Poor いずれも 70,000 が上限です。本ツールは三角数を削りません。",
+                    "※三角数(ポリゴン)は Good/Medium/Poor いずれも 70,000 が上限で、70,000 を超えると即 Very Poor になります(崖)。本ツールは三角数を削りません(削減はMeshia連携でビルド時)。",
                     _miniWrapLabel);
             }
         }
@@ -683,7 +683,7 @@ namespace RARA.PCOptimizer
         /// <summary>診断テーブルに出す項目(PCRankLimits.PCStat で閾値が取れる12項目)。</summary>
         private static readonly PCStatDef[] StatDefs =
         {
-            new PCStatDef("三角数(ポリゴン)", "メッシュの三角ポリゴン数。PCは Good/Medium/Poor いずれも70,000が上限(本ツールでは削減不可)", PCRankLimits.PCStat.Triangles, AvatarPerformanceCategory.PolyCount),
+            new PCStatDef("三角数(ポリゴン)", "メッシュの三角ポリゴン数。PCは Good/Medium/Poor いずれも70,000が上限で、70,000超で即Very Poor(本ツールでは削減不可。削減はMeshia連携でビルド時)", PCRankLimits.PCStat.Triangles, AvatarPerformanceCategory.PolyCount),
             new PCStatDef("スキンメッシュ数", "SkinnedMeshRendererの数。トグル整理・アトラス統合・AAO結合で削減", PCRankLimits.PCStat.SkinnedMeshes, AvatarPerformanceCategory.SkinnedMeshCount),
             new PCStatDef("メッシュレンダラー数", "MeshRendererの数", PCRankLimits.PCStat.MeshRenderers, AvatarPerformanceCategory.MeshCount),
             new PCStatDef("マテリアルスロット数", "全レンダラーのマテリアルスロット合計。アトラス統合・トグル整理で削減", PCRankLimits.PCStat.MaterialSlots, AvatarPerformanceCategory.MaterialCount),

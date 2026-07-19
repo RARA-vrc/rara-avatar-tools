@@ -207,6 +207,14 @@ namespace RARA.AvatarStudio
                     GUILayout.FlexibleSpace();
                 }
             }
+
+            // [LIMITS CLARITY] PCの三角数は Good/Medium/Poor いずれも70,000で共通のため、超過の崖(即Very Poor)が見えにくい。脚注で明示する。
+            if (showPC)
+            {
+                EditorGUILayout.LabelField(
+                    "※三角数(ポリゴン)はPCの Good/Medium/Poor いずれも70,000が上限で、70,000超で即Very Poor(本ツールは三角数を削りません。削減はMeshia連携でビルド時)。",
+                    EditorStyles.wordWrappedMiniLabel);
+            }
         }
 
         /// <summary>現在値セル。目標超過なら赤字。</summary>

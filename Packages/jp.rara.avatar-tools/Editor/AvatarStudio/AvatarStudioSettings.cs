@@ -220,6 +220,9 @@ namespace RARA.AvatarStudio
         [Tooltip("Quest: エミッションを変換する(Toon Lit=メインへ加算ベイク / Toon Standard=Emissionへマップ)")]
         public bool questBakeEmission = true;
 
+        [Tooltip("Quest: Toon Standard時、lilToonのマットキャップ(金属・宝石等の映り込み)をToon Standardのマットキャップへ引き継ぐ(既定はオン。オフでQuest版は削除相当)")]
+        public bool questConvertMatCap = true;
+
         [Tooltip("Quest: Toon Lit時、lilToonの影色をメインテクスチャに乗算ベイクする(フラットな擬似陰影)")]
         public bool questBakeShadowIntoMainTex = true;
 

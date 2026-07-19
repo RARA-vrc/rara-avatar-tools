@@ -382,6 +382,10 @@ namespace RARA.AvatarStudio
                     ApplyPreset(Preset.FullBoth);
                 }
             }
+            // [S6] プリセット選択の1行ガイド(詳しい説明は⑧ヘルプに残す)。
+            EditorGUILayout.LabelField(
+                "Questだけ→おまかせQuest対応 / PCも軽くする→フル両対応 / PCのみ→PCをGood(またはPoor)に",
+                AvatarStudioUI.MiniWrapLabel);
         }
 
         private enum Preset { RoughQuest, PcPoor, PcGood, FullBoth }
@@ -520,14 +524,17 @@ namespace RARA.AvatarStudio
 
                 foreach (StudioMetricRow row in over)
                 {
+                    // [S7] この項目がQuest対象で超過しているか(PC単独超過ならQuest固有の対処は出さない)。
+                    bool rowQuestOver = _settings.targetQuest
+                        && (row.questOverLimit || AvatarStudioDiagnostics.IsOverGoal(row.questRating, questGoal));
                     using (new EditorGUILayout.HorizontalScope())
                     {
                         Color prev = GUI.color;
                         GUI.color = AvatarStudioUI.OverLimitColor;
-                        EditorGUILayout.LabelField("・" + row.label + ": " + SuggestionForStat(row.label), AvatarStudioUI.WrapLabel);
+                        EditorGUILayout.LabelField("・" + row.label + ": " + SuggestionForStat(row.label, rowQuestOver), AvatarStudioUI.WrapLabel);
                         GUI.color = prev;
 
-                        int step = StepForStat(row.label);
+                        int step = StepForStat(row.label, rowQuestOver);
                         if (step > 0)
                         {
                             if (GUILayout.Button(new GUIContent("→ ステップ" + step + "で対応"), GUILayout.Width(140f)))
@@ -540,13 +547,20 @@ namespace RARA.AvatarStudio
             }
         }
 
-        /// <summary>診断項目ラベルに対応する推奨アクション文言(旧 GetGoalActionForCategory の移植)。</summary>
-        private static string SuggestionForStat(string label)
+        /// <summary>
+        /// 診断項目ラベルに対応する推奨アクション文言(旧 GetGoalActionForCategory の移植)。
+        /// includeQuestActions=false(PC単独での超過)のときは、三角数の対処に Quest 固有の手段(Quest除外)を出さない。
+        /// </summary>
+        private static string SuggestionForStat(string label, bool includeQuestActions)
         {
             switch (label)
             {
                 case "三角数(ポリゴン)":
-                    return "AAO隠面メッシュ削除・不要衣装をQuest除外・ポリゴン削減(Meshia連携)で目標へ(削減はビルド時)";
+                    // [S7] Quest超過なら Quest除外・Meshia連携を案内。ポリゴン削減(Meshia)はQuest複製のみ走るため、
+                    // PC単独超過では Meshia連携へ誘導せず、外部の減面ツールを案内する(PCOptimizerと同じ方針)。
+                    return includeQuestActions
+                        ? "AAO隠面メッシュ削除・不要衣装をQuest除外・ポリゴン削減(Meshia連携)で目標へ(削減はビルド時)"
+                        : "本ツールでは削減不可。外部の減面ツールで70,000以下にしてください";
                 case "スキンメッシュ数":
                 case "メッシュ数":
                     return "構成整理で『常時表示』またはSkinnedMesh統合";
@@ -575,11 +589,13 @@ namespace RARA.AvatarStudio
         }
 
         /// <summary>診断項目ラベルに対応する対応ステップ番号(0=対応する専用ステップなし)。</summary>
-        private static int StepForStat(string label)
+        /// <remarks>三角数のポリゴン削減(Meshia連携)はQuest固有(⑤はQuest対象時のみ設定可)のため、
+        /// Quest超過(questOver)のときだけステップ5へ誘導する。PC単独超過では専用ステップなし(0)。</remarks>
+        private static int StepForStat(string label, bool questOver)
         {
             switch (label)
             {
-                case "三角数(ポリゴン)": return 5;   // ポリゴン削減
+                case "三角数(ポリゴン)": return questOver ? 5 : 0;   // ポリゴン削減(Quest固有)
                 case "スキンメッシュ数": return 2;   // 構成整理
                 case "メッシュ数": return 2;          // 構成整理
                 case "マテリアルスロット数": return 6; // マテリアル(アトラス)

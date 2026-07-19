@@ -507,9 +507,24 @@ namespace RARA.AvatarStudio
             // 無効時: レンダラーごとに同じ「統合しない」行を並べず、1つの案内 + 目立つ有効化ボタンだけを見せる(既存のquick-enable)。
             if (capturedMode == SkinnedMeshMergeMode.None)
             {
+                // [S1] 「2まで削減」は顔(自動保護)+統合1本の結果値。どの基準の上限に当たるかは対象で異なるため、
+                // PC(SkinnedMesh上限 Excellent 1 / Good 2)と Quest(Poor上限 2)を対象に応じて明示する。
+                int pcSmrExcellent = PCRankLimits.GetLimit(PCTargetRank.Excellent, PCRankLimits.PCStat.SkinnedMeshes);
+                int pcSmrGood = PCRankLimits.GetLimit(PCTargetRank.Good, PCRankLimits.PCStat.SkinnedMeshes);
+                string smrBasis;
+                if (s.targetPC && s.targetQuest)
+                    smrBasis = "PCのSkinnedMesh上限は Excellent " + pcSmrExcellent + " / Good " + pcSmrGood +
+                        "、QuestはPoor上限 " + QuestLimits.PoorSkinnedMeshes + " が基準です";
+                else if (s.targetPC)
+                    smrBasis = "PCのSkinnedMesh上限は Excellent " + pcSmrExcellent + " / Good " + pcSmrGood + " が基準です";
+                else if (s.targetQuest)
+                    smrBasis = "QuestのSkinnedMesh上限は Poor " + QuestLimits.PoorSkinnedMeshes + " が基準です";
+                else
+                    smrBasis = "対象(PC / Quest)を選ぶと基準の上限を表示します";
                 EditorGUILayout.HelpBox(
                     "SkinnedMesh統合は無効です。『顔以外を統合』にすると、顔以外の SkinnedMeshRenderer を" +
-                    "ビルド時に1つへ統合し、SkinnedMesh数を2まで削減できます(表示/非表示トグルは無効化されます)。",
+                    "ビルド時に1つへ統合し、SkinnedMesh数を(顔+統合1本で)概ね2まで削減できます" +
+                    "(表示/非表示トグルは無効化されます)。" + smrBasis + "。",
                     MessageType.Info);
                 if (GUILayout.Button(new GUIContent("顔以外を統合を有効にする",
                     "顔(口パク・まばたき)以外の SkinnedMeshRenderer を1つへ統合するモードに切り替えます"), GUILayout.Height(28f)))
@@ -745,15 +760,33 @@ namespace RARA.AvatarStudio
                 {
                     EditorGUILayout.LabelField(string.Format("現在 {0} 個 → 選択後(概算) {1} 個", preview.currentComponentCount, projected), EditorStyles.boldLabel);
                     GUILayout.FlexibleSpace();
+                    // [S1] 自動選択の基準上限は対象で決める: Quest対象ならQuest上限(8本)、
+                    // PC単独なら目標ランクのPCコンポーネント上限(Excellent4/Good8/Medium16/Poor32)。
+                    bool autoQuestBasis = s.targetQuest;
+                    int autoCap = autoQuestBasis
+                        ? QuestLimits.PoorPhysBoneComponents
+                        : PCRankLimits.GetLimit(s.pcTargetRank, PCRankLimits.PCStat.PhysBoneComponents);
+                    string autoRankName = AvatarStudioDiagnostics.GoalRankNames[Mathf.Clamp((int)s.pcTargetRank, 0, 3)];
+                    string autoBasisLabel = autoQuestBasis
+                        ? "Quest上限(" + autoCap + "本)"
+                        : "PC " + autoRankName + "上限(" + autoCap + "本)";
+                    string autoButtonLabel = autoQuestBasis
+                        ? "優先度で自動選択(Quest " + autoCap + "本まで)"
+                        : "優先度で自動選択(PC " + autoRankName + " " + autoCap + "本まで)";
+                    string autoLadder = autoQuestBasis
+                        ? QuestPhysBoneLadderText()
+                        : "PC ランク別コンポーネント上限: Excellent " + PCRankLimits.GetLimit(PCTargetRank.Excellent, PCRankLimits.PCStat.PhysBoneComponents) +
+                          " / Good " + PCRankLimits.GetLimit(PCTargetRank.Good, PCRankLimits.PCStat.PhysBoneComponents) +
+                          " / Medium " + PCRankLimits.GetLimit(PCTargetRank.Medium, PCRankLimits.PCStat.PhysBoneComponents) +
+                          " / Poor " + PCRankLimits.GetLimit(PCTargetRank.Poor, PCRankLimits.PCStat.PhysBoneComponents);
                     using (new EditorGUI.DisabledScope(preview.rows == null || preview.rows.Count == 0))
                     {
-                        if (GUILayout.Button(new GUIContent("優先度で自動選択(Quest 8本まで)",
-                            "髪・胸などの名前から優先度の高い揺れものを、Quest上限(" + QuestLimits.PoorPhysBoneComponents +
-                            "本)内で残し、残りを「削除」に設定します(現在の削除選択は置き換えられます)。\n" +
-                            QuestPhysBoneLadderText() + "(この上限がボタン名の「8本」です)"),
-                            GUILayout.Width(230f)))
+                        if (GUILayout.Button(new GUIContent(autoButtonLabel,
+                            "髪・胸などの名前から優先度の高い揺れものを、" + autoBasisLabel +
+                            "内で残し、残りを削除にします(現在の削除選択は置き換えられます)。\n" + autoLadder),
+                            GUILayout.Width(250f)))
                         {
-                            if (AutoSelectPhysBonesForQuestCap(avatarRoot, s)) changed = true;
+                            if (AutoSelectPhysBonesForCap(avatarRoot, s, autoCap, autoBasisLabel)) changed = true;
                         }
                     }
                 }
@@ -769,6 +802,13 @@ namespace RARA.AvatarStudio
                         PCRankLimits.GetLimit(PCTargetRank.Good, PCRankLimits.PCStat.PhysBoneComponents),
                         PCRankLimits.GetLimit(PCTargetRank.Medium, PCRankLimits.PCStat.PhysBoneComponents),
                         PCRankLimits.GetLimit(PCTargetRank.Poor, PCRankLimits.PCStat.PhysBoneComponents));
+                    // [LIMITS CLARITY] PhysBone上限の要点(目標/Poor上限とVery Poorの崖)を1行で明示する。
+                    EditorGUILayout.LabelField(string.Format(
+                        "PhysBone上限: 目標{0} {1} / Poor上限 {2}(超過するとVery Poor: PhysBone・コンタクト・コンストレイントが全停止し得ます)",
+                        AvatarStudioDiagnostics.GoalRankNames[Mathf.Clamp((int)s.pcTargetRank, 0, 3)],
+                        PCRankLimits.GetLimit(s.pcTargetRank, PCRankLimits.PCStat.PhysBoneComponents),
+                        PCRankLimits.GetLimit(PCTargetRank.Poor, PCRankLimits.PCStat.PhysBoneComponents)),
+                        EditorStyles.wordWrappedMiniLabel);
                 }
                 if (s.targetQuest)
                 {
@@ -777,6 +817,10 @@ namespace RARA.AvatarStudio
                     DrawPhysBoneRankLadder("Quest/iOS", projected,
                         QuestExcellentPhysBoneComponents, QuestGoodPhysBoneComponents,
                         QuestLimits.MediumPhysBoneComponents, QuestLimits.PoorPhysBoneComponents);
+                    // [LIMITS CLARITY] Quest は Poor上限を超えると分野単位で揺れものが全停止する崖を1行で明示する。
+                    EditorGUILayout.LabelField(string.Format(
+                        "Quest PhysBone上限: Poor上限 {0}(超過分野があると揺れもの全停止)", QuestLimits.PoorPhysBoneComponents),
+                        EditorStyles.wordWrappedMiniLabel);
                 }
                 if (!s.targetPC && !s.targetQuest)
                     EditorGUILayout.LabelField("対象(PC / Quest)を選ぶと上限メーターを表示します。", EditorStyles.miniLabel);
@@ -823,10 +867,10 @@ namespace RARA.AvatarStudio
                             bool noMerge = AllRemoved(s.questPhysBoneNoMergePaths, row.memberPaths);
                             bool newNoMerge = GUILayout.Toggle(noMerge, new GUIContent("マージしない", "このグループを1本へ統合せず、各PhysBoneを個別に残します"), GUILayout.Width(90f));
                             if (newNoMerge != noMerge) { SetAllRemoved(s.questPhysBoneNoMergePaths, row.memberPaths, newNoMerge); changed = true; cache.Bump(); }
-                            // グループ削除(右端の固定列)
-                            bool removed = AllRemoved(s.physBoneRemovePaths, row.memberPaths);
-                            bool newRemoved = GUILayout.Toggle(removed, "削除", GUILayout.Width(52f));
-                            if (newRemoved != removed) { SetAllRemoved(s.physBoneRemovePaths, row.memberPaths, newRemoved); changed = true; }
+                            // [S4] 残す(右端の固定列)。チェック=残す(稼働)に統一。UIのみ反転し、内部は physBoneRemovePaths のまま。
+                            bool keep = !AllRemoved(s.physBoneRemovePaths, row.memberPaths);
+                            bool newKeep = GUILayout.Toggle(keep, new GUIContent("残す", "オフにするとこのグループのPhysBoneをすべて削除します(揺れなくなります)"), GUILayout.Width(52f));
+                            if (newKeep != keep) { SetAllRemoved(s.physBoneRemovePaths, row.memberPaths, !newKeep); changed = true; }
                         }
                         else
                         {
@@ -842,10 +886,10 @@ namespace RARA.AvatarStudio
                                 bool newNoMerge = GUILayout.Toggle(true, new GUIContent("マージしない", "このPhysBoneをマージ対象へ戻すにはチェックを外します"), GUILayout.Width(90f));
                                 if (!newNoMerge) { TogglePath(s.questPhysBoneNoMergePaths, row.singlePath, false); changed = true; cache.Bump(); }
                             }
-                            // 単独削除(右端の固定列)
-                            bool removed = IsOptedOut(s.physBoneRemovePaths, row.singlePath);
-                            bool newRemoved = GUILayout.Toggle(removed, "削除", GUILayout.Width(52f));
-                            if (newRemoved != removed) { TogglePath(s.physBoneRemovePaths, row.singlePath, newRemoved); changed = true; }
+                            // [S4] 残す(右端の固定列)。チェック=残す(稼働)に統一。UIのみ反転し、内部は physBoneRemovePaths のまま。
+                            bool keep = !IsOptedOut(s.physBoneRemovePaths, row.singlePath);
+                            bool newKeep = GUILayout.Toggle(keep, new GUIContent("残す", "オフにするとこのPhysBoneを削除します(揺れなくなります)"), GUILayout.Width(52f));
+                            if (newKeep != keep) { TogglePath(s.physBoneRemovePaths, row.singlePath, !newKeep); changed = true; }
                         }
                     }
                 }
@@ -857,10 +901,13 @@ namespace RARA.AvatarStudio
             // 「戻す」で復元できるようにする(旧QuestConverterウィンドウと同じ round-trip 対策)。
             changed |= DrawPhysBoneRemoveList(avatarRoot, s.physBoneRemovePaths);
 
-            EditorGUILayout.HelpBox(
-                "Transform数は目安です(VRChatの正式カウントとは一致しません)。「削除」に入れた PhysBone は変換後アバターから除かれ、残りは全て残ります。" +
-                "モバイルは上限が厳しいため、Quest対象では上限内(" + QuestLimits.PoorPhysBoneComponents + "本)に収めてください。\n" +
-                "※ PhysBoneマージは本ツール独自実装です(AAOのMerge PhysBoneは未使用)。", MessageType.None);
+            // [S1] Quest上限の注記は PC単独(Quest非対象)では意味がないため隠す。共通の注意だけ常時表示する。
+            string physBoneNote =
+                "Transform数は目安です(VRChatの正式カウントとは一致しません)。「残す」を外した PhysBone は変換後アバターから除かれ、残りは全て残ります。";
+            if (s.targetQuest)
+                physBoneNote += "モバイルは上限が厳しいため、Quest対象では上限内(" + QuestLimits.PoorPhysBoneComponents + "本)に収めてください。";
+            physBoneNote += "\n※ PhysBoneマージは本ツール独自実装です(AAOのMerge PhysBoneは未使用)。";
+            EditorGUILayout.HelpBox(physBoneNote, MessageType.None);
             return changed;
         }
 
@@ -1024,11 +1071,13 @@ namespace RARA.AvatarStudio
         }
 
         /// <summary>
-        /// 名前の優先度(髪・胸など)が高い順に、Quest上限(Poor=8本)内で残すPhysBoneを自動選択する。
+        /// 名前の優先度(髪・胸など)が高い順に、指定した上限 cap 本内で残すPhysBoneを自動選択する。
+        /// cap は対象で決まる(Quest対象=Quest上限8 / PC単独=目標ランクのPCコンポーネント上限)。
         /// 本ツールはKeepAll方式のため、選ばれなかったPhysBoneを physBoneRemovePaths へ登録して削除にする
-        /// (= 上位8本の「まとまり」だけが残るように削除リストを作り直す)。変更があれば true。
+        /// (= 上位 cap 本の「まとまり」だけが残るように削除リストを作り直す)。変更があれば true。
+        /// basisLabel はダイアログに出す基準の説明(例: 「Quest上限(8本)」「PC Good上限(8本)」)。
         /// </summary>
-        private static bool AutoSelectPhysBonesForQuestCap(GameObject avatarRoot, AvatarStudioSettings s)
+        private static bool AutoSelectPhysBonesForCap(GameObject avatarRoot, AvatarStudioSettings s, int cap, string basisLabel)
         {
             if (avatarRoot == null || s == null) return false;
             EnsureList(ref s.physBoneRemovePaths);
@@ -1083,7 +1132,7 @@ namespace RARA.AvatarStudio
                     rowCost = Mathf.Max(1, row.memberPaths.Count);
                 // 上限を超える行は選ばず、後続のより小さい行が入る余地を残す(best-fit)。
                 // マージ有効時は rowCost が常に1なので prefix と同じ結果になる。
-                if (kept + rowCost > QuestLimits.PoorPhysBoneComponents) continue;
+                if (kept + rowCost > cap) continue;
                 AddRowPaths(row, keepPaths);
                 kept += rowCost;
             }
@@ -1106,8 +1155,8 @@ namespace RARA.AvatarStudio
             }
 
             bool ok = EditorUtility.DisplayDialog("優先度で自動選択",
-                "名前の優先度が高い順に、Quest上限(" + QuestLimits.PoorPhysBoneComponents +
-                "本)内で残すPhysBoneを選び、残りを「削除」に設定します(現在の削除選択は置き換えられます)。\n\n" +
+                "名前の優先度が高い順に、" + basisLabel +
+                "内で残すPhysBoneを選び、残りを削除にします(現在の削除選択は置き換えられます)。\n\n" +
                 "残す本数(概算): " + kept + " 本\n\n設定しますか?",
                 "設定する", "キャンセル");
             if (!ok) return false;
@@ -1766,6 +1815,11 @@ namespace RARA.AvatarStudio
                 GUILayout.FlexibleSpace();
             }
 
+            EditorGUILayout.HelpBox(
+                "アトラス統合時はマットキャップを外します(UV再配置でマットキャップのマスクが壊れ、白飛びするため)。" +
+                "映り込みを残したいマテリアルは『アトラス除外』に指定してください。",
+                MessageType.Info);
+
             // 統合プレビューのキャッシュキーには、プランに影響する全設定(サイズ・単色/エミッション焼き込み・
             // カリング無視・アウトライン・除外GUID)を含める。いずれかの変更で再計算される。
             string atlasSig = avatarRoot.GetInstanceID() + "|" + s.pcEnableAtlas + "|" + s.pcAtlasMaxSize
@@ -1796,6 +1850,7 @@ namespace RARA.AvatarStudio
                     if (g.twoSided) extra += " [両面化]";
                     if (g.outlineAdded != null && g.outlineAdded.Count > 0) extra += " [アウトライン付与:" + g.outlineAdded.Count + "]";
                     if (g.outlineRemoved != null && g.outlineRemoved.Count > 0) extra += " [アウトライン除去:" + g.outlineRemoved.Count + "]";
+                    if (g.matcapRemoved != null && g.matcapRemoved.Count > 0) extra += " [マットキャップは外れます]";
                     EditorGUILayout.LabelField(new GUIContent("・" + Trunc(members, 70) + extra, members), EditorStyles.wordWrappedMiniLabel);
                 }
             }
