@@ -14,7 +14,9 @@
 // RARA.PCOptimizer の両ツールから参照される(同一アセンブリ)。AAO 型は一切参照しない(実行は
 // AAOMeshMergeHelper がリフレクションで行う)。
 #if UNITY_EDITOR
+using System;
 using System.Collections.Generic;
+using UnityEditor;
 using UnityEngine;
 using VRC.SDK3.Avatars.Components;
 
@@ -238,6 +240,13 @@ namespace RARA.QuestConverter
                 Mesh mesh = smr.sharedMesh;
 
                 bool cloth = HasCloth(smr);
+                // [A] 多重描画: マテリアルスロット数がサブメッシュ数を超えるレンダラー(例: 髪 = mat_hair +
+                //     FakeShadow の2スロット・1サブメッシュ)。Unity はこのメッシュを追加スロット分だけ多重に描画するが、
+                //     AAO MergeSkinnedMesh はビルド時に FlattenMultiPassRendering で多重描画を実体化(サブメッシュを複製)
+                //     するため、統合するとポリゴン数が増える(PCの70,000境界を越えて即 Very Poor になる等)。統合しなければ
+                //     ネイティブの多重描画のまま残り SDK はポリゴン数を増やさない。よって統合対象から自動除外する
+                //     (1.0.9の非統合スロット方針を、ビルド時のマージが打ち消さないようにするガード)。
+                bool multiPass = mesh != null && smr.sharedMaterials != null && smr.sharedMaterials.Length > mesh.subMeshCount;
 
                 var row = new SkinnedMeshMergeRow
                 {
@@ -247,8 +256,8 @@ namespace RARA.QuestConverter
                     isEditorOnly = editorOnly,
                     isBuildExcluded = buildExcluded,
                     blendShapeCount = mesh != null ? mesh.blendShapeCount : 0,
-                    // 割り当て可能=顔でない・ビルド除外でない・メッシュあり・Clothなし(opt-outは含めない)。
-                    canAssign = !isFace && !buildExcluded && mesh != null && !cloth,
+                    // 割り当て可能=顔でない・ビルド除外でない・メッシュあり・Clothなし・多重描画でない(opt-outは含めない)。
+                    canAssign = !isFace && !buildExcluded && mesh != null && !cloth && !multiPass,
                 };
 
                 if (mode == SkinnedMeshMergeMode.None)
@@ -277,6 +286,12 @@ namespace RARA.QuestConverter
                 {
                     row.willMerge = false;
                     row.reason = "Clothコンポーネントがあるため統合対象外(布シミュレーションを保持)";
+                }
+                else if (multiPass)
+                {
+                    // [A] 多重描画は統合すると実体化されてポリゴンが増えるため、どの統合モードでも自動除外する。
+                    row.willMerge = false;
+                    row.reason = "多重描画(スロット数>サブメッシュ数)のため統合しません(統合するとビルド時にポリゴン数が増えるため)";
                 }
                 else if (mode == SkinnedMeshMergeMode.MergeByGroup)
                 {
@@ -325,6 +340,17 @@ namespace RARA.QuestConverter
                 indices.Sort();
                 foreach (int g in indices) plan.mergeGroups.Add(groupSets[g]);
             }
+
+            // [B] マテリアルプロパティアニメーションの波及ガード。統合セット内でソースごとの
+            //     material.* アニメーション集合が食い違う場合、アニメ対象のレンダラーを統合対象から外す
+            //     (統合すると AAO がそのアニメを統合先メッシュ全体へ波及させ、意図しない部分にも適用されるため)。
+            //     counts 算出より前に走らせ、除外を概算SMR数へ正しく反映する。
+            var rowByPath = new Dictionary<string, SkinnedMeshMergeRow>(StringComparer.Ordinal);
+            foreach (SkinnedMeshMergeRow r in plan.rows)
+            {
+                if (r != null && !string.IsNullOrEmpty(r.rendererPath)) rowByPath[r.rendererPath] = r;
+            }
+            ApplyPropertyAnimationMismatchGuard(avatarRoot, mode, plan, rowByPath);
 
             // 統合前(ビルドに残る)SMR数と、統合後の期待SMR数を算出する。
             int surviving = 0; // ビルドに残る(EditorOnly / Quest除外でない)レンダラー総数
@@ -391,6 +417,181 @@ namespace RARA.QuestConverter
         {
             if (smr == null) return false;
             return smr.GetComponent<Cloth>() != null;
+        }
+
+        // ================================================================
+        // [B] マテリアルプロパティアニメーションの波及ガード
+        // ================================================================
+
+        /// <summary>比較用の空集合(このパスに material.* アニメが無いときに使う。生成を避ける)。</summary>
+        private static readonly HashSet<string> EmptyMatAnimSet = new HashSet<string>(StringComparer.Ordinal);
+
+        /// <summary>
+        /// 各統合セット(顔以外を統合=単一 / グループ指定=各グループ)について、ソースごとの material.* アニメーション
+        /// 集合が食い違う場合、アニメ対象(material.* アニメを持つ)レンダラーを統合から自動除外する。
+        /// 全ソースが同一集合(空集合含む)なら波及しないため統合を許可する。走査失敗時は従来動作(除外しない)。
+        /// </summary>
+        private static void ApplyPropertyAnimationMismatchGuard(GameObject avatarRoot, SkinnedMeshMergeMode mode, SkinnedMeshMergePlan plan, Dictionary<string, SkinnedMeshMergeRow> rowByPath)
+        {
+            if (avatarRoot == null || plan == null || mode == SkinnedMeshMergeMode.None) return;
+
+            // 統合が2件以上のセットが無ければガード不要(scan もしない=軽量化)。
+            bool anyMultiMember = plan.mergeSourcePaths.Count >= 2;
+            if (!anyMultiMember)
+            {
+                foreach (SkinnedMeshMergeGroup g in plan.mergeGroups)
+                {
+                    if (g != null && g.sourcePaths.Count >= 2) { anyMultiMember = true; break; }
+                }
+            }
+            if (!anyMultiMember) return;
+
+            Dictionary<string, HashSet<string>> matAnim = CollectAnimatedMaterialProperties(avatarRoot);
+            if (matAnim == null) return; // 走査失敗 → 安全側で従来動作(誤って統合を止めない)
+            if (matAnim.Count == 0) return; // material.* アニメが1つも無ければ波及の懸念なし
+
+            if (mode == SkinnedMeshMergeMode.MergeByGroup)
+            {
+                foreach (SkinnedMeshMergeGroup g in plan.mergeGroups)
+                {
+                    if (g == null) continue;
+                    GuardMaterialAnimationMismatchInSet(g.sourcePaths, matAnim, rowByPath);
+                }
+            }
+            else
+            {
+                GuardMaterialAnimationMismatchInSet(plan.mergeSourcePaths, matAnim, rowByPath);
+            }
+        }
+
+        /// <summary>
+        /// setPaths(1つの統合セット)内で、ソースごとの material.* アニメ集合が全て一致しなければ、アニメ対象
+        /// (集合が非空)のパスを setPaths から取り除き、対応する行を「統合しない」へ更新する(理由を提示)。
+        /// </summary>
+        private static void GuardMaterialAnimationMismatchInSet(List<string> setPaths, Dictionary<string, HashSet<string>> matAnim, Dictionary<string, SkinnedMeshMergeRow> rowByPath)
+        {
+            if (setPaths == null || setPaths.Count < 2) return;
+
+            // AAO と同じ判定粒度: material. を除いたプロパティ名の集合をソース間で比較する。
+            HashSet<string> reference = GetMatAnimSet(matAnim, setPaths[0]);
+            bool mismatch = false;
+            for (int i = 1; i < setPaths.Count; i++)
+            {
+                if (!reference.SetEquals(GetMatAnimSet(matAnim, setPaths[i]))) { mismatch = true; break; }
+            }
+            if (!mismatch) return; // 全ソース同一集合 → 波及しないため統合を許可
+
+            // アニメ対象(集合が非空 = そのメッシュに material.* アニメが向いている)を統合から外す。
+            var toRemove = new List<string>();
+            foreach (string p in setPaths)
+            {
+                if (GetMatAnimSet(matAnim, p).Count > 0) toRemove.Add(p);
+            }
+            foreach (string p in toRemove)
+            {
+                setPaths.Remove(p);
+                if (rowByPath != null && rowByPath.TryGetValue(p, out SkinnedMeshMergeRow row) && row != null)
+                {
+                    row.willMerge = false;
+                    row.groupIndex = 0;
+                    row.reason = "マテリアルアニメーションが統合先全体へ波及するため統合しません";
+                }
+            }
+        }
+
+        /// <summary>path の material.* アニメ集合を返す(無ければ空集合)。</summary>
+        private static HashSet<string> GetMatAnimSet(Dictionary<string, HashSet<string>> matAnim, string path)
+        {
+            if (matAnim != null && path != null && matAnim.TryGetValue(path, out HashSet<string> s) && s != null) return s;
+            return EmptyMatAnimSet;
+        }
+
+        /// <summary>
+        /// avatarRoot から到達可能な全アニメーションクリップを走査し、SkinnedMeshRenderer への material.* プロパティ
+        /// アニメーションを、レンダラーパス → プロパティ名集合(material. を除いた名前)として返す。収集範囲・作法は
+        /// ComponentRemover.CollectPhysBoneTogglePaths / AAOMeshMergeHelper.CollectAnimatedBlendShapeKeys と同じ
+        /// (ルートのコントローラー + 子コンポーネント参照のパスを前置)。走査失敗時は null を返す(呼び出し側は
+        /// 安全側で除外しない)。AAO の material-animation-differently 警告と同じ「material.」始まりのプロパティを見る。
+        /// </summary>
+        private static Dictionary<string, HashSet<string>> CollectAnimatedMaterialProperties(GameObject root)
+        {
+            if (root == null) return null;
+            try
+            {
+                var byPath = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+
+                var seenClips = new HashSet<AnimationClip>();
+                foreach (RuntimeAnimatorController controller in AnimationConverter.CollectControllers(root))
+                {
+                    if (controller == null) continue;
+                    foreach (AnimationClip clip in controller.animationClips)
+                    {
+                        if (clip == null || !seenClips.Add(clip)) continue;
+                        AddMaterialPropsFromClip(clip, string.Empty, byPath);
+                    }
+                }
+
+                // 子オブジェクトの Animator / MA Merge Animator 等が参照するコントローラーは、バインディングパスが
+                // そのコンポーネント基準の可能性があるため、位置を前置したパスも追加する(判定が広がる=統合を控える
+                // 方向にしか働かないため安全側)。
+                var seenPrefixed = new HashSet<string>();
+                foreach (Component component in root.GetComponentsInChildren<Component>(true))
+                {
+                    if (component == null || component is Transform) continue;
+                    if (component.transform == root.transform) continue;
+                    string prefix = QuestCompat.GetRelativePath(root.transform, component.transform);
+                    if (string.IsNullOrEmpty(prefix)) continue;
+
+                    var serializedObject = new SerializedObject(component);
+                    SerializedProperty property = serializedObject.GetIterator();
+                    while (property.Next(true))
+                    {
+                        if (property.propertyType != SerializedPropertyType.ObjectReference) continue;
+                        var controller = property.objectReferenceValue as RuntimeAnimatorController;
+                        if (controller == null) continue;
+                        foreach (AnimationClip clip in controller.animationClips)
+                        {
+                            if (clip == null) continue;
+                            if (!seenPrefixed.Add(clip.GetInstanceID() + "|" + prefix)) continue;
+                            AddMaterialPropsFromClip(clip, prefix, byPath);
+                        }
+                    }
+                }
+                return byPath;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// クリップ内の SkinnedMeshRenderer 向け material.&lt;prop&gt; フロートバインディングを、prefix を前置した
+        /// レンダラーパスへ集約する(値は material. を除いたプロパティ名の集合)。
+        /// </summary>
+        private static void AddMaterialPropsFromClip(AnimationClip clip, string prefix, Dictionary<string, HashSet<string>> byPath)
+        {
+            const string MaterialPrefix = "material.";
+            foreach (EditorCurveBinding binding in AnimationUtility.GetCurveBindings(clip))
+            {
+                if (binding.type == null || !typeof(SkinnedMeshRenderer).IsAssignableFrom(binding.type)) continue;
+                if (binding.propertyName == null ||
+                    !binding.propertyName.StartsWith(MaterialPrefix, StringComparison.Ordinal)) continue;
+                string prop = binding.propertyName.Substring(MaterialPrefix.Length);
+                if (prop.Length == 0) continue;
+
+                string path = binding.path ?? string.Empty;
+                string full;
+                if (prefix.Length == 0) full = path;
+                else full = path.Length == 0 ? prefix : prefix + "/" + path;
+
+                if (!byPath.TryGetValue(full, out HashSet<string> set))
+                {
+                    set = new HashSet<string>(StringComparer.Ordinal);
+                    byPath[full] = set;
+                }
+                set.Add(prop);
+            }
         }
     }
 }
