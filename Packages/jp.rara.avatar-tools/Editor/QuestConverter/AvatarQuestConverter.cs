@@ -378,6 +378,10 @@ namespace RARA.QuestConverter
 
                 // materialMap は上位スコープ(モード分岐の外)で宣言済み。
                 var particleMaterialMap = new Dictionary<Material, Material>(); // パーティクル系レンダラー専用の変換結果
+                // [1.8.0] 既にQuest対応(Toon Standard(Outline含む)/ Toon Lit)で変換をスキップするマテリアルのうち、
+                // アトラス統合の対象にできるもの。変換済みマテリアルと同じアトラス入力へ自己マップ(変換後=元)で
+                // 渡し、同じグループ規則で統合してスロットを削減する。Keep・Hide・パーティクル用途は除外する。
+                var preConvertedAtlasCandidates = new List<Material>();
                 // 手動オーバーライド(GUID→マテリアル)を一度だけ解決する。未指定のマテリアルは Auto(従来の自動判定)。
                 Dictionary<Material, MaterialOverrideEntry> overrides = QuestCompat.ResolveOverrides(settings);
                 for (int i = 0; i < materials.Count; i++)
@@ -403,6 +407,17 @@ namespace RARA.QuestConverter
                     {
                         overrideMode = MaterialOverride.Hide;
                         report.Info(string.Format("表情デカール『{0}』は不透明化すると板として見えるため非表示化します(透過の扱い=不透明化)。", src.name));
+                    }
+
+                    // [1.8.0] 既にQuest対応で変換されない Toon Standard(Outline含む)/ Toon Lit をアトラス候補に控える。
+                    // Keep(変換しない指定)・Hide(非表示化)・パーティクル用途は除外。実際の除外判定
+                    // (アニメ差し替え・MA参照・UV範囲・単独グループ等)は BuildAtlases が行う(planner==executor)。
+                    if (QuestCompat.IsAtlasableMobileShader(src.shader)
+                        && meshUsed.Contains(src) && !usedByParticle
+                        && overrideMode != MaterialOverride.Keep
+                        && overrideMode != MaterialOverride.Hide)
+                    {
+                        preConvertedAtlasCandidates.Add(src);
                     }
 
                     if (usedByMesh)
@@ -475,11 +490,45 @@ namespace RARA.QuestConverter
                 if (settings.enableAtlas)
                 {
                     EditorUtility.DisplayProgressBar(ProgressTitle, "マテリアルをアトラス化中...", 0.62f);
-                    var atlas = MaterialAtlasser.BuildAtlases(clone, materialMap, animationUsed, overrides, settings, outputDir, report, assets);
+                    // [1.8.0] 既にQuest対応のTS/ToonLitマテリアルを自己マップ(変換後=元)としてアトラス入力へ加える。
+                    // 変換済みマテリアルと同じグループ規則・セル入力(メインテクスチャ・エミッション・ノーマル・ランプ・
+                    // マットキャップ)で統合する(BuildAtlases は converted==src のプロパティを直接読む)。元マテリアルは
+                    // 書き換えず、統合されたぶんだけ atlasMap 経由で materialMap へ写像されクローンのスロットが差し替わる。
+                    Dictionary<Material, Material> atlasInput = materialMap;
+                    if (preConvertedAtlasCandidates.Count > 0)
+                    {
+                        atlasInput = new Dictionary<Material, Material>(materialMap);
+                        bool hasPrevAtlasSource = false;
+                        foreach (Material pre in preConvertedAtlasCandidates)
+                        {
+                            if (pre == null) continue;
+                            if (!atlasInput.ContainsKey(pre)) atlasInput[pre] = pre; // 自己マップ: 変換後=元(既にQuest対応)
+                            if (pre.name.StartsWith("RARA_Atlas_", StringComparison.Ordinal)) hasPrevAtlasSource = true;
+                        }
+                        // 過去のアトラス出力(RARA_Atlas_*)が入力に含まれる場合、アトラス同士の再統合になる
+                        // (0..1のUVで統合自体は可能)。元アバターから変換し直すほうが効率的である旨を一度だけ案内する。
+                        if (hasPrevAtlasSource)
+                        {
+                            report.Info("元アバターから変換し直すとより効率的に統合できます");
+                        }
+                    }
+                    var atlas = MaterialAtlasser.BuildAtlases(clone, atlasInput, animationUsed, overrides, settings, outputDir, report, assets);
                     if (atlas != null)
                     {
                         if (atlas.atlasMap != null && atlas.atlasMap.Count > 0)
                         {
+                            // 既にQuest対応のうち、実際にアトラス統合の対象になったマテリアル数を報告する([C])。
+                            // RemapMeshesAndMergeSlots は atlasMap を書き換える(ネイティブ温存で一部を外す)ため、
+                            // 書き換え前のこの時点で数える。
+                            int preConvertedAtlased = 0;
+                            foreach (Material pre in preConvertedAtlasCandidates)
+                            {
+                                if (pre != null && atlas.atlasMap.ContainsKey(pre)) preConvertedAtlased++;
+                            }
+                            if (preConvertedAtlased > 0)
+                            {
+                                report.Info($"既にQuest対応のためそのまま使用し、アトラス統合の対象にしました: {preConvertedAtlased}件");
+                            }
                             // スロットはまだ元マテリアルを保持している(統合後のスロットには先頭メンバーの
                             // 元マテリアルが残り、それが下のmap上書きでアトラスマテリアルへ解決される)
                             MaterialAtlasser.RemapMeshesAndMergeSlots(clone, atlas, outputDir, report, assets, hiddenOriginals);
@@ -2438,20 +2487,36 @@ namespace RARA.QuestConverter
             MaterialOverride mode = overrideEntry != null ? overrideEntry.mode : MaterialOverride.Auto;
 
             // 変換されない(materialMapに乗らない)マテリアルはアトラスの対象にならない
-            if (isMobileAlready || isTMP || isBrokenShader || mode == MaterialOverride.Keep) return "変換対象外";
+            if (isTMP || isBrokenShader || mode == MaterialOverride.Keep) return "変換対象外";
+            // [1.8.0] 既にQuest対応(モバイル)のマテリアル。Toon Standard(Outline含む)/ Toon Lit は
+            // 変換をスキップしつつ変換済みマテリアルと同じアトラスグループへ入れてスロットを削減できる(対象にする)。
+            // MatCap Lit・パーティクル・その他モバイルシェーダーは統合不可のため従来どおり対象外。
+            if (isMobileAlready && !QuestCompat.IsAtlasableMobileShader(src.shader))
+                return "(対象外: MatCap Lit/パーティクルはアトラス不可)";
             if (mode == MaterialOverride.Hide) return "非表示化されるため";
-            if (mode == MaterialOverride.ParticleAdditive || mode == MaterialOverride.ParticleMultiply) return "パーティクル用";
-            // MatCap Lit は Toon Standard/Lit 以外へ変換されるためアトラス統合の対象外(各マテリアルが自分のスロットを保持)
-            if (mode == MaterialOverride.MatCapLit) return "MatCap Lit(アトラス統合外)";
 
-            // 効果専用シェーダー(疑似影/アウトライン)は Auto で常に非表示化され(Convert step 6.5)、
-            // 変換後シェーダーが乗算(Toon Standard/Lit ではない)ためアトラス対象から外れる
-            // (MaterialAtlasser.BuildAtlases が黙って除外する)。予定表示と実動作を一致させる。
-            if (mode == MaterialOverride.Auto && QuestCompat.IsOverlayOnlyShader(src.shader, src.name)) return "非表示化されるため(効果専用シェーダー)";
+            // 変換方法の手動指定に基づく分岐は「変換される」マテリアルにのみ効く。既にQuest対応の
+            // マテリアルは変換方法の指定(パーティクル/MatCap Lit等)が無視され、現状のシェーダー
+            // (Toon Standard / Toon Lit)のままアトラスへ入るため、これらの分岐は適用しない
+            // (MaterialAtlasser.BuildAtlases も converted のシェーダー名だけで判定する)。
+            if (!isMobileAlready)
+            {
+                if (mode == MaterialOverride.ParticleAdditive || mode == MaterialOverride.ParticleMultiply) return "パーティクル用";
+                // MatCap Lit は Toon Standard/Lit 以外へ変換されるためアトラス統合の対象外(各マテリアルが自分のスロットを保持)
+                if (mode == MaterialOverride.MatCapLit) return "MatCap Lit(アトラス統合外)";
+                // 効果専用シェーダー(疑似影/アウトライン)は Auto で常に非表示化され(Convert step 6.5)、
+                // 変換後シェーダーが乗算(Toon Standard/Lit ではない)ためアトラス対象から外れる
+                // (MaterialAtlasser.BuildAtlases が黙って除外する)。予定表示と実動作を一致させる。
+                if (mode == MaterialOverride.Auto && QuestCompat.IsOverlayOnlyShader(src.shader, src.name)) return "非表示化されるため(効果専用シェーダー)";
+            }
 
             if (usedByAnimation) return "アニメで差し替えあり";
             if (usedByMA) return "MAマテリアル設定が参照するため";
-            if (usedByParticle && !usedByMesh) return "パーティクル用";
+            // パーティクルで使われるマテリアルはアトラス対象外。変換されるマテリアルはメッシュ用途があれば
+            // メッシュ側を統合できる(パーティクル側は別変換)が、既にQuest対応のマテリアルはパーティクル用の
+            // 別変換を持たないため、パーティクルで使われていればメッシュ併用でもアトラス対象から外す
+            // (アトラス化でメッシュUVが再配置されるとパーティクルレンダラーの表示が壊れるのを防ぐ)。
+            if (usedByParticle && (!usedByMesh || isMobileAlready)) return "パーティクル用";
             // コンポーネント参照のみ等、どのメッシュスロットにも設定されていないマテリアルは
             // MaterialAtlasser.BuildAtlases が「メッシュで使用されていないため」として除外する
             if (!usedByMesh && !usedByParticle) return "メッシュで使用されていないため";
@@ -2460,7 +2525,9 @@ namespace RARA.QuestConverter
             //   Hide    → 非表示化される
             //   Opaque  → 不透明Toonへ変換されるためアトラス候補になり得る(除外しない)
             // 大型メッシュ・髪で抑制される透過は不透明化されるためアトラス候補になり得る(除外しない)。
-            if (transparency == QuestCompat.TransparencyClass.Transparent && !suppressTransparentHide)
+            // 既にQuest対応(TS/ToonLit)は不透明シェーダーのため、変換前の透過分類に依らずアトラス候補になり得る
+            // (BuildAtlases も透過分類を見ない)。ここでは変換されるマテリアルのみ透過で対象外にする。
+            if (!isMobileAlready && transparency == QuestCompat.TransparencyClass.Transparent && !suppressTransparentHide)
             {
                 if (settings.transparentHandling == TransparentHandling.Hide) return "非表示化されるため";
                 if (settings.transparentHandling == TransparentHandling.Emulate) return "乗算/加算で半透明を再現するため";

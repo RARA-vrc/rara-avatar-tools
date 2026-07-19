@@ -263,9 +263,12 @@ namespace RARA.QuestConverter
                     if (src == null || converted == null || converted.shader == null) continue;
 
                     string shaderName = converted.shader.name;
-                    bool isToonStandard = shaderName == QuestCompat.ToonStandardShaderName;
+                    // [1.8.0] 既にQuest対応のマテリアルも同じ入力(自己マップ: converted==src)で渡される。
+                    // Toon Standard の Outline版(VRChat/Mobile/Toon Standard (Outline))は非Outline版と同じ
+                    // プロパティを持つため Toon Standard として扱い、同一グループへ統合する(統合結果は非Outline版へ揃える)。
+                    bool isToonStandard = shaderName == QuestCompat.ToonStandardShaderName || shaderName == QuestCompat.ToonStandardOutlineShaderName;
                     bool isToonLit = shaderName == QuestCompat.ToonLitShaderName;
-                    if (!isToonStandard && !isToonLit) continue; // パーティクル・非表示等は対象外(除外理由にも載せない)
+                    if (!isToonStandard && !isToonLit) continue; // パーティクル・非表示・MatCap Lit等は対象外(除外理由にも載せない)
 
                     List<MeshSlotUse> uses;
                     if (!meshUsage.TryGetValue(src, out uses) || uses.Count == 0)
@@ -347,9 +350,11 @@ namespace RARA.QuestConverter
                         matcapKey = "|mc:" + GetMatcapGroupKey(converted);
                     }
 
+                    // グループキーは正規化したシェーダー名を使う(Outline版と非Outline版・変換済みTSを同一グループへ入れる)。
+                    string groupShaderName = isToonStandard ? QuestCompat.ToonStandardShaderName : QuestCompat.ToonLitShaderName;
                     string key = settings.atlasUnifyRamps
-                        ? shaderName + "|" + cull + matcapKey
-                        : shaderName + "|" + cull + "|" + rampKey + matcapKey;
+                        ? groupShaderName + "|" + cull + matcapKey
+                        : groupShaderName + "|" + cull + "|" + rampKey + matcapKey;
 
                     AtlasGroup group;
                     if (!groups.TryGetValue(key, out group))
@@ -1966,6 +1971,14 @@ namespace RARA.QuestConverter
             Material first = group.cells[0].converted;
             var mat = new Material(first); // 質感は先頭マテリアルに統一
             mat.name = baseName;
+            // [1.8.0] 先頭メンバーが既にQuest対応のOutline版だった場合でも、統合結果は非Outline版へ揃える
+            // (Outlineはモバイルクライアントで自動フォールバックされ、アトラス結果のシェーダーを安定させるため。
+            //  プロパティは非Outline版の上位集合のため、シェーダー差し替えで既存の値は維持される)。
+            if (mat.shader != null && mat.shader.name == QuestCompat.ToonStandardOutlineShaderName)
+            {
+                Shader plain = Shader.Find(QuestCompat.ToonStandardShaderName);
+                if (plain != null) mat.shader = plain;
+            }
 
             mat.SetTexture("_MainTex", mainAtlas);
             mat.SetTextureScale("_MainTex", Vector2.one);

@@ -435,6 +435,8 @@ namespace RARA.QuestConverter
         };
 
         public const string ToonStandardShaderName = "VRChat/Mobile/Toon Standard";
+        /// <summary>VRChat/Mobile/Toon Standard (Outline)。非Outline版と同じプロパティを持ち、モバイルでは非Outline版へフォールバックされる。</summary>
+        public const string ToonStandardOutlineShaderName = "VRChat/Mobile/Toon Standard (Outline)";
         public const string ToonLitShaderName = "VRChat/Mobile/Toon Lit";
         /// <summary>VRChat/Mobile/MatCap Lit(金属パーツ向け。_MainTex + _MatCap のみの乗算マットキャップ)。</summary>
         public const string MatCapLitShaderName = "VRChat/Mobile/MatCap Lit";
@@ -467,6 +469,19 @@ namespace RARA.QuestConverter
         public static bool IsMobileShader(Shader shader)
         {
             return shader != null && Array.IndexOf(AllowedShaders, shader.name) >= 0;
+        }
+
+        /// <summary>
+        /// [1.8.0] 既にQuest対応のモバイルシェーダーのうち、アトラス統合の対象にできるものか
+        /// (Toon Standard / Toon Standard (Outline) / Toon Lit)。これらは変換をスキップしつつ
+        /// 変換済みマテリアルと同じグループへ入れてスロットを削減できる。MatCap Lit・パーティクル・
+        /// その他モバイルシェーダーは統合不可(各マテリアルが自分のスロットを保持)。
+        /// </summary>
+        public static bool IsAtlasableMobileShader(Shader shader)
+        {
+            if (shader == null) return false;
+            string n = shader.name;
+            return n == ToonStandardShaderName || n == ToonStandardOutlineShaderName || n == ToonLitShaderName;
         }
 
         public static bool IsLilToonShader(Shader shader)
