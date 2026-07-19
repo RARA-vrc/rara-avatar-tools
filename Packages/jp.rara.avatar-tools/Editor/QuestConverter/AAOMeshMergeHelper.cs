@@ -35,6 +35,84 @@ namespace RARA.QuestConverter
         /// <summary>グループ指定モードで、グループ n の統合ターゲットに付ける名前を返す(RARA_MergedMesh_G{n})。</summary>
         public static string MergeTargetNameForGroup(int groupIndex) => MergeTargetName + "_G" + groupIndex;
 
+        // ---- [1.8.1] 前回の統合先(残骸)の判定・除去 ----
+        // 本ツールが生成する統合ターゲットは、AAO がビルド時にメッシュを注入する設計のため、保存された
+        // プレファブ上では sharedMesh==null のまま残る。変換済みアバターを再処理すると、この統合ターゲットが
+        // 「メッシュ未設定の余分な SkinnedMeshRenderer」として残骸になり、統合前後の概算に数えられてしまう。
+        // さらに古い AAO MergeSkinnedMesh コンポーネントが古いソース参照を保持したまま残ると、新しく作る統合先と
+        // 二重統合の衝突を起こす。これらを命名(下記)+ sharedMesh==null で検出し、複製から先に除去する。
+
+        /// <summary>
+        /// GameObject 名が本ツールの統合ターゲット命名(RARA_MergedMesh / RARA_MergedMesh_G{n}、n は数字)に
+        /// 一致するか。命名の単一情報源として、残骸検出(プランナー・複製クリーンアップ)から共用する。
+        /// </summary>
+        public static bool IsMergeTargetName(string goName)
+        {
+            if (string.IsNullOrEmpty(goName)) return false;
+            if (goName == MergeTargetName) return true;
+            // グループ変種 "RARA_MergedMesh_G{n}"(n は1桁以上の数字)。
+            string groupPrefix = MergeTargetName + "_G";
+            if (goName.Length <= groupPrefix.Length ||
+                !goName.StartsWith(groupPrefix, StringComparison.Ordinal)) return false;
+            for (int i = groupPrefix.Length; i < goName.Length; i++)
+            {
+                if (!char.IsDigit(goName[i])) return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// smr が「前回の変換で生成した統合先の残骸」か。判定は命名一致 + sharedMesh==null のみで行い、
+        /// AAO MergeSkinnedMesh コンポーネントの有無は問わない(複製の過程で失われていても検出できるようにする)。
+        /// 命名不一致のメッシュ未設定レンダラー(ユーザー作成)は残骸ではない(false)。
+        /// </summary>
+        public static bool IsStaleMergeTarget(SkinnedMeshRenderer smr)
+        {
+            if (smr == null || smr.sharedMesh != null) return false;
+            return IsMergeTargetName(smr.gameObject.name);
+        }
+
+        /// <summary>
+        /// 複製 cloneRoot 上の「前回の統合先の残骸」(<see cref="IsStaleMergeTarget"/>)の GameObject を削除する。
+        /// これらは本ツールが生成したメッシュ無しの成果物のため安全に除去でき、古い AAO MergeSkinnedMesh
+        /// コンポーネントごと消えるので、新しく作る統合先との二重統合衝突を防げる。対象は必ず複製のみ
+        /// (元アバターは絶対に変更しない)。削除は変換の Undo グループに含める(RemovePriorGeneratedClones と同作法)。
+        /// SkinnedMesh統合を実際に行う直前に呼ぶこと。戻り値: 削除した残骸の数(0=無し)。
+        /// </summary>
+        public static int RemoveStaleMergeTargets(GameObject cloneRoot, ConversionReport report)
+        {
+            if (report == null) report = new ConversionReport();
+            if (cloneRoot == null) return 0;
+
+            // 列挙中の階層変化を避けるため、先に対象 GameObject を集めてから削除する。
+            var stale = new List<GameObject>();
+            foreach (SkinnedMeshRenderer smr in cloneRoot.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+            {
+                if (IsStaleMergeTarget(smr)) stale.Add(smr.gameObject);
+            }
+            if (stale.Count == 0) return 0;
+
+            int removed = 0;
+            foreach (GameObject go in stale)
+            {
+                if (go == null) continue; // 入れ子の残骸が親ごと消えた場合など(UnityのfakeNull)
+                try
+                {
+                    Undo.DestroyObjectImmediate(go);
+                    removed++;
+                }
+                catch (Exception ex)
+                {
+                    report.Warn($"前回の統合先の残骸の削除に失敗しました({(go != null ? go.name : "?")}): {ex.Message}");
+                }
+            }
+            if (removed > 0)
+            {
+                report.Info($"前回の統合先の残骸(RARA_MergedMesh)を削除しました: {removed}件");
+            }
+            return removed;
+        }
+
         // AAO BlendShapeMode の列挙インデックス(MergeSameName=0, RenameToAvoidConflict=1, TraditionalCompability=2)。
         // 既定は RenameToAvoidConflict: 同名ブレンドシェイプを別名化して衝突を避け、各アニメを個別に追従させる
         // (表情・シェイプが安全に保たれる。研究の結論)。

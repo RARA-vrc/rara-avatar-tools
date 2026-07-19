@@ -103,6 +103,13 @@ namespace RARA.QuestConverter
         /// </summary>
         public bool isBuildExcluded;
 
+        /// <summary>
+        /// [1.8.1] 前回の変換で生成した統合先の残骸(命名が RARA_MergedMesh 系 かつ メッシュ未設定)か。
+        /// true の行は実行時に複製から自動削除されるため、統合後(概算)SMR数から差し引く(一覧には残骸である旨を表示)。
+        /// 命名不一致のメッシュ未設定レンダラー(ユーザー作成)は false のままで、従来どおり統合対象外として残す。
+        /// </summary>
+        public bool isStaleMergeTarget;
+
         /// <summary>ブレンドシェイプ数(UI表示用)。</summary>
         public int blendShapeCount;
 
@@ -280,7 +287,18 @@ namespace RARA.QuestConverter
                 else if (mesh == null)
                 {
                     row.willMerge = false;
-                    row.reason = "メッシュが未設定のため統合対象外";
+                    // [1.8.1] 命名が本ツールの統合ターゲット(RARA_MergedMesh 系)に一致するメッシュ未設定レンダラーは、
+                    //  前回の変換で生成した統合先の残骸。実行時に複製から削除するため、統合後(概算)から除外する。
+                    //  命名不一致のメッシュ未設定レンダラー(ユーザー作成)は従来どおり統合対象外として残す(削除しない)。
+                    if (AAOMeshMergeHelper.IsMergeTargetName(smr.gameObject.name))
+                    {
+                        row.isStaleMergeTarget = true;
+                        row.reason = "前回の統合先(残骸)。実行時に複製から削除されます";
+                    }
+                    else
+                    {
+                        row.reason = "メッシュが未設定のため統合対象外";
+                    }
                 }
                 else if (cloth)
                 {
@@ -375,6 +393,14 @@ namespace RARA.QuestConverter
                 int mergeCount = plan.mergeSourcePaths.Count;
                 if (mergeCount >= 2) reduction = mergeCount - 1;
             }
+
+            // [1.8.1] 前回の統合先の残骸(RARA_MergedMesh 系・メッシュ未設定)は実行時に複製から削除されるため、
+            //  その件数だけ統合後の概算から差し引く(統合前=現在のエディタ上の数はそのまま=残骸を含む)。
+            foreach (SkinnedMeshMergeRow row in plan.rows)
+            {
+                if (row.isStaleMergeTarget && !row.isBuildExcluded) reduction++;
+            }
+
             plan.expectedCount = surviving - reduction;
 
             return plan;

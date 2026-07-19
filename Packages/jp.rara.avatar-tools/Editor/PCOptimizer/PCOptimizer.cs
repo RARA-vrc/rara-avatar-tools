@@ -136,6 +136,10 @@ namespace RARA.PCOptimizer
                 if (settings.mergeSkinnedMeshesMode != RARA.QuestConverter.SkinnedMeshMergeMode.None)
                 {
                     EditorUtility.DisplayProgressBar(ProgressTitle, "SkinnedMeshを統合中...", 0.8f);
+                    // [1.8.1] 変換済みアバターを再処理する場合に備え、統合を作る前に複製上の前回の統合先の残骸
+                    //  (RARA_MergedMesh 系・メッシュ未設定)を先に削除する(古いAAO MergeSkinnedMeshごと消え、
+                    //   新しい統合先との二重統合衝突と、余分なメッシュ未設定SMRの計上を防ぐ)。
+                    RARA.QuestConverter.AAOMeshMergeHelper.RemoveStaleMergeTargets(clone, report);
                     RARA.QuestConverter.SkinnedMeshMergePlan mergePlan = RARA.QuestConverter.SkinnedMeshMergePlanner.BuildPlan(
                         clone, settings.mergeSkinnedMeshesMode, settings.skinnedMeshMergeOptOutPaths, settings.smrMergeGroups);
                     RARA.QuestConverter.AAOMeshMergeHelper.ApplyMergeSkinnedMesh(clone, mergePlan, report);
