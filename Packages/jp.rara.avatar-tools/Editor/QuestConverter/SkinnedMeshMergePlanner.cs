@@ -125,6 +125,34 @@ namespace RARA.QuestConverter
         /// opt-out(個別除外)は MergeExceptFace 専用のため、この判定には含めない。
         /// </summary>
         public bool canAssign;
+
+        /// <summary>
+        /// [1.9.0] このレンダラーの上描き(余剰)スロット(index >= subMeshCount)を削除して統合するか。
+        /// true の行は実行時(AAOMeshMergeHelper.ApplyMergeExcessTrims)に複製のレンダラーから余剰スロットを削除し、
+        /// 多重描画でなくなった状態で統合ソースに含める。false は従来どおり(削除しない)。
+        /// </summary>
+        public bool overdrawTrimApplied;
+
+        /// <summary>
+        /// [1.9.0] overdrawTrimApplied の削除が「可視の上描き(前髪影など)」を消すか。
+        /// true = 重ね描き効果が失われる([B] オプトイン。Warnレベルで報告)。
+        /// false = 何も描かないスロット(null / Questの非表示変換)だけを削除する([A] 自動。見た目不変・Infoで報告)。
+        /// </summary>
+        public bool overdrawTrimHadVisible;
+
+        /// <summary>
+        /// [1.9.0] 可視の上描きが残るため「上描きスロットを削除して統合」チェック([B])を出せるレンダラーか。
+        /// 可視の余剰スロットがある多重描画レンダラー(スロット差し替えアニメ対象[C]を除く)は、オプトインの有無に
+        /// かかわらず true にする(チェックのON/OFF状態は skinnedMeshMergeOverdrawTrimPaths で駆動)。これによりチェック後も
+        /// チェックが消えず解除できる。未チェックの行は統合しないが、チェックすると overdrawTrimApplied になり統合する。
+        /// </summary>
+        public bool canOverdrawTrim;
+
+        /// <summary>
+        /// [1.9.0] スロット差し替えアニメ(m_Materials.Array.data[N])の対象で、上描きスロット削除が不可か([C])。
+        /// true の行はチェックを出さず、自動削除もしない(スロット番号がずれてアニメが壊れるため)。
+        /// </summary>
+        public bool slotAnimTrimBlocked;
     }
 
     /// <summary>
@@ -190,7 +218,7 @@ namespace RARA.QuestConverter
         /// </summary>
         public static SkinnedMeshMergePlan BuildPlan(GameObject avatarRoot, SkinnedMeshMergeMode mode, IEnumerable<string> optOutPaths)
         {
-            return BuildPlan(avatarRoot, mode, optOutPaths, null, null);
+            return BuildPlan(avatarRoot, mode, optOutPaths, null, null, null, null);
         }
 
         /// <summary>
@@ -202,8 +230,12 @@ namespace RARA.QuestConverter
         /// excludedRoots は Quest除外サブツリーのルート集合(プレビューで元アバターを走査する面用。null可)。
         /// これに含まれる/EditorOnly のレンダラーは isBuildExcluded=true にして統合対象外・一覧非表示・概算除外にする。
         /// 変換時はクローンで Quest除外が既に EditorOnly 化済みのため null でよい(EditorOnly タグで判定される)。
+        /// [1.9.0] overdrawTrimOptInPaths は「上描き(余剰)スロットを削除して統合」をユーザーが選んだレンダラーの相対パス集合(null可)。
+        /// excessSlotDrawsNothing は、上描きスロットのマテリアルが「何も描かない」ものか(削除しても見た目不変か)を返す判定(null可)。
+        /// 変換時のクローンでは MaterialQuestConverter.IsHiddenConvertedMaterial を渡す(非表示変換済みを厳密判定)。PCは null(非表示変換なし=nullスロットのみ自動削除)。
+        /// プレビューでは元アバターのため厳密判定できず、SkinnedMeshMergePlanner.EstimateHiddenOverdrawForQuest(Quest対象時)/ null(PC)を渡す。
         /// </summary>
-        public static SkinnedMeshMergePlan BuildPlan(GameObject avatarRoot, SkinnedMeshMergeMode mode, IEnumerable<string> optOutPaths, IEnumerable<SmrMergeGroupAssignment> groupAssignments, HashSet<Transform> excludedRoots = null)
+        public static SkinnedMeshMergePlan BuildPlan(GameObject avatarRoot, SkinnedMeshMergeMode mode, IEnumerable<string> optOutPaths, IEnumerable<SmrMergeGroupAssignment> groupAssignments, HashSet<Transform> excludedRoots = null, IEnumerable<string> overdrawTrimOptInPaths = null, Func<Material, bool> excessSlotDrawsNothing = null)
         {
             var plan = new SkinnedMeshMergePlan();
             if (avatarRoot == null) return plan;
@@ -216,6 +248,22 @@ namespace RARA.QuestConverter
                     if (!string.IsNullOrEmpty(p)) optOut.Add(p);
                 }
             }
+
+            // [1.9.0] 「上描きスロットを削除して統合」オプトイン集合([B])。
+            var overdrawTrimOptIn = new HashSet<string>();
+            if (overdrawTrimOptInPaths != null)
+            {
+                foreach (string p in overdrawTrimOptInPaths)
+                {
+                    if (!string.IsNullOrEmpty(p)) overdrawTrimOptIn.Add(p);
+                }
+            }
+
+            // [1.9.0] スロット差し替えアニメ(m_Materials.Array.data[N])の対象レンダラーパス集合([C]ガード)。
+            //   多重描画レンダラーが1つも無ければ集めない(軽量化。遅延収集)。走査失敗時は「全多重描画をスロット削除不可」に倒す(安全側)。
+            HashSet<string> slotSwapAnimPaths = null;
+            bool slotSwapScanned = false;
+            bool slotSwapScanOk = true;
 
             // グループ割り当て(rendererPath→groupIndex 1..8)。MergeByGroup のときだけ使う。
             var groupByPath = new Dictionary<string, int>();
@@ -247,13 +295,57 @@ namespace RARA.QuestConverter
                 Mesh mesh = smr.sharedMesh;
 
                 bool cloth = HasCloth(smr);
+                Material[] sharedMats = smr.sharedMaterials;
                 // [A] 多重描画: マテリアルスロット数がサブメッシュ数を超えるレンダラー(例: 髪 = mat_hair +
                 //     FakeShadow の2スロット・1サブメッシュ)。Unity はこのメッシュを追加スロット分だけ多重に描画するが、
                 //     AAO MergeSkinnedMesh はビルド時に FlattenMultiPassRendering で多重描画を実体化(サブメッシュを複製)
                 //     するため、統合するとポリゴン数が増える(PCの70,000境界を越えて即 Very Poor になる等)。統合しなければ
                 //     ネイティブの多重描画のまま残り SDK はポリゴン数を増やさない。よって統合対象から自動除外する
                 //     (1.0.9の非統合スロット方針を、ビルド時のマージが打ち消さないようにするガード)。
-                bool multiPass = mesh != null && smr.sharedMaterials != null && smr.sharedMaterials.Length > mesh.subMeshCount;
+                bool multiPass = mesh != null && sharedMats != null && sharedMats.Length > mesh.subMeshCount;
+
+                // [1.9.0] 上描き(余剰)スロットの削除で統合可能にする判定([A]自動 / [B]オプトイン / [C]ガード)。
+                //   多重描画かつ統合候補(顔でない・メッシュあり・Clothなし・ビルド除外でない)のレンダラーだけを対象にする。
+                bool trimApplied = false;      // 余剰スロットを削除して統合する(=このレンダラーは多重描画でなくなり統合できる)
+                bool trimHadVisible = false;   // 可視の上描きを削除する([B]。重ね描き効果が消える → Warn)
+                bool offerTrim = false;        // 可視の上描きが残る → [B]チェックを出す(チェック状態は設定リストで駆動。未チェックなら統合しない)
+                bool slotTrimBlocked = false;  // [C] スロット差し替えアニメのため削除不可
+                if (multiPass && !isFace && !buildExcluded && !cloth && mesh != null)
+                {
+                    if (!slotSwapScanned)
+                    {
+                        slotSwapScanned = true;
+                        try { slotSwapAnimPaths = MaterialAtlasser.CollectMaterialSlotAnimationPaths(avatarRoot); }
+                        catch (Exception) { slotSwapAnimPaths = null; slotSwapScanOk = false; }
+                    }
+                    bool slotSwapGuarded = !slotSwapScanOk || slotSwapAnimPaths == null ||
+                                           slotSwapAnimPaths.Contains(path);
+                    if (slotSwapGuarded)
+                    {
+                        slotTrimBlocked = true; // [C]
+                    }
+                    else
+                    {
+                        // 余剰スロット(index >= subMeshCount)のうち「可視の上描き」が残る枚数を数える。
+                        // 何も描かない=null または excessSlotDrawsNothing(非表示変換など)は削除しても見た目不変。
+                        int visibleExcess = 0;
+                        for (int i = mesh.subMeshCount; i < sharedMats.Length; i++)
+                        {
+                            Material om = sharedMats[i];
+                            bool blank = om == null || (excessSlotDrawsNothing != null && excessSlotDrawsNothing(om));
+                            if (!blank) visibleExcess++;
+                        }
+                        if (visibleExcess == 0) { trimApplied = true; trimHadVisible = false; }        // [A] 何も描かないスロットのみ → 自動削除して統合
+                        else
+                        {
+                            // [B] 可視の上描きが残る。オプトインの有無にかかわらずチェックを出す(チェック後も消えず、解除できる)。
+                            offerTrim = true;
+                            if (overdrawTrimOptIn.Contains(path)) { trimApplied = true; trimHadVisible = true; } // オプトインで可視も削除して統合
+                        }
+                    }
+                }
+                // 余剰スロットを削除すれば統合できるレンダラーは、以降は「多重描画で統合不可」ではなく通常の統合候補として扱う。
+                bool multiPassBlocking = multiPass && !trimApplied;
 
                 var row = new SkinnedMeshMergeRow
                 {
@@ -263,8 +355,10 @@ namespace RARA.QuestConverter
                     isEditorOnly = editorOnly,
                     isBuildExcluded = buildExcluded,
                     blendShapeCount = mesh != null ? mesh.blendShapeCount : 0,
-                    // 割り当て可能=顔でない・ビルド除外でない・メッシュあり・Clothなし・多重描画でない(opt-outは含めない)。
-                    canAssign = !isFace && !buildExcluded && mesh != null && !cloth && !multiPass,
+                    // 割り当て可能=顔でない・ビルド除外でない・メッシュあり・Clothなし・(多重描画でない or 上描き削除で統合可能)。
+                    canAssign = !isFace && !buildExcluded && mesh != null && !cloth && (!multiPass || trimApplied),
+                    canOverdrawTrim = offerTrim,
+                    slotAnimTrimBlocked = slotTrimBlocked,
                 };
 
                 if (mode == SkinnedMeshMergeMode.None)
@@ -305,11 +399,20 @@ namespace RARA.QuestConverter
                     row.willMerge = false;
                     row.reason = "Clothコンポーネントがあるため統合対象外(布シミュレーションを保持)";
                 }
-                else if (multiPass)
+                else if (multiPassBlocking)
                 {
-                    // [A] 多重描画は統合すると実体化されてポリゴンが増えるため、どの統合モードでも自動除外する。
+                    // 多重描画は統合すると実体化されてポリゴンが増えるため、どの統合モードでも自動除外する。
                     row.willMerge = false;
-                    row.reason = "多重描画(スロット数>サブメッシュ数)のため統合しません(統合するとビルド時にポリゴン数が増えるため)";
+                    if (slotTrimBlocked)
+                    {
+                        // [C] スロット差し替えアニメの対象は、上描きスロットを削除するとスロット番号がずれてアニメが壊れる。
+                        row.reason = "マテリアル差し替えアニメがあるためスロット削除不可";
+                    }
+                    else
+                    {
+                        // 可視の上描きが残る([B] チェックを出す)。
+                        row.reason = "多重描画(スロット数>サブメッシュ数)のため統合しません(統合するとビルド時にポリゴン数が増えるため)";
+                    }
                 }
                 else if (mode == SkinnedMeshMergeMode.MergeByGroup)
                 {
@@ -343,6 +446,21 @@ namespace RARA.QuestConverter
                 {
                     row.willMerge = true;
                     row.reason = "他メッシュと1つに統合";
+                }
+
+                // [1.9.0] 上描きスロットの削除で統合するレンダラーは、実行時にスロットを削除する印を付け、理由を差し替える。
+                //   opt-out / グループ未割り当てで結局統合しない(willMerge==false)場合は削除もしない(印を付けない)。
+                if (trimApplied && row.willMerge)
+                {
+                    row.overdrawTrimApplied = true;
+                    row.overdrawTrimHadVisible = trimHadVisible;
+                    // グループ指定モードは「グループNに統合」の情報を残す(削除は overdrawTrimApplied で行う)。
+                    if (mode != SkinnedMeshMergeMode.MergeByGroup)
+                    {
+                        row.reason = trimHadVisible
+                            ? "上描きスロット削除により統合します"
+                            : "何も描かない上描きスロットを削除して統合します";
+                    }
                 }
 
                 if (isFace) plan.faceRendererPaths.Add(path);
@@ -404,6 +522,20 @@ namespace RARA.QuestConverter
             plan.expectedCount = surviving - reduction;
 
             return plan;
+        }
+
+        /// <summary>
+        /// [1.9.0] プレビュー用: 上描き(余剰)スロットのマテリアルが Quest 変換で「何も描かない」ものになる見込みか推定する。
+        /// 変換前の元アバターでプレビューするため厳密判定はできないので、設定によらず常に自動で非表示化される
+        /// 効果専用シェーダー(疑似影 FakeShadow / アウトラインのみ OutlineOnly)だけを見込む。実変換のクローンでは
+        /// IsHiddenConvertedMaterial が透過非表示・手動非表示なども拾うため、実際にはこの推定より多く自動統合されることが
+        /// ある(=控えめ・安全側の推定。プレビューが実際より統合を渋ることはあっても、渋らせ過ぎない)。
+        /// PC はこの推定を使わない(非表示変換が無いため null を渡す=null スロットのみ自動削除)。
+        /// </summary>
+        public static bool EstimateHiddenOverdrawForQuest(Material m)
+        {
+            if (m == null) return false; // null スロットは呼び出し側で別途「何も描かない」として扱う
+            return QuestCompat.ClassifyOverlayOnlyShader(m.shader, m.name) != QuestCompat.OverlayOnlyShaderKind.None;
         }
 
         /// <summary>
@@ -521,6 +653,9 @@ namespace RARA.QuestConverter
                     row.willMerge = false;
                     row.groupIndex = 0;
                     row.reason = "マテリアルアニメーションが統合先全体へ波及するため統合しません";
+                    // [1.9.0] 統合しなくなったレンダラーは上描きスロットを削除しない(印を落とす。実行時トリムの対象外にする)。
+                    row.overdrawTrimApplied = false;
+                    row.overdrawTrimHadVisible = false;
                 }
             }
         }

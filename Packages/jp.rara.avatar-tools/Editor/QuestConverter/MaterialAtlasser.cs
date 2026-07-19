@@ -804,8 +804,9 @@ namespace RARA.QuestConverter
         /// Transformパス(アバタールート相対)を収集する。
         /// アトラス化はアニメーション変換(AnimationConverter)より前に実行されるため、
         /// この時点のコントローラーは元(PC)のものだが、バインディングパスは複製後も同一。
+        /// [1.9.0] SkinnedMeshMergePlanner の上描きスロット削除ガード([C])も同じ集合を再利用する(internal公開)。
         /// </summary>
-        private static HashSet<string> CollectMaterialSlotAnimationPaths(GameObject questRoot)
+        internal static HashSet<string> CollectMaterialSlotAnimationPaths(GameObject questRoot)
         {
             var paths = new HashSet<string>();
 

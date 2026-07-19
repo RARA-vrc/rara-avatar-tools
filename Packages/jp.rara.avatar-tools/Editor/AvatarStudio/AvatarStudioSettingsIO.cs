@@ -262,6 +262,7 @@ namespace RARA.AvatarStudio
                 foreach (var c in s.toggleChoices)
                     if (c != null && !string.IsNullOrEmpty(c.groupId)) yield return c.groupId;
             foreach (var p in NonEmpty(s.skinnedMeshMergeOptOutPaths)) yield return p;
+            foreach (var p in NonEmpty(s.skinnedMeshMergeOverdrawTrimPaths)) yield return p;
             if (s.smrMergeGroups != null)
                 foreach (var g in s.smrMergeGroups)
                     if (g != null && !string.IsNullOrEmpty(g.rendererPath)) yield return g.rendererPath;

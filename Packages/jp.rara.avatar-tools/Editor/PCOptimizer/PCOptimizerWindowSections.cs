@@ -637,6 +637,8 @@ namespace RARA.PCOptimizer
         {
             if (_settings.skinnedMeshMergeOptOutPaths == null)
                 _settings.skinnedMeshMergeOptOutPaths = new List<string>();
+            if (_settings.skinnedMeshMergeOverdrawTrimPaths == null)
+                _settings.skinnedMeshMergeOverdrawTrimPaths = new List<string>();
 
             bool aaoInstalled = QuestCompat.FindType("Anatawa12.AvatarOptimizer.TraceAndOptimize") != null;
 
@@ -705,9 +707,11 @@ namespace RARA.PCOptimizer
 
             // [1.5.1] EditorOnly(ビルド除外)のレンダラーは統合対象外・一覧非表示・概算除外にする(PCはQuest除外なし)。
             _buildExclusion.Refresh(_avatar.gameObject, null);
+            // [1.9.0] PCは非表示変換が無いため上描き「何も描かない」判定は null(=null スロットのみ自動削除)。可視の上描き(PCの疑似影等)は
+            //   [B] チェック(上描きスロットを削除して統合)で統合できるようにする。
             RARA.QuestConverter.SkinnedMeshMergePlan plan = RARA.QuestConverter.SkinnedMeshMergePlanner.BuildPlan(
                 _avatar.gameObject, _settings.mergeSkinnedMeshesMode, _settings.skinnedMeshMergeOptOutPaths, null,
-                _buildExclusion.ExcludedRoots);
+                _buildExclusion.ExcludedRoots, _settings.skinnedMeshMergeOverdrawTrimPaths, null);
 
             EditorGUILayout.Space(2f);
             using (new EditorGUILayout.HorizontalScope(EditorStyles.helpBox))
@@ -770,7 +774,41 @@ namespace RARA.PCOptimizer
                         SetSkinnedMeshMergeOptOutPC(row.rendererPath, newOptedOut);
                     }
                 }
+
+                // [1.9.0][B] 可視の上描きが残るレンダラーは「上描きスロットを削除して統合」を選べる(効果は消える)。
+                if (row.canOverdrawTrim)
+                {
+                    bool trim = _settings.skinnedMeshMergeOverdrawTrimPaths.Contains(row.rendererPath);
+                    EditorGUI.BeginChangeCheck();
+                    bool newTrim = EditorGUILayout.ToggleLeft(
+                        new GUIContent("上描きスロットを削除して統合(前髪影などの重ね描き効果が消えます)",
+                            "多重描画の上描きスロットを削除して統合できるようにします。前髪の影などの重ね描き効果は失われます"),
+                        trim);
+                    if (EditorGUI.EndChangeCheck())
+                    {
+                        SetSkinnedMeshMergeOverdrawTrimPC(row.rendererPath, newTrim);
+                    }
+                }
             }
+        }
+
+        /// <summary>レンダラーパスを上描きスロット削除リスト(skinnedMeshMergeOverdrawTrimPaths)へ追加/削除する(変更時のみ保存)。</summary>
+        private void SetSkinnedMeshMergeOverdrawTrimPC(string rendererPath, bool trim)
+        {
+            if (string.IsNullOrEmpty(rendererPath)) return;
+            if (_settings.skinnedMeshMergeOverdrawTrimPaths == null)
+                _settings.skinnedMeshMergeOverdrawTrimPaths = new List<string>();
+            bool changed;
+            if (trim)
+            {
+                changed = !_settings.skinnedMeshMergeOverdrawTrimPaths.Contains(rendererPath);
+                if (changed) _settings.skinnedMeshMergeOverdrawTrimPaths.Add(rendererPath);
+            }
+            else
+            {
+                changed = _settings.skinnedMeshMergeOverdrawTrimPaths.Remove(rendererPath);
+            }
+            if (changed) SaveSettings();
         }
 
         /// <summary>統合プレビュー行のピンボタン(該当レンダラーをシーンでハイライト)。</summary>
@@ -1240,8 +1278,10 @@ namespace RARA.PCOptimizer
             // SkinnedMesh統合(顔以外を1つへ): 有効かつアバター指定時のみ想定SMR数を示す
             if (_settings.mergeSkinnedMeshesMode != RARA.QuestConverter.SkinnedMeshMergeMode.None && _avatar != null)
             {
+                // [1.9.0] 上描きスロット削除(自動=nullスロットのみ / オプトイン)を反映した想定SMR数にする(PCは非表示変換なし=null判定)。
                 RARA.QuestConverter.SkinnedMeshMergePlan mergePlan = RARA.QuestConverter.SkinnedMeshMergePlanner.BuildPlan(
-                    _avatar.gameObject, _settings.mergeSkinnedMeshesMode, _settings.skinnedMeshMergeOptOutPaths);
+                    _avatar.gameObject, _settings.mergeSkinnedMeshesMode, _settings.skinnedMeshMergeOptOutPaths, null, null,
+                    _settings.skinnedMeshMergeOverdrawTrimPaths, null);
                 if (mergePlan.WillMergeAnything)
                 {
                     lines.Add("SkinnedMesh統合: 顔以外を1つへ統合(想定 " + mergePlan.beforeCount + "→" + mergePlan.expectedCount + " ・AAO・ビルド時)");

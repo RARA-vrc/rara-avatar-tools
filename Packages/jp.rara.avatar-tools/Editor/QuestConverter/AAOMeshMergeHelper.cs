@@ -113,6 +113,56 @@ namespace RARA.QuestConverter
             return removed;
         }
 
+        /// <summary>
+        /// [1.9.0] plan で「上描き(余剰)スロットを削除して統合する」と判定されたレンダラー(<see cref="SkinnedMeshMergeRow.overdrawTrimApplied"/>)
+        /// について、複製 cloneRoot 上の該当レンダラーの余剰マテリアルスロット(index &gt;= subMeshCount)を削除する。これにより多重描画で
+        /// なくなり、後続の <see cref="ApplyMergeSkinnedMesh"/> で通常どおり統合される(1.7.1 の多重描画ガードに引っかからなくなる)。
+        /// 必ず <see cref="ApplyMergeSkinnedMesh"/> の前に呼ぶこと。何も描かないスロットだけを削除する場合は見た目不変(Info)、
+        /// 可視の上描き(前髪影など)を削除する場合は重ね描き効果が失われる([B] オプトイン。Warn)。対象は必ず複製のみ
+        /// (元アバターは変更しない)。既に余剰スロットが無ければ何もしない(アトラス段で削除済み等 = 二重処理なし)。例外は投げない。
+        /// 戻り値: スロットを削除したレンダラー数(0=無し)。
+        /// </summary>
+        public static int ApplyMergeExcessTrims(GameObject cloneRoot, SkinnedMeshMergePlan plan, ConversionReport report)
+        {
+            if (report == null) report = new ConversionReport();
+            if (cloneRoot == null || plan == null || plan.rows == null) return 0;
+
+            int trimmed = 0;
+            foreach (SkinnedMeshMergeRow row in plan.rows)
+            {
+                if (row == null || !row.overdrawTrimApplied || string.IsNullOrEmpty(row.rendererPath)) continue;
+                Transform t = QuestCompat.FindByPath(cloneRoot.transform, row.rendererPath);
+                if (t == null) continue;
+                var smr = t.GetComponent<SkinnedMeshRenderer>();
+                if (smr == null) continue;
+                Mesh mesh = smr.sharedMesh;
+                Material[] mats = smr.sharedMaterials;
+                if (mesh == null || mats == null) continue;
+                int keep = mesh.subMeshCount;
+                if (keep < 0) keep = 0;
+                if (mats.Length <= keep) continue; // 既に余剰スロット無し(アトラス段で削除済み等)→ 何もしない(二重処理なし)
+
+                try
+                {
+                    var kept = new Material[keep];
+                    for (int i = 0; i < keep; i++) kept[i] = mats[i];
+                    Undo.RecordObject(smr, "RARA Trim Overdraw Slots");
+                    smr.sharedMaterials = kept;
+                    EditorUtility.SetDirty(smr);
+                    trimmed++;
+                    if (row.overdrawTrimHadVisible)
+                        report.Warn($"'{smr.gameObject.name}': 上描きスロットを削除して統合しました(重ね描き効果は失われます)。");
+                    else
+                        report.Info($"'{smr.gameObject.name}': 何も描かない上描きスロットを削除しました(統合可能になりました)。");
+                }
+                catch (Exception ex)
+                {
+                    report.Warn($"上描きスロットの削除に失敗しました({row.rendererPath}): {ex.Message}");
+                }
+            }
+            return trimmed;
+        }
+
         // AAO BlendShapeMode の列挙インデックス(MergeSameName=0, RenameToAvoidConflict=1, TraditionalCompability=2)。
         // 既定は RenameToAvoidConflict: 同名ブレンドシェイプを別名化して衝突を避け、各アニメを個別に追従させる
         // (表情・シェイプが安全に保たれる。研究の結論)。

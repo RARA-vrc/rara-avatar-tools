@@ -486,6 +486,7 @@ namespace RARA.AvatarStudio
 
             bool changed = false;
             EnsureList(ref s.skinnedMeshMergeOptOutPaths);
+            EnsureList(ref s.skinnedMeshMergeOverdrawTrimPaths);
             EnsureList(ref s.smrMergeGroups);
 
             // モードで次フレームの描画量(表 or 案内 / opt-out or グループ選択)が変わるため、モードは描画前に捕捉する。
@@ -540,12 +541,23 @@ namespace RARA.AvatarStudio
             // [1.5.1] EditorOnly(常時ビルド除外)/ Quest除外(Quest出力時)のレンダラーは統合対象外・一覧非表示・概算除外にする。
             HashSet<Transform> mergeExcludedRoots = BuildExcludedRoots(avatarRoot, s, cache);
             string sig = avatarRoot.GetInstanceID() + "|" + (int)capturedMode + "|" + HashPaths(s.skinnedMeshMergeOptOutPaths)
+                + "|" + HashPaths(s.skinnedMeshMergeOverdrawTrimPaths)
                 + "|" + (byGroup ? HashGroups(s.smrMergeGroups) : "-")
+                + "|" + (s.targetPC ? "PC" : "-")
                 + "|" + (s.targetQuest ? "Q" + HashPaths(s.questExcludePaths) : "P");
+            // [1.9.0] Quest単独時のみ上描きの「何も描かない」推定を渡す(疑似影/アウトラインは自動で非表示化 → 自動削除して統合の見込み)。
+            //   PCを含む場合(PC単独・PC+Quest両対応)は PC が非表示化しないため null(=null スロットのみ自動削除)にする。
+            //   両対応時に Quest 推定を使うと、PCでは残る可視の上描き([B])が「自動削除」に倒れてチェックが消え、
+            //   PC 側の統合オプトインが塞がれる(=概算がPC実数より少なく出る)。null にして [B] チェックを出せるようにする。
+            //   sig に targetPC を含めるのは、Quest対応のまま PC を付け外ししたときにこの推定切り替えを反映させるため。
+            System.Func<Material, bool> hiddenOverdrawEstimate = (s.targetQuest && !s.targetPC)
+                ? (System.Func<Material, bool>)SkinnedMeshMergePlanner.EstimateHiddenOverdrawForQuest
+                : null;
             SkinnedMeshMergePlan plan = cache.GetOrBuild(
                 "smr", sig,
                 () => SkinnedMeshMergePlanner.BuildPlan(
-                    avatarRoot, capturedMode, s.skinnedMeshMergeOptOutPaths, byGroup ? s.smrMergeGroups : null, mergeExcludedRoots));
+                    avatarRoot, capturedMode, s.skinnedMeshMergeOptOutPaths, byGroup ? s.smrMergeGroups : null, mergeExcludedRoots,
+                    s.skinnedMeshMergeOverdrawTrimPaths, hiddenOverdrawEstimate));
 
             if (plan == null) { EditorGUILayout.HelpBox("SkinnedMesh統合プレビューの計算に失敗しました。", MessageType.Warning); return changed; }
 
@@ -609,6 +621,20 @@ namespace RARA.AvatarStudio
                             {
                                 TogglePath(s.skinnedMeshMergeOptOutPaths, row.rendererPath, newOptOut);
                                 changed = true;
+                            }
+                        }
+                        // [1.9.0][B] 可視の上描きが残るレンダラーは「上描き削除して統合」を選べる(前髪影などの効果は消える)。
+                        if (row.canOverdrawTrim)
+                        {
+                            bool trim = IsOptedOut(s.skinnedMeshMergeOverdrawTrimPaths, row.rendererPath);
+                            bool newTrim = GUILayout.Toggle(trim,
+                                new GUIContent("上描き削除して統合", "多重描画の上描きスロットを削除して統合します。前髪影などの重ね描き効果は失われます"),
+                                GUILayout.Width(130f));
+                            if (newTrim != trim)
+                            {
+                                TogglePath(s.skinnedMeshMergeOverdrawTrimPaths, row.rendererPath, newTrim);
+                                changed = true;
+                                cache.Bump();
                             }
                         }
                     }

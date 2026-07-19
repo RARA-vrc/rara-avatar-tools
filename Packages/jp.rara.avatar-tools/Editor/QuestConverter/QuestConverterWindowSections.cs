@@ -2363,6 +2363,7 @@ namespace RARA.QuestConverter
         private void DrawSkinnedMeshMergeBlock(bool aaoInstalled)
         {
             if (_settings.skinnedMeshMergeOptOutPaths == null) _settings.skinnedMeshMergeOptOutPaths = new List<string>();
+            if (_settings.skinnedMeshMergeOverdrawTrimPaths == null) _settings.skinnedMeshMergeOverdrawTrimPaths = new List<string>();
 
             EditorGUILayout.LabelField("SkinnedMesh統合(顔以外を1つへ)", EditorStyles.miniBoldLabel);
 
@@ -2431,9 +2432,12 @@ namespace RARA.QuestConverter
             // プレビューは元アバター上で作る(読み取り専用・軽量: コンポーネント列挙のみ)。
             // [1.5.1] EditorOnly / Quest除外(ビルド除外)のレンダラーは統合対象外・一覧非表示・概算除外にする。
             _buildExclusion.Refresh(_avatar.gameObject, _settings.questExcludePaths);
+            // [1.9.0] Quest対応は非表示変換があるため、上描きスロットの「何も描かない」推定に EstimateHiddenOverdrawForQuest を渡す
+            //   (疑似影 FakeShadow / アウトラインのみ は自動で非表示化 → 自動削除して統合の見込みを表示)。
             SkinnedMeshMergePlan plan = SkinnedMeshMergePlanner.BuildPlan(
                 _avatar.gameObject, _settings.mergeSkinnedMeshesMode, _settings.skinnedMeshMergeOptOutPaths, null,
-                _buildExclusion.ExcludedRoots);
+                _buildExclusion.ExcludedRoots, _settings.skinnedMeshMergeOverdrawTrimPaths,
+                SkinnedMeshMergePlanner.EstimateHiddenOverdrawForQuest);
 
             EditorGUILayout.Space(2f);
             using (new EditorGUILayout.HorizontalScope(EditorStyles.helpBox))
@@ -2498,7 +2502,40 @@ namespace RARA.QuestConverter
                         SetSkinnedMeshMergeOptOut(row.rendererPath, newOptedOut);
                     }
                 }
+
+                // [1.9.0][B] 可視の上描きが残るレンダラーは「上描きスロットを削除して統合」を選べる(効果は消える)。
+                if (row.canOverdrawTrim)
+                {
+                    bool trim = _settings.skinnedMeshMergeOverdrawTrimPaths.Contains(row.rendererPath);
+                    EditorGUI.BeginChangeCheck();
+                    bool newTrim = EditorGUILayout.ToggleLeft(
+                        new GUIContent("上描きスロットを削除して統合(前髪影などの重ね描き効果が消えます)",
+                            "多重描画の上描きスロットを削除して統合できるようにします。前髪の影などの重ね描き効果は失われます"),
+                        trim);
+                    if (EditorGUI.EndChangeCheck())
+                    {
+                        SetSkinnedMeshMergeOverdrawTrim(row.rendererPath, newTrim);
+                    }
+                }
             }
+        }
+
+        /// <summary>レンダラーパスを上描きスロット削除リスト(skinnedMeshMergeOverdrawTrimPaths)へ追加/削除する(変更時のみ保存)。</summary>
+        private void SetSkinnedMeshMergeOverdrawTrim(string rendererPath, bool trim)
+        {
+            if (string.IsNullOrEmpty(rendererPath)) return;
+            if (_settings.skinnedMeshMergeOverdrawTrimPaths == null) _settings.skinnedMeshMergeOverdrawTrimPaths = new List<string>();
+            bool changed;
+            if (trim)
+            {
+                changed = !_settings.skinnedMeshMergeOverdrawTrimPaths.Contains(rendererPath);
+                if (changed) _settings.skinnedMeshMergeOverdrawTrimPaths.Add(rendererPath);
+            }
+            else
+            {
+                changed = _settings.skinnedMeshMergeOverdrawTrimPaths.Remove(rendererPath);
+            }
+            if (changed) SaveSettings();
         }
 
         /// <summary>レンダラーパスを統合除外リスト(skinnedMeshMergeOptOutPaths)へ追加/削除する(変更時のみ保存)。</summary>
@@ -3597,8 +3634,10 @@ namespace RARA.QuestConverter
             // SkinnedMesh統合(顔以外を1つへ): 有効かつアバター指定時のみ想定SMR数を示す
             if (_settings.mergeSkinnedMeshesMode != SkinnedMeshMergeMode.None && _avatar != null)
             {
+                // [1.9.0] 上描きスロット削除(自動/オプトイン)を反映した想定SMR数にするため、統合プレビューと同じ引数で作る。
                 SkinnedMeshMergePlan mergePlan = SkinnedMeshMergePlanner.BuildPlan(
-                    _avatar.gameObject, _settings.mergeSkinnedMeshesMode, _settings.skinnedMeshMergeOptOutPaths);
+                    _avatar.gameObject, _settings.mergeSkinnedMeshesMode, _settings.skinnedMeshMergeOptOutPaths, null, null,
+                    _settings.skinnedMeshMergeOverdrawTrimPaths, SkinnedMeshMergePlanner.EstimateHiddenOverdrawForQuest);
                 if (mergePlan.WillMergeAnything)
                 {
                     lines.Add("SkinnedMesh統合: 顔以外を1つへ統合(想定 " + mergePlan.beforeCount + "→" + mergePlan.expectedCount + " ・AAO・ビルド時)");
