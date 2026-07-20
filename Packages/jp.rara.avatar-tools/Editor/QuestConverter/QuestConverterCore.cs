@@ -288,6 +288,9 @@ namespace RARA.QuestConverter
         [Tooltip("上描き(余剰)スロットを削除して統合するレンダラーの相対パス(プレビューで「上描きスロットを削除して統合」を選んだもの。前髪影などの重ね描き効果は失われる)")]
         public List<string> skinnedMeshMergeOverdrawTrimPaths = new List<string>();
 
+        [Tooltip("マテリアルアニメーションを無効化して統合するレンダラーの相対パス(プレビューで「マテリアルアニメーションを無効化して統合」を選んだもの。エミッション切り替え等の演出は動かなくなる。元アバターは無改変で複製側のクリップのみ無効化)")]
+        public List<string> skinnedMeshMergeMaterialAnimDisablePaths = new List<string>();
+
         [Tooltip("mergeSkinnedMeshesMode=グループ指定 のときの、レンダラー→グループ番号(1..8)の割り当て。統合UIから設定する")]
         public List<SmrMergeGroupAssignment> smrMergeGroups = new List<SmrMergeGroupAssignment>();
 

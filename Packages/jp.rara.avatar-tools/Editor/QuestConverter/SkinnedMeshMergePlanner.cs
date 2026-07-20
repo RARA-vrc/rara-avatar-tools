@@ -153,6 +153,22 @@ namespace RARA.QuestConverter
         /// true の行はチェックを出さず、自動削除もしない(スロット番号がずれてアニメが壊れるため)。
         /// </summary>
         public bool slotAnimTrimBlocked;
+
+        /// <summary>
+        /// [1.10.0] マテリアルプロパティアニメーションの波及ガード([1.7.1])で統合から外されたレンダラーで、
+        /// 「マテリアルアニメーションを無効化して統合」チェック([A])を出せるか。可視の上描きチェック(canOverdrawTrim)と
+        /// 同様に、オプトインの有無にかかわらず true にして、チェック後もチェックが消えず解除できるようにする。
+        /// このレンダラーに向いた material.* アニメ(エミッション切り替え等)を持ち、かつ統合セット内で他ソースと
+        /// アニメ集合が食い違うためガードで除外される行にだけ true。スロット差し替えアニメ([C] slotAnimTrimBlocked)は対象外。
+        /// </summary>
+        public bool canDisableMaterialAnim;
+
+        /// <summary>
+        /// [1.10.0] ユーザーが「マテリアルアニメーションを無効化して統合」を選び、複製側で material.* アニメを無効化した上で
+        /// このレンダラーを統合する(=切り替え演出は動かなくなる)か。true の行はプレビューで統合としてカウントされ、
+        /// 実行時は複製のクリップから material.* カーブが除去済みのため波及ガードに引っかからず統合される。
+        /// </summary>
+        public bool materialAnimDisableApplied;
     }
 
     /// <summary>
@@ -234,8 +250,11 @@ namespace RARA.QuestConverter
         /// excessSlotDrawsNothing は、上描きスロットのマテリアルが「何も描かない」ものか(削除しても見た目不変か)を返す判定(null可)。
         /// 変換時のクローンでは MaterialQuestConverter.IsHiddenConvertedMaterial を渡す(非表示変換済みを厳密判定)。PCは null(非表示変換なし=nullスロットのみ自動削除)。
         /// プレビューでは元アバターのため厳密判定できず、SkinnedMeshMergePlanner.EstimateHiddenOverdrawForQuest(Quest対象時)/ null(PC)を渡す。
+        /// [1.10.0] materialAnimDisablePaths は「マテリアルアニメーションを無効化して統合」をユーザーが選んだレンダラーの相対パス集合(null可)。
+        /// プレビューでは、これに含まれるレンダラーの material.* アニメ集合を「空(=無効化予定)」とみなして波及ガードを再評価し、
+        /// 統合としてカウントする(実行時は複製のクリップから実際に除去済みのため、この引数なしでもガードが空集合を見て統合する)。
         /// </summary>
-        public static SkinnedMeshMergePlan BuildPlan(GameObject avatarRoot, SkinnedMeshMergeMode mode, IEnumerable<string> optOutPaths, IEnumerable<SmrMergeGroupAssignment> groupAssignments, HashSet<Transform> excludedRoots = null, IEnumerable<string> overdrawTrimOptInPaths = null, Func<Material, bool> excessSlotDrawsNothing = null)
+        public static SkinnedMeshMergePlan BuildPlan(GameObject avatarRoot, SkinnedMeshMergeMode mode, IEnumerable<string> optOutPaths, IEnumerable<SmrMergeGroupAssignment> groupAssignments, HashSet<Transform> excludedRoots = null, IEnumerable<string> overdrawTrimOptInPaths = null, Func<Material, bool> excessSlotDrawsNothing = null, IEnumerable<string> materialAnimDisablePaths = null)
         {
             var plan = new SkinnedMeshMergePlan();
             if (avatarRoot == null) return plan;
@@ -256,6 +275,17 @@ namespace RARA.QuestConverter
                 foreach (string p in overdrawTrimOptInPaths)
                 {
                     if (!string.IsNullOrEmpty(p)) overdrawTrimOptIn.Add(p);
+                }
+            }
+
+            // [1.10.0] 「マテリアルアニメーションを無効化して統合」オプトイン集合([A])。プレビューで波及ガードを
+            //   「このパスの material.* アニメは無効化予定(=空集合)」とみなして再評価するために使う。
+            var materialAnimDisable = new HashSet<string>(StringComparer.Ordinal);
+            if (materialAnimDisablePaths != null)
+            {
+                foreach (string p in materialAnimDisablePaths)
+                {
+                    if (!string.IsNullOrEmpty(p)) materialAnimDisable.Add(p);
                 }
             }
 
@@ -486,7 +516,7 @@ namespace RARA.QuestConverter
             {
                 if (r != null && !string.IsNullOrEmpty(r.rendererPath)) rowByPath[r.rendererPath] = r;
             }
-            ApplyPropertyAnimationMismatchGuard(avatarRoot, mode, plan, rowByPath);
+            ApplyPropertyAnimationMismatchGuard(avatarRoot, mode, plan, rowByPath, materialAnimDisable);
 
             // 統合前(ビルドに残る)SMR数と、統合後の期待SMR数を算出する。
             int surviving = 0; // ビルドに残る(EditorOnly / Quest除外でない)レンダラー総数
@@ -588,8 +618,11 @@ namespace RARA.QuestConverter
         /// 各統合セット(顔以外を統合=単一 / グループ指定=各グループ)について、ソースごとの material.* アニメーション
         /// 集合が食い違う場合、アニメ対象(material.* アニメを持つ)レンダラーを統合から自動除外する。
         /// 全ソースが同一集合(空集合含む)なら波及しないため統合を許可する。走査失敗時は従来動作(除外しない)。
+        /// [1.10.0] materialAnimDisable に含まれるパスは「material.* アニメを無効化予定」とみなし、その集合を空として扱って
+        /// 統合を許可する(該当行を materialAnimDisableApplied にする)。除外される行には canDisableMaterialAnim を立て、
+        /// UIが「マテリアルアニメーションを無効化して統合」チェックを出せるようにする([A])。
         /// </summary>
-        private static void ApplyPropertyAnimationMismatchGuard(GameObject avatarRoot, SkinnedMeshMergeMode mode, SkinnedMeshMergePlan plan, Dictionary<string, SkinnedMeshMergeRow> rowByPath)
+        private static void ApplyPropertyAnimationMismatchGuard(GameObject avatarRoot, SkinnedMeshMergeMode mode, SkinnedMeshMergePlan plan, Dictionary<string, SkinnedMeshMergeRow> rowByPath, HashSet<string> materialAnimDisable)
         {
             if (avatarRoot == null || plan == null || mode == SkinnedMeshMergeMode.None) return;
 
@@ -613,37 +646,81 @@ namespace RARA.QuestConverter
                 foreach (SkinnedMeshMergeGroup g in plan.mergeGroups)
                 {
                     if (g == null) continue;
-                    GuardMaterialAnimationMismatchInSet(g.sourcePaths, matAnim, rowByPath);
+                    GuardMaterialAnimationMismatchInSet(g.sourcePaths, matAnim, rowByPath, materialAnimDisable);
                 }
             }
             else
             {
-                GuardMaterialAnimationMismatchInSet(plan.mergeSourcePaths, matAnim, rowByPath);
+                GuardMaterialAnimationMismatchInSet(plan.mergeSourcePaths, matAnim, rowByPath, materialAnimDisable);
             }
         }
 
         /// <summary>
         /// setPaths(1つの統合セット)内で、ソースごとの material.* アニメ集合が全て一致しなければ、アニメ対象
         /// (集合が非空)のパスを setPaths から取り除き、対応する行を「統合しない」へ更新する(理由を提示)。
+        /// [1.10.0] 2段評価:
+        ///  (1) 生集合(materialAnimDisable を無視)で不一致なら、非空のメンバー行に canDisableMaterialAnim を立てて
+        ///      「マテリアルアニメーションを無効化して統合」チェックを出せるようにする([A])。
+        ///  (2) 実効集合(materialAnimDisable のパスは空集合として扱う)で不一致なら、実効非空のパスだけを除外する。
+        ///      materialAnimDisable かつ生集合が非空(=実際に無効化されるアニメを持つ)のパスは統合に残し
+        ///      materialAnimDisableApplied を立てる。
         /// </summary>
-        private static void GuardMaterialAnimationMismatchInSet(List<string> setPaths, Dictionary<string, HashSet<string>> matAnim, Dictionary<string, SkinnedMeshMergeRow> rowByPath)
+        private static void GuardMaterialAnimationMismatchInSet(List<string> setPaths, Dictionary<string, HashSet<string>> matAnim, Dictionary<string, SkinnedMeshMergeRow> rowByPath, HashSet<string> materialAnimDisable)
         {
             if (setPaths == null || setPaths.Count < 2) return;
 
-            // AAO と同じ判定粒度: material. を除いたプロパティ名の集合をソース間で比較する。
-            HashSet<string> reference = GetMatAnimSet(matAnim, setPaths[0]);
-            bool mismatch = false;
+            // (1) 生集合での不一致判定 = チェック([A])を出せる行の特定。
+            //     AAO と同じ判定粒度: material. を除いたプロパティ名の集合をソース間で比較する。
+            HashSet<string> rawRef = GetMatAnimSet(matAnim, setPaths[0]);
+            bool rawMismatch = false;
             for (int i = 1; i < setPaths.Count; i++)
             {
-                if (!reference.SetEquals(GetMatAnimSet(matAnim, setPaths[i]))) { mismatch = true; break; }
+                if (!rawRef.SetEquals(GetMatAnimSet(matAnim, setPaths[i]))) { rawMismatch = true; break; }
             }
-            if (!mismatch) return; // 全ソース同一集合 → 波及しないため統合を許可
+            if (rawMismatch)
+            {
+                // 生集合が非空(=このメッシュに material.* アニメが向いている)= ガードで除外され得る行。
+                // スロット差し替えアニメ([C] slotAnimTrimBlocked)は対象外にする(スロット番号ずれでアニメが壊れるため)。
+                foreach (string p in setPaths)
+                {
+                    if (GetMatAnimSet(matAnim, p).Count == 0) continue;
+                    if (rowByPath != null && rowByPath.TryGetValue(p, out SkinnedMeshMergeRow r) && r != null && !r.slotAnimTrimBlocked)
+                    {
+                        r.canDisableMaterialAnim = true;
+                    }
+                }
+            }
 
-            // アニメ対象(集合が非空 = そのメッシュに material.* アニメが向いている)を統合から外す。
+            // (2) 実効集合(無効化予定パス=空)での不一致判定 = 実際の除外・統合の確定。
+            HashSet<string> effRef = EffectiveMatAnimSet(matAnim, materialAnimDisable, setPaths[0]);
+            bool effMismatch = false;
+            for (int i = 1; i < setPaths.Count; i++)
+            {
+                if (!effRef.SetEquals(EffectiveMatAnimSet(matAnim, materialAnimDisable, setPaths[i]))) { effMismatch = true; break; }
+            }
+
+            // 無効化予定かつ実際に material.* アニメを持つ行は、統合に残して「無効化して統合」印を立てる
+            //   (実効集合は空なので下の除外対象にならない)。
+            if (materialAnimDisable != null && materialAnimDisable.Count > 0)
+            {
+                foreach (string p in setPaths)
+                {
+                    if (!materialAnimDisable.Contains(p) || GetMatAnimSet(matAnim, p).Count == 0) continue;
+                    if (rowByPath != null && rowByPath.TryGetValue(p, out SkinnedMeshMergeRow r) && r != null && !r.slotAnimTrimBlocked)
+                    {
+                        r.materialAnimDisableApplied = true;
+                        r.reason = "マテリアルアニメーションを無効化して統合します";
+                    }
+                }
+            }
+
+            if (!effMismatch) return; // 実効集合が全ソース一致 → 波及しないため統合を許可
+
+            // 実効非空(= 無効化されず material.* アニメが残っている)のパスを統合から外す。
             var toRemove = new List<string>();
             foreach (string p in setPaths)
             {
-                if (GetMatAnimSet(matAnim, p).Count > 0) toRemove.Add(p);
+                if (EffectiveMatAnimSet(matAnim, materialAnimDisable, p).Count > 0) toRemove.Add(p);
             }
             foreach (string p in toRemove)
             {
@@ -656,8 +733,20 @@ namespace RARA.QuestConverter
                     // [1.9.0] 統合しなくなったレンダラーは上描きスロットを削除しない(印を落とす。実行時トリムの対象外にする)。
                     row.overdrawTrimApplied = false;
                     row.overdrawTrimHadVisible = false;
+                    // [1.10.0] 除外された行は「無効化して統合」印を落とす(統合されないため)。
+                    row.materialAnimDisableApplied = false;
                 }
             }
+        }
+
+        /// <summary>
+        /// [1.10.0] path の「実効」material.* アニメ集合を返す。materialAnimDisable に含まれるパスは無効化予定のため
+        /// 空集合を返す(=波及しない扱い)。それ以外は生集合を返す。
+        /// </summary>
+        private static HashSet<string> EffectiveMatAnimSet(Dictionary<string, HashSet<string>> matAnim, HashSet<string> materialAnimDisable, string path)
+        {
+            if (materialAnimDisable != null && path != null && materialAnimDisable.Contains(path)) return EmptyMatAnimSet;
+            return GetMatAnimSet(matAnim, path);
         }
 
         /// <summary>path の material.* アニメ集合を返す(無ければ空集合)。</summary>

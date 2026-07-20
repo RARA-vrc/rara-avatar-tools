@@ -2364,6 +2364,7 @@ namespace RARA.QuestConverter
         {
             if (_settings.skinnedMeshMergeOptOutPaths == null) _settings.skinnedMeshMergeOptOutPaths = new List<string>();
             if (_settings.skinnedMeshMergeOverdrawTrimPaths == null) _settings.skinnedMeshMergeOverdrawTrimPaths = new List<string>();
+            if (_settings.skinnedMeshMergeMaterialAnimDisablePaths == null) _settings.skinnedMeshMergeMaterialAnimDisablePaths = new List<string>();
 
             EditorGUILayout.LabelField("SkinnedMesh統合(顔以外を1つへ)", EditorStyles.miniBoldLabel);
 
@@ -2437,7 +2438,7 @@ namespace RARA.QuestConverter
             SkinnedMeshMergePlan plan = SkinnedMeshMergePlanner.BuildPlan(
                 _avatar.gameObject, _settings.mergeSkinnedMeshesMode, _settings.skinnedMeshMergeOptOutPaths, null,
                 _buildExclusion.ExcludedRoots, _settings.skinnedMeshMergeOverdrawTrimPaths,
-                SkinnedMeshMergePlanner.EstimateHiddenOverdrawForQuest);
+                SkinnedMeshMergePlanner.EstimateHiddenOverdrawForQuest, _settings.skinnedMeshMergeMaterialAnimDisablePaths);
 
             EditorGUILayout.Space(2f);
             using (new EditorGUILayout.HorizontalScope(EditorStyles.helpBox))
@@ -2517,7 +2518,40 @@ namespace RARA.QuestConverter
                         SetSkinnedMeshMergeOverdrawTrim(row.rendererPath, newTrim);
                     }
                 }
+
+                // [1.10.0][A] マテリアルアニメーションの波及で統合できないレンダラーは、それを無効化して統合できる(演出は固定)。
+                if (row.canDisableMaterialAnim)
+                {
+                    bool disable = _settings.skinnedMeshMergeMaterialAnimDisablePaths.Contains(row.rendererPath);
+                    EditorGUI.BeginChangeCheck();
+                    bool newDisable = EditorGUILayout.ToggleLeft(
+                        new GUIContent("マテリアルアニメーションを無効化して統合(この切り替え演出は動かなくなります)",
+                            "このレンダラーに向いた material.* アニメーション(エミッション切り替え等)を複製側で無効化し、統合できるようにします。元アバターは無改変です"),
+                        disable);
+                    if (EditorGUI.EndChangeCheck())
+                    {
+                        SetSkinnedMeshMergeMaterialAnimDisable(row.rendererPath, newDisable);
+                    }
+                }
             }
+        }
+
+        /// <summary>レンダラーパスをマテリアルアニメ無効化リスト(skinnedMeshMergeMaterialAnimDisablePaths)へ追加/削除する(変更時のみ保存)。</summary>
+        private void SetSkinnedMeshMergeMaterialAnimDisable(string rendererPath, bool disable)
+        {
+            if (string.IsNullOrEmpty(rendererPath)) return;
+            if (_settings.skinnedMeshMergeMaterialAnimDisablePaths == null) _settings.skinnedMeshMergeMaterialAnimDisablePaths = new List<string>();
+            bool changed;
+            if (disable)
+            {
+                changed = !_settings.skinnedMeshMergeMaterialAnimDisablePaths.Contains(rendererPath);
+                if (changed) _settings.skinnedMeshMergeMaterialAnimDisablePaths.Add(rendererPath);
+            }
+            else
+            {
+                changed = _settings.skinnedMeshMergeMaterialAnimDisablePaths.Remove(rendererPath);
+            }
+            if (changed) SaveSettings();
         }
 
         /// <summary>レンダラーパスを上描きスロット削除リスト(skinnedMeshMergeOverdrawTrimPaths)へ追加/削除する(変更時のみ保存)。</summary>
@@ -3635,9 +3669,11 @@ namespace RARA.QuestConverter
             if (_settings.mergeSkinnedMeshesMode != SkinnedMeshMergeMode.None && _avatar != null)
             {
                 // [1.9.0] 上描きスロット削除(自動/オプトイン)を反映した想定SMR数にするため、統合プレビューと同じ引数で作る。
+                // [1.10.0] マテリアルアニメ無効化オプトインも反映する。
                 SkinnedMeshMergePlan mergePlan = SkinnedMeshMergePlanner.BuildPlan(
                     _avatar.gameObject, _settings.mergeSkinnedMeshesMode, _settings.skinnedMeshMergeOptOutPaths, null, null,
-                    _settings.skinnedMeshMergeOverdrawTrimPaths, SkinnedMeshMergePlanner.EstimateHiddenOverdrawForQuest);
+                    _settings.skinnedMeshMergeOverdrawTrimPaths, SkinnedMeshMergePlanner.EstimateHiddenOverdrawForQuest,
+                    _settings.skinnedMeshMergeMaterialAnimDisablePaths);
                 if (mergePlan.WillMergeAnything)
                 {
                     lines.Add("SkinnedMesh統合: 顔以外を1つへ統合(想定 " + mergePlan.beforeCount + "→" + mergePlan.expectedCount + " ・AAO・ビルド時)");

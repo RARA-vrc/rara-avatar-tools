@@ -87,6 +87,9 @@ namespace RARA.AvatarStudio
         [Tooltip("上描き(余剰)スロットを削除して統合するレンダラーの相対パス(プレビューで「上描きスロットを削除して統合」を選んだもの。前髪影などの重ね描き効果は失われる)。PC・Quest双方へ同一List参照で配られる")]
         public List<string> skinnedMeshMergeOverdrawTrimPaths = new List<string>();
 
+        [Tooltip("マテリアルアニメーションを無効化して統合するレンダラーの相対パス(プレビューで「マテリアルアニメーションを無効化して統合」を選んだもの。エミッション切り替え等の演出は動かなくなる。元アバターは無改変)。PC・Quest双方へ同一List参照で配られる")]
+        public List<string> skinnedMeshMergeMaterialAnimDisablePaths = new List<string>();
+
         [Tooltip("SkinnedMesh統合=グループ指定 のときの、レンダラー→グループ番号(1..8)の割り当て(顔は自動保護で割り当て不可)。PC・Quest双方へ同一List参照で配られる")]
         public List<SmrMergeGroupAssignment> smrMergeGroups = new List<SmrMergeGroupAssignment>();
 

@@ -692,6 +692,12 @@ namespace RARA.QuestConverter
                     //  (RARA_MergedMesh 系・メッシュ未設定)を先に削除する(古いAAO MergeSkinnedMeshごと消え、
                     //   新しい統合先との二重統合衝突と、余分なメッシュ未設定SMRの計上を防ぐ)。
                     AAOMeshMergeHelper.RemoveStaleMergeTargets(clone, report);
+                    // [1.10.0] 「マテリアルアニメーションを無効化して統合」オプトインのレンダラーは、統合プラン作成(波及ガードの
+                    //   アニメ走査)より前に、複製側のクリップから material.* カーブを除去する(元アバターは無改変)。除去後は該当
+                    //   レンダラーの material.* アニメ集合が空になり、波及ガードが再評価して統合を許可する([A]/[B]/[C])。
+                    ToggleConsolidator.NeutralizeMaterialAnimations(
+                        clone, settings.skinnedMeshMergeMaterialAnimDisablePaths, settings.skinnedMeshMergeOptOutPaths,
+                        outputDir, assets, report);
                     // [1.9.0] 上描き(余剰)スロットの削除で統合可能にする。クローンはマテリアル変換済みのため、非表示変換された
                     //   スロットは IsHiddenConvertedMaterial で厳密判定できる([A] 何も描かないスロットのみ自動削除 / [B] オプトインで可視も削除)。
                     SkinnedMeshMergePlan mergePlan = SkinnedMeshMergePlanner.BuildPlan(

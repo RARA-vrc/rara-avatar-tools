@@ -62,6 +62,7 @@ namespace RARA.AvatarStudio
             pc.mergeSkinnedMeshesMode = s.mergeSkinnedMeshesMode;
             pc.skinnedMeshMergeOptOutPaths = s.skinnedMeshMergeOptOutPaths;   // 参照共有
             pc.skinnedMeshMergeOverdrawTrimPaths = s.skinnedMeshMergeOverdrawTrimPaths; // 参照共有(上描きスロット削除)
+            pc.skinnedMeshMergeMaterialAnimDisablePaths = s.skinnedMeshMergeMaterialAnimDisablePaths; // 参照共有(マテリアルアニメ無効化して統合)
             pc.smrMergeGroups = s.smrMergeGroups;                             // 参照共有(グループ指定モード)
             pc.mergePhysBones = s.mergePhysBones;
             pc.physBoneLooseMerge = s.physBoneLooseMerge;
@@ -99,6 +100,7 @@ namespace RARA.AvatarStudio
             quest.mergeSkinnedMeshesMode = s.mergeSkinnedMeshesMode;
             quest.skinnedMeshMergeOptOutPaths = s.skinnedMeshMergeOptOutPaths;   // 参照共有
             quest.skinnedMeshMergeOverdrawTrimPaths = s.skinnedMeshMergeOverdrawTrimPaths; // 参照共有(上描きスロット削除)
+            quest.skinnedMeshMergeMaterialAnimDisablePaths = s.skinnedMeshMergeMaterialAnimDisablePaths; // 参照共有(マテリアルアニメ無効化して統合)
             quest.smrMergeGroups = s.smrMergeGroups;                             // 参照共有(グループ指定モード)
             quest.mergePhysBones = s.mergePhysBones;
             quest.physBoneLooseMerge = s.physBoneLooseMerge;

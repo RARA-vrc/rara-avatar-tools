@@ -487,6 +487,7 @@ namespace RARA.AvatarStudio
             bool changed = false;
             EnsureList(ref s.skinnedMeshMergeOptOutPaths);
             EnsureList(ref s.skinnedMeshMergeOverdrawTrimPaths);
+            EnsureList(ref s.skinnedMeshMergeMaterialAnimDisablePaths);
             EnsureList(ref s.smrMergeGroups);
 
             // モードで次フレームの描画量(表 or 案内 / opt-out or グループ選択)が変わるため、モードは描画前に捕捉する。
@@ -542,6 +543,7 @@ namespace RARA.AvatarStudio
             HashSet<Transform> mergeExcludedRoots = BuildExcludedRoots(avatarRoot, s, cache);
             string sig = avatarRoot.GetInstanceID() + "|" + (int)capturedMode + "|" + HashPaths(s.skinnedMeshMergeOptOutPaths)
                 + "|" + HashPaths(s.skinnedMeshMergeOverdrawTrimPaths)
+                + "|" + HashPaths(s.skinnedMeshMergeMaterialAnimDisablePaths)
                 + "|" + (byGroup ? HashGroups(s.smrMergeGroups) : "-")
                 + "|" + (s.targetPC ? "PC" : "-")
                 + "|" + (s.targetQuest ? "Q" + HashPaths(s.questExcludePaths) : "P");
@@ -557,7 +559,7 @@ namespace RARA.AvatarStudio
                 "smr", sig,
                 () => SkinnedMeshMergePlanner.BuildPlan(
                     avatarRoot, capturedMode, s.skinnedMeshMergeOptOutPaths, byGroup ? s.smrMergeGroups : null, mergeExcludedRoots,
-                    s.skinnedMeshMergeOverdrawTrimPaths, hiddenOverdrawEstimate));
+                    s.skinnedMeshMergeOverdrawTrimPaths, hiddenOverdrawEstimate, s.skinnedMeshMergeMaterialAnimDisablePaths));
 
             if (plan == null) { EditorGUILayout.HelpBox("SkinnedMesh統合プレビューの計算に失敗しました。", MessageType.Warning); return changed; }
 
@@ -633,6 +635,21 @@ namespace RARA.AvatarStudio
                             if (newTrim != trim)
                             {
                                 TogglePath(s.skinnedMeshMergeOverdrawTrimPaths, row.rendererPath, newTrim);
+                                changed = true;
+                                cache.Bump();
+                            }
+                        }
+                        // [1.10.0][A] マテリアルアニメーションの波及で統合できないレンダラーは、それを無効化して統合できる(演出は固定)。
+                        if (row.canDisableMaterialAnim)
+                        {
+                            bool disable = IsOptedOut(s.skinnedMeshMergeMaterialAnimDisablePaths, row.rendererPath);
+                            bool newDisable = GUILayout.Toggle(disable,
+                                new GUIContent("マテリアルアニメ無効化して統合",
+                                    "このレンダラーに向いた material.* アニメ(エミッション切り替え等)を複製側で無効化し統合できるようにします。切り替え演出は動かなくなります。元アバターは無改変です"),
+                                GUILayout.Width(180f));
+                            if (newDisable != disable)
+                            {
+                                TogglePath(s.skinnedMeshMergeMaterialAnimDisablePaths, row.rendererPath, newDisable);
                                 changed = true;
                                 cache.Bump();
                             }

@@ -62,6 +62,57 @@ namespace RARA.QuestConverter
         /// <summary>outputDir未指定時に使う既定の生成ルート(QuestConvertSettings.outputFolder の既定値と一致)。</summary>
         private const string DefaultGeneratedRoot = "Assets/RARA/QuestConverter/Generated";
 
+        /// <summary>[1.10.0] material.* アニメーションのプロパティ名接頭辞(AAOの material-animation-differently 警告と同じ)。</summary>
+        private const string MaterialPropertyPrefix = "material.";
+
+        // ================================================================
+        // バインディング除去の共有機構(m_IsActive固定 / material.*無効化で共用)
+        // ================================================================
+
+        /// <summary>
+        /// [1.10.0] クリップからバインディングを除去する作法(何を消すか・生成物の命名)をまとめた文脈。
+        /// m_IsActive除去(トグル固定)と material.*除去(マテリアルアニメ無効化して統合)が、
+        /// 同じ「クローンのコントローラー/クリップだけを複製して差し替える」機構(<see cref="WrapController"/> /
+        /// <see cref="DuplicateAndStripClip"/>)を共有するためのパラメータ束。元アバターと共有するアセットは無改変。
+        /// </summary>
+        private sealed class BindingStripContext
+        {
+            /// <summary>除去対象のバインディング判定。(binding, そのサイトで有効な対象パス集合)→ 除去するなら true。</summary>
+            public Func<EditorCurveBinding, HashSet<string>, bool> Match;
+
+            /// <summary>生成する override / クリップに付ける名前サフィックス(例 "_Consolidated" / "_MatAnimDisabled")。</summary>
+            public string NameSuffix;
+
+            /// <summary>レポートの接頭ラベル(例 "衣装・トグル整理" / "マテリアルアニメ無効化")。</summary>
+            public string Label;
+        }
+
+        /// <summary>m_IsActive(GameObjectのアクティブ)除去の文脈(衣装・トグル固定)。従来の "_Consolidated" 命名を維持する。</summary>
+        private static readonly BindingStripContext ToggleStripContext = new BindingStripContext
+        {
+            Match = (binding, paths) => binding.type == typeof(GameObject) && binding.propertyName == ActiveProperty &&
+                                        paths.Contains(binding.path ?? string.Empty),
+            NameSuffix = "_Consolidated",
+            Label = "衣装・トグル整理",
+        };
+
+        /// <summary>[1.10.0] material.*(Rendererのマテリアルプロパティ)除去の文脈(マテリアルアニメ無効化して統合)。</summary>
+        private static readonly BindingStripContext MaterialAnimStripContext = new BindingStripContext
+        {
+            Match = MatchMaterialAnimBinding,
+            NameSuffix = "_MatAnimDisabled",
+            Label = "マテリアルアニメ無効化",
+        };
+
+        /// <summary>[1.10.0] binding が Renderer/SkinnedMeshRenderer 向けの material.* フロートで、対象パスに向いているか。</summary>
+        private static bool MatchMaterialAnimBinding(EditorCurveBinding binding, HashSet<string> paths)
+        {
+            if (binding.type == null || !typeof(Renderer).IsAssignableFrom(binding.type)) return false;
+            if (binding.propertyName == null ||
+                !binding.propertyName.StartsWith(MaterialPropertyPrefix, StringComparison.Ordinal)) return false;
+            return paths.Contains(binding.path ?? string.Empty);
+        }
+
         // ================================================================
         // 検出(READ-ONLY)
         // ================================================================
@@ -353,7 +404,7 @@ namespace RARA.QuestConverter
 
                 // FX等の m_IsActive バインディングを、共有アセットを壊さずに除去する
                 // (対象クリップを複製し、クローンのコントローラーを override で差し替える)。
-                strippedClipCount = StripActiveBindings(cloneRoot, stripPaths, animRoot, assetContext, report);
+                strippedClipCount = StripBindings(cloneRoot, stripPaths, ToggleStripContext, animRoot, assetContext, report);
                 if (strippedClipCount > 0) AssetDatabase.SaveAssets();
             }
 
@@ -419,16 +470,231 @@ namespace RARA.QuestConverter
             return removed;
         }
 
+        // ================================================================
+        // [1.10.0] マテリアルアニメーションの無効化(統合できるようにする / クローンのみ編集)
+        // ================================================================
+
+        /// <summary>
+        /// rendererPaths(ユーザーが「マテリアルアニメーションを無効化して統合」を選んだレンダラーのアバタールート相対パス)
+        /// について、クローン cloneRoot 側のアニメーションクリップから、そのレンダラーに向いた material.* フロートカーブを
+        /// すべて除去する(=切り替え演出は動かなくなるが、SkinnedMesh統合の波及ガードに引っかからず統合できるようになる)。
+        ///
+        /// 【安全性】ToggleConsolidator の m_IsActive 除去と同一の機構(<see cref="StripBindings"/>:対象クリップを複製し
+        /// クローンのコントローラーを AnimatorOverrideController で差し替える)を共有する。元アバターと共有するクリップ・
+        /// コントローラーは一切書き換えない。走査範囲はデスクリプターのアニメーションレイヤー + 子コンポーネント(子Animator /
+        /// MA Merge Animator 等)のコントローラー参照で、SkinnedMeshMergePlanner の波及ガードが見る範囲と同じ。
+        ///
+        /// 【順序】SkinnedMeshMergePlanner.BuildPlan(波及ガードのアニメ走査)より前に呼ぶこと。除去後は該当レンダラーの
+        /// material.* アニメ集合が空になるため、ガードが再評価して統合を許可する(BuildPlan に materialAnimDisablePaths を
+        /// 渡さなくても、実際に空になったクリップを見て統合される)。
+        ///
+        /// optOutPaths(統合から個別除外したパス。null可)に含まれるレンダラーは、分離維持したい意図のため無効化しない。
+        /// 戻り値: material.* を除去したレンダラー数(0=無し)。例外は投げない(失敗は Warn で報告し統合処理を止めない)。
+        /// </summary>
+        public static int NeutralizeMaterialAnimations(GameObject cloneRoot, List<string> rendererPaths, List<string> optOutPaths,
+            string outputDir = null, ConversionAssetContext assets = null, ConversionReport report = null)
+        {
+            if (report == null) report = new ConversionReport(); // 呼び出し側の渡し忘れ対策(結果は破棄される)
+            if (cloneRoot == null) return 0;
+            if (rendererPaths == null || rendererPaths.Count == 0) return 0;
+
+            // 対象パス集合(空/opt-out は除く)。opt-out は「分離維持したい」意図のため無効化しない。
+            var optOut = optOutPaths != null ? new HashSet<string>(optOutPaths, StringComparer.Ordinal) : null;
+            var targets = new HashSet<string>(StringComparer.Ordinal);
+            foreach (string p in rendererPaths)
+            {
+                if (string.IsNullOrEmpty(p)) continue;
+                if (optOut != null && optOut.Contains(p)) continue;
+                targets.Add(p);
+            }
+            if (targets.Count == 0) return 0;
+
+            // レポート用: 各対象パスの material.* プロパティ名・クリップ名を読み取り専用で採取する(除去前に採取)。
+            Dictionary<string, MaterialAnimInfo> infoByPath = CollectMaterialAnimInfo(cloneRoot, targets);
+
+            string animRoot = ResolveOutputDir(outputDir, cloneRoot);
+            var assetContext = assets ?? new ConversionAssetContext();
+
+            int strippedClipCount = StripBindings(cloneRoot, targets, MaterialAnimStripContext, animRoot, assetContext, report);
+            if (strippedClipCount > 0) AssetDatabase.SaveAssets();
+
+            // [C] レンダラーごとに Warn で報告する(material.* アニメが実際に見つかったものだけ)。
+            int neutralized = 0;
+            foreach (string path in targets)
+            {
+                if (!infoByPath.TryGetValue(path, out MaterialAnimInfo info) || info == null || info.Props.Count == 0) continue;
+                neutralized++;
+                string rname = ResolveRendererName(cloneRoot, path);
+                report.Warn(string.Format(
+                    "'{0}': マテリアルアニメーションを無効化して統合しました(無効化: {1} / クリップ: {2})。該当の切り替え演出は動かなくなります。",
+                    rname, FormatPropSummary(info.Props), FormatClipSummary(info.Clips)));
+            }
+            if (neutralized == 0 && strippedClipCount == 0)
+            {
+                // 対象はあるが material.* アニメが見つからなかった(既に無いか、走査対象外)。統合には影響しない。
+                report.Info("マテリアルアニメ無効化: 対象レンダラーに無効化すべき material.* アニメーションは見つかりませんでした。");
+            }
+            else if (neutralized == 0 && strippedClipCount > 0)
+            {
+                // 情報収集(CollectMaterialAnimInfo)が例外で空振りしたが、除去自体は行われた防御的経路。
+                // 無効化が無音になるのを防ぐため、詳細なしでも必ず報告する。
+                report.Warn(string.Format(
+                    "マテリアルアニメ無効化: {0} 個のクリップから material.* アニメーションを除去しました(詳細の収集に失敗したためプロパティ一覧は表示できません)。該当の切り替え演出は動かなくなります。",
+                    strippedClipCount));
+            }
+            return neutralized;
+        }
+
+        /// <summary>[1.10.0] 1レンダラーの material.* アニメーション情報(レポート用)。</summary>
+        private sealed class MaterialAnimInfo
+        {
+            /// <summary>material. を除いた(チャンネル接尾を畳んだ)プロパティ名(重複なし・安定順)。</summary>
+            public readonly SortedSet<string> Props = new SortedSet<string>(StringComparer.Ordinal);
+
+            /// <summary>そのプロパティを動かしているクリップ名(重複なし・安定順)。</summary>
+            public readonly SortedSet<string> Clips = new SortedSet<string>(StringComparer.Ordinal);
+        }
+
+        /// <summary>
+        /// cloneRoot から到達可能な全クリップを走査し、targets のレンダラーに向いた material.* フロートについて
+        /// プロパティ名・クリップ名を収集する(読み取り専用)。走査範囲は SkinnedMeshMergePlanner の波及ガードと同じ
+        /// (ルート相対のコントローラー + 子コンポーネント参照のパス前置)。走査失敗時は空辞書(レポートが省略されるだけ)。
+        /// </summary>
+        private static Dictionary<string, MaterialAnimInfo> CollectMaterialAnimInfo(GameObject cloneRoot, HashSet<string> targets)
+        {
+            var byPath = new Dictionary<string, MaterialAnimInfo>(StringComparer.Ordinal);
+            if (cloneRoot == null || targets == null || targets.Count == 0) return byPath;
+            try
+            {
+                var seenClips = new HashSet<AnimationClip>();
+                foreach (RuntimeAnimatorController controller in AnimationConverter.CollectControllers(cloneRoot))
+                {
+                    if (controller == null) continue;
+                    foreach (AnimationClip clip in controller.animationClips)
+                    {
+                        if (clip == null || !seenClips.Add(clip)) continue;
+                        AddMaterialAnimInfoFromClip(clip, string.Empty, targets, byPath);
+                    }
+                }
+
+                var seenPrefixed = new HashSet<string>();
+                foreach (Component component in cloneRoot.GetComponentsInChildren<Component>(true))
+                {
+                    if (component == null || component is Transform) continue;
+                    if (component.transform == cloneRoot.transform) continue;
+                    string prefix = QuestCompat.GetRelativePath(cloneRoot.transform, component.transform);
+                    if (string.IsNullOrEmpty(prefix)) continue;
+
+                    var serializedObject = new SerializedObject(component);
+                    SerializedProperty property = serializedObject.GetIterator();
+                    while (property.Next(true))
+                    {
+                        if (property.propertyType != SerializedPropertyType.ObjectReference) continue;
+                        var controller = property.objectReferenceValue as RuntimeAnimatorController;
+                        if (controller == null) continue;
+                        foreach (AnimationClip clip in controller.animationClips)
+                        {
+                            if (clip == null) continue;
+                            if (!seenPrefixed.Add(clip.GetInstanceID() + "|" + prefix)) continue;
+                            AddMaterialAnimInfoFromClip(clip, prefix, targets, byPath);
+                        }
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // レポート用の付随情報のため、失敗しても致命的ではない(統合は StripBindings 側で行われる)。
+            }
+            return byPath;
+        }
+
+        /// <summary>クリップ内の Renderer 向け material.* フロートのうち、targets に一致するパスの情報(プロパティ名・クリップ名)を集約する。</summary>
+        private static void AddMaterialAnimInfoFromClip(AnimationClip clip, string prefix, HashSet<string> targets, Dictionary<string, MaterialAnimInfo> byPath)
+        {
+            foreach (EditorCurveBinding binding in AnimationUtility.GetCurveBindings(clip))
+            {
+                if (binding.type == null || !typeof(Renderer).IsAssignableFrom(binding.type)) continue;
+                if (binding.propertyName == null ||
+                    !binding.propertyName.StartsWith(MaterialPropertyPrefix, StringComparison.Ordinal)) continue;
+                string prop = binding.propertyName.Substring(MaterialPropertyPrefix.Length);
+                if (prop.Length == 0) continue;
+
+                string path = binding.path ?? string.Empty;
+                string full;
+                if (prefix.Length == 0) full = path;
+                else full = path.Length == 0 ? prefix : prefix + "/" + path;
+                if (!targets.Contains(full)) continue;
+
+                if (!byPath.TryGetValue(full, out MaterialAnimInfo info))
+                {
+                    info = new MaterialAnimInfo();
+                    byPath[full] = info;
+                }
+                info.Props.Add(NormalizeMaterialPropName(prop));
+                if (clip != null && !string.IsNullOrEmpty(clip.name)) info.Clips.Add(clip.name);
+            }
+        }
+
+        /// <summary>material.* プロパティ名のチャンネル接尾(".r"/".g"/".b"/".a"/".x"/".y"/".z"/".w")を落として集約表示しやすくする。</summary>
+        private static string NormalizeMaterialPropName(string prop)
+        {
+            if (string.IsNullOrEmpty(prop) || prop.Length < 2) return prop;
+            if (prop[prop.Length - 2] == '.')
+            {
+                char c = char.ToLowerInvariant(prop[prop.Length - 1]);
+                if (c == 'r' || c == 'g' || c == 'b' || c == 'a' || c == 'x' || c == 'y' || c == 'z' || c == 'w')
+                    return prop.Substring(0, prop.Length - 2);
+            }
+            return prop;
+        }
+
+        /// <summary>"_UseEmission ほか 2件" のように、先頭1件 + 残数で要約する。</summary>
+        private static string FormatPropSummary(SortedSet<string> props)
+        {
+            if (props == null || props.Count == 0) return "(なし)";
+            string first = null;
+            foreach (string p in props) { first = p; break; } // 安定順の先頭
+            return props.Count == 1 ? first : string.Format("{0} ほか {1}件", first, props.Count - 1);
+        }
+
+        /// <summary>クリップ名を最大3件まで列挙し、超過分は件数に畳む。</summary>
+        private static string FormatClipSummary(SortedSet<string> clips)
+        {
+            if (clips == null || clips.Count == 0) return "(なし)";
+            const int cap = 3;
+            var shown = new List<string>();
+            foreach (string c in clips)
+            {
+                shown.Add(c);
+                if (shown.Count >= cap) break;
+            }
+            string joined = string.Join(", ", shown);
+            if (clips.Count > cap) joined += string.Format(" ...他 {0}件", clips.Count - cap);
+            return joined;
+        }
+
+        /// <summary>path のレンダラー名(GameObject名)を返す。解決できなければパスの末尾要素、それも無ければパスそのもの。</summary>
+        private static string ResolveRendererName(GameObject cloneRoot, string path)
+        {
+            Transform t = cloneRoot != null ? QuestCompat.FindByPath(cloneRoot.transform, path) : null;
+            if (t != null) return t.gameObject.name;
+            int slash = path != null ? path.LastIndexOf('/') : -1;
+            if (slash >= 0 && slash + 1 < path.Length) return path.Substring(slash + 1);
+            return path ?? "?";
+        }
+
         // ----------------------------------------------------------------
-        // m_IsActive バインディング除去(共有アセットを壊さない override 方式)
+        // バインディング除去の共有機構(m_IsActive固定 / material.*無効化。共有アセットを壊さない override 方式)
         // ----------------------------------------------------------------
 
         /// <summary>
-        /// クローンから到達可能なコントローラーのうち、stripPaths を対象とする m_IsActive バインディングを
+        /// クローンから到達可能なコントローラーのうち、ctx.Match が示すバインディング(stripPaths を対象とする)を
         /// 含むものを、クローン専用の AnimatorOverrideController(複製・除去済みクリップで差し替え)へ置き換える。
         /// ベースコントローラー・元クリップ(元PCアバターと共有)は一切変更しない。除去したクリップ数を返す。
+        /// [1.10.0] ctx により m_IsActive除去(トグル固定)と material.*除去(マテリアルアニメ無効化)で共用する
+        /// (旧名 StripActiveBindings を一般化。走査範囲=デスクリプターのレイヤー + 子コンポーネント参照は共通)。
         /// </summary>
-        private static int StripActiveBindings(GameObject cloneRoot, HashSet<string> stripPaths,
+        private static int StripBindings(GameObject cloneRoot, HashSet<string> stripPaths, BindingStripContext ctx,
             string animRoot, ConversionAssetContext assets, ConversionReport report)
         {
             // 元コントローラー → 差し替え後(override or 元のまま)。同じコントローラーを二重処理しない。
@@ -445,13 +711,13 @@ namespace RARA.QuestConverter
                 bool changed = false;
 
                 var baseLayers = descriptor.baseAnimationLayers;
-                if (WrapLayerArray(baseLayers, stripPaths, wrapCache, animRoot, assets, report, ref strippedClipCount))
+                if (WrapLayerArray(baseLayers, stripPaths, ctx, wrapCache, animRoot, assets, report, ref strippedClipCount))
                 {
                     descriptor.baseAnimationLayers = baseLayers;
                     changed = true;
                 }
                 var specialLayers = descriptor.specialAnimationLayers;
-                if (WrapLayerArray(specialLayers, stripPaths, wrapCache, animRoot, assets, report, ref strippedClipCount))
+                if (WrapLayerArray(specialLayers, stripPaths, ctx, wrapCache, animRoot, assets, report, ref strippedClipCount))
                 {
                     descriptor.specialAnimationLayers = specialLayers;
                     changed = true;
@@ -478,7 +744,7 @@ namespace RARA.QuestConverter
                     var controller = property.objectReferenceValue as RuntimeAnimatorController;
                     if (controller == null) continue;
 
-                    var wrapped = WrapController(controller, siteStripPaths, wrapCache, animRoot, assets, report, ref strippedClipCount);
+                    var wrapped = WrapController(controller, siteStripPaths, ctx, wrapCache, animRoot, assets, report, ref strippedClipCount);
                     if (wrapped != null && !ReferenceEquals(wrapped, controller))
                     {
                         property.objectReferenceValue = wrapped;
@@ -492,7 +758,7 @@ namespace RARA.QuestConverter
         }
 
         /// <summary>CustomAnimLayer配列内のコントローラーを差し替える。変更があれば true(構造体のため呼び出し側で書き戻す)。</summary>
-        private static bool WrapLayerArray(VRCAvatarDescriptor.CustomAnimLayer[] layers, HashSet<string> stripPaths,
+        private static bool WrapLayerArray(VRCAvatarDescriptor.CustomAnimLayer[] layers, HashSet<string> stripPaths, BindingStripContext ctx,
             Dictionary<string, RuntimeAnimatorController> wrapCache,
             string animRoot, ConversionAssetContext assets, ConversionReport report, ref int strippedClipCount)
         {
@@ -503,7 +769,7 @@ namespace RARA.QuestConverter
                 var layer = layers[i];
                 if (layer.animatorController == null) continue;
 
-                var wrapped = WrapController(layer.animatorController, stripPaths, wrapCache, animRoot, assets, report, ref strippedClipCount);
+                var wrapped = WrapController(layer.animatorController, stripPaths, ctx, wrapCache, animRoot, assets, report, ref strippedClipCount);
                 if (wrapped != null && !ReferenceEquals(wrapped, layer.animatorController))
                 {
                     layer.animatorController = wrapped;
@@ -519,13 +785,13 @@ namespace RARA.QuestConverter
         /// override 指定した AnimatorOverrideController を生成し返す。対象が無ければ元コントローラーをそのまま返す。
         /// ベース(元コントローラー)・元クリップは無改変。同一コントローラーは一度だけ処理(キャッシュ)。
         /// </summary>
-        private static RuntimeAnimatorController WrapController(RuntimeAnimatorController controller, HashSet<string> stripPaths,
+        private static RuntimeAnimatorController WrapController(RuntimeAnimatorController controller, HashSet<string> stripPaths, BindingStripContext ctx,
             Dictionary<string, RuntimeAnimatorController> wrapCache,
             string animRoot, ConversionAssetContext assets, ConversionReport report, ref int strippedClipCount)
         {
             if (controller == null) return null;
 
-            string cacheKey = WrapCacheKey(controller, stripPaths);
+            string cacheKey = WrapCacheKey(controller, stripPaths, ctx);
             RuntimeAnimatorController cachedWrap;
             if (wrapCache.TryGetValue(cacheKey, out cachedWrap)) return cachedWrap;
 
@@ -540,7 +806,7 @@ namespace RARA.QuestConverter
             bool hasStrip = false;
             foreach (AnimationClip clip in controller.animationClips)
             {
-                if (ClipHasStripBinding(clip, stripPaths)) { hasStrip = true; break; }
+                if (ClipHasStripBinding(clip, stripPaths, ctx)) { hasStrip = true; break; }
             }
             if (!hasStrip)
             {
@@ -558,12 +824,12 @@ namespace RARA.QuestConverter
             for (int i = 0; i < pairs.Count; i++)
             {
                 AnimationClip key = pairs[i].Key;
-                if (key == null || !ClipHasStripBinding(key, stripPaths)) continue;
+                if (key == null || !ClipHasStripBinding(key, stripPaths, ctx)) continue;
 
                 AnimationClip stripped;
                 if (!clipCache.TryGetValue(key, out stripped))
                 {
-                    stripped = DuplicateAndStripClip(key, stripPaths, animRoot, assets, report);
+                    stripped = DuplicateAndStripClip(key, stripPaths, ctx, animRoot, assets, report);
                     clipCache[key] = stripped;
                     if (stripped != null) strippedClipCount++;
                 }
@@ -581,13 +847,13 @@ namespace RARA.QuestConverter
             }
 
             overrideController.ApplyOverrides(pairs);
-            overrideController.name = QuestConverterUtility.SanitizeAssetName(controller.name) + "_Consolidated";
+            overrideController.name = QuestConverterUtility.SanitizeAssetName(controller.name) + ctx.NameSuffix;
 
             string path = assets.Claim(animRoot + "/Animations/" + overrideController.name + ".overrideController");
             AnimatorOverrideController saved = SaveOverrideController(overrideController, path);
             wrapCache[cacheKey] = saved;
             report.Info(string.Format(
-                "衣装・トグル整理: コントローラー「{0}」のトグルを固定用に差し替えました → {1}", controller.name, path));
+                "{0}: コントローラー「{1}」のクリップを複製・差し替えました → {2}", ctx.Label, controller.name, path));
             return saved;
         }
 
@@ -596,35 +862,33 @@ namespace RARA.QuestConverter
         /// 正規化(順序非依存)した文字列を連結する。同一コントローラーでも参照サイト(コンポーネント位置)で
         /// strip 対象が異なる場合に別エントリとして扱い、別サイトのラップ結果を誤って再利用しないようにする。
         /// </summary>
-        private static string WrapCacheKey(RuntimeAnimatorController controller, HashSet<string> stripPaths)
+        private static string WrapCacheKey(RuntimeAnimatorController controller, HashSet<string> stripPaths, BindingStripContext ctx)
         {
             var sorted = new List<string>(stripPaths);
             sorted.Sort(StringComparer.Ordinal);
-            return controller.GetInstanceID().ToString() + "\n" + string.Join("\n", sorted);
+            // ctx.NameSuffix を混ぜ、同一コントローラーを m_IsActive除去 と material.*除去 で別エントリにする(命名も異なる)。
+            return controller.GetInstanceID().ToString() + "\n" + ctx.NameSuffix + "\n" + string.Join("\n", sorted);
         }
 
-        /// <summary>クリップに stripPaths を対象とする m_IsActive バインディングが含まれるか。</summary>
-        private static bool ClipHasStripBinding(AnimationClip clip, HashSet<string> stripPaths)
+        /// <summary>クリップに ctx.Match が示す(stripPaths を対象とする)バインディングが含まれるか。</summary>
+        private static bool ClipHasStripBinding(AnimationClip clip, HashSet<string> stripPaths, BindingStripContext ctx)
         {
             if (clip == null) return false;
             foreach (EditorCurveBinding binding in AnimationUtility.GetCurveBindings(clip))
             {
-                if (binding.type == typeof(GameObject) && binding.propertyName == ActiveProperty &&
-                    stripPaths.Contains(binding.path ?? string.Empty))
-                {
-                    return true;
-                }
+                if (ctx.Match(binding, stripPaths)) return true;
             }
             return false;
         }
 
         /// <summary>
-        /// クリップを複製し、stripPaths に一致する m_IsActive バインディングだけを除去して保存する。
+        /// クリップを複製し、ctx.Match に一致する(stripPaths を対象とする)バインディングだけを除去して保存する。
         /// 一致が無ければ複製を破棄して null を返す。元クリップ(共有)は変更しない。
-        /// 除去は「そのバインディング1本だけ」で、他の対象(別オブジェクトのトグル等)は残す。
-        /// なお子孫パスのバインディングは除去しない(ロックしたのはこのパスのみで、子トグルは維持するため)。
+        /// 除去は一致したバインディング本数分で、他の対象(別オブジェクト・別プロパティ等)は残す。
+        /// m_IsActive除去では対象パスの子孫は除去しない(ロックしたのはこのパスのみ)。material.*除去では対象パスに向いた
+        /// material.* フロートのみを除去する(他レンダラーのアニメは残す)。
         /// </summary>
-        private static AnimationClip DuplicateAndStripClip(AnimationClip source, HashSet<string> stripPaths,
+        private static AnimationClip DuplicateAndStripClip(AnimationClip source, HashSet<string> stripPaths, BindingStripContext ctx,
             string animRoot, ConversionAssetContext assets, ConversionReport report)
         {
             var copy = new AnimationClip();
@@ -634,9 +898,8 @@ namespace RARA.QuestConverter
             int removed = 0;
             foreach (EditorCurveBinding binding in AnimationUtility.GetCurveBindings(copy))
             {
-                if (binding.type != typeof(GameObject) || binding.propertyName != ActiveProperty) continue;
-                if (!stripPaths.Contains(binding.path ?? string.Empty)) continue;
-                AnimationUtility.SetEditorCurve(copy, binding, null); // その1バインディングだけ除去
+                if (!ctx.Match(binding, stripPaths)) continue;
+                AnimationUtility.SetEditorCurve(copy, binding, null); // 一致したバインディングだけ除去
                 removed++;
             }
 
@@ -647,7 +910,7 @@ namespace RARA.QuestConverter
             }
 
             string path = assets.Claim(
-                animRoot + "/Animations/" + QuestConverterUtility.SanitizeAssetName(source.name) + "_Consolidated.anim");
+                animRoot + "/Animations/" + QuestConverterUtility.SanitizeAssetName(source.name) + ctx.NameSuffix + ".anim");
             // 実行間で安定したパスへ、既存があればGUIDを保持したまま内容だけ上書きする
             AnimationClip saved = QuestAssetPersistence.SaveOrOverwriteClip(copy, path);
             if (saved != null && !ReferenceEquals(saved, copy) && copy != null && !AssetDatabase.Contains(copy))
