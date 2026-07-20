@@ -272,6 +272,8 @@ namespace RARA.AvatarStudio
             foreach (var p in NonEmpty(s.questExcludePaths)) yield return p;
             foreach (var p in NonEmpty(s.questHiddenMeshRendererPaths)) yield return p;
             foreach (var p in NonEmpty(s.questPhysBoneNoMergePaths)) yield return p;
+            foreach (var p in NonEmpty(s.contactRemovePaths)) yield return p; // [1.11.0] コンタクト削除指定もアバター相対パス
+
             if (s.questDecimationPlan != null)
                 foreach (var d in s.questDecimationPlan)
                     if (d != null && !string.IsNullOrEmpty(d.rendererPath)) yield return d.rendererPath;

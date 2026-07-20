@@ -658,7 +658,126 @@ namespace RARA.QuestConverter
                 }
 
                 DrawPhysBoneSavedSelections();
+
+                // [1.11.0][D][C] Avatar Dynamics 5制約メーター + コンタクト(残す/削除・自動選定)
+                DrawDynamicsMetersAndContacts();
             }
+        }
+
+        /// <summary>
+        /// [1.11.0][D][C] Avatar Dynamics の5制約(コンポーネント/影響Transform/コライダー/衝突チェック/コンタクト)の
+        /// 使用量メーター(QuestのPoor上限基準)と、コンタクトの残す/削除一覧・「頭・手優先で自動選定」を描画する。
+        /// PhysBoneの4項目は現在の選択(稼働/削除)から、コンタクトは削除指定を反映して見積もる(SDKと同じ式の概算)。
+        /// </summary>
+        private void DrawDynamicsMetersAndContacts()
+        {
+            if (_avatar == null || _physBonePreview == null) return;
+            if (_settings.contactRemovePaths == null) _settings.contactRemovePaths = new List<string>();
+
+            GameObject avatarRoot = _avatar.gameObject;
+            AvatarDynamicsLimits limits = AvatarDynamicsLimits.Quest();
+            List<Transform> excludedRoots = AvatarQuestConverter.ResolvePreviewExcludedRoots(_avatar, _settings);
+
+            bool optIn = _settings.physBoneSelectionMode == PhysBoneSelectionMode.OptIn;
+            var keepSet = new HashSet<string>(_settings.physBoneKeepPaths ?? new List<string>(), StringComparer.Ordinal);
+            var removeSet = new HashSet<string>(_settings.physBoneRemovePaths ?? new List<string>(), StringComparer.Ordinal);
+            Func<string, bool> isKept = optIn ? (Func<string, bool>)(p => keepSet.Contains(p)) : (p => !removeSet.Contains(p));
+
+            var map = AvatarDynamicsCost.BuildPhysBoneMap(avatarRoot);
+            var colliders = AvatarDynamicsCost.BuildAvatarColliderSet(avatarRoot, excludedRoots);
+            var units = AvatarDynamicsCost.BuildKeptUnits(_physBonePreview.rows, map, _settings.mergePhysBones, isKept);
+            AvatarDynamicsUsage usage = AvatarDynamicsCost.ComputeUsageForUnits(units, avatarRoot.transform, colliders);
+
+            var contactRemoveSet = new HashSet<string>(_settings.contactRemovePaths, StringComparer.Ordinal);
+            int contactsKept = 0;
+            if (_contactPreview != null && _contactPreview.rows != null)
+            {
+                foreach (ContactPreviewRow row in _contactPreview.rows)
+                {
+                    if (row != null && row.counted && !string.IsNullOrEmpty(row.path) && !contactRemoveSet.Contains(row.path)) contactsKept++;
+                }
+            }
+            usage.contacts = contactsKept;
+
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                EditorGUILayout.LabelField("Avatar Dynamics 5制約(Quest Poor上限。どれか1つでも超過すると実機で揺れもの・コンタクト・コンストレイントが全停止)", EditorStyles.boldLabel);
+                DrawDynamicsMeterLine("PhysBoneコンポーネント", usage.physBoneComponents, limits.physBoneComponents);
+                DrawDynamicsMeterLine("影響Transform", usage.physBoneTransforms, limits.physBoneTransforms);
+                DrawDynamicsMeterLine("コライダー", usage.physBoneColliders, limits.physBoneColliders);
+                DrawDynamicsMeterLine("衝突チェック", usage.physBoneCollisionChecks, limits.physBoneCollisionChecks);
+                DrawDynamicsMeterLine("コンタクト", usage.contacts, limits.contacts);
+                EditorGUILayout.LabelField("PhysBoneの3項目(影響Transform・コライダー・衝突チェック)はSDKと同じ式による概算です。", _miniWrapLabel);
+            }
+
+            if (_contactPreview != null && _contactPreview.rows != null && _contactPreview.rows.Count > 0)
+            {
+                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+                {
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        EditorGUILayout.LabelField("コンタクト(残す " + contactsKept + " / 上限 " + limits.contacts + ")", EditorStyles.boldLabel);
+                        GUILayout.FlexibleSpace();
+                        if (GUILayout.Button(new GUIContent("頭・手優先で自動選定(" + limits.contacts + "以内)",
+                            "頭なで等のレシーバーを優先して残し、コンタクト数を " + limits.contacts + " 以内へ絞ります(ローカル専用は無料のため常に残します)。"),
+                            GUILayout.Width(220f)))
+                        {
+                            List<string> newRemove = ContactSelection.AutoSelectContacts(_contactPreview, limits.contacts, out int keptC, out bool wasBinding);
+                            bool ok = EditorUtility.DisplayDialog("コンタクト自動選定",
+                                "頭・手系のレシーバーを優先して残し、コンタクト数を " + limits.contacts + " 以内へ絞ります。\n\n" +
+                                "残すカウント対象: " + keptC + " / " + limits.contacts +
+                                (wasBinding ? "\n(上限を超えたコンタクトを削除にしました)" : "\n(すべて上限内です)") +
+                                "\n\n設定しますか?",
+                                "設定する", "キャンセル");
+                            if (ok)
+                            {
+                                _settings.contactRemovePaths.Clear();
+                                _settings.contactRemovePaths.AddRange(newRemove);
+                                SaveSettings();
+                            }
+                        }
+                    }
+                    DrawBuildExcludedHiddenNote(_contactPreview.hiddenExcludedCount);
+
+                    int shownC = 0;
+                    foreach (ContactPreviewRow row in _contactPreview.rows)
+                    {
+                        if (row == null || string.IsNullOrEmpty(row.path)) continue;
+                        if (shownC++ >= 60) { EditorGUILayout.LabelField("...(以下省略)", EditorStyles.miniLabel); break; }
+                        using (new EditorGUILayout.HorizontalScope())
+                        {
+                            using (new EditorGUI.DisabledScope(!row.counted))
+                            {
+                                bool keep = !contactRemoveSet.Contains(row.path);
+                                bool newKeep = EditorGUILayout.ToggleLeft(
+                                    new GUIContent("残す", "オフにするとこのコンタクトを変換時に削除します"), keep, GUILayout.Width(58f));
+                                if (newKeep != keep)
+                                {
+                                    if (newKeep) _settings.contactRemovePaths.Remove(row.path);
+                                    else if (!_settings.contactRemovePaths.Contains(row.path)) _settings.contactRemovePaths.Add(row.path);
+                                    SaveSettings();
+                                }
+                            }
+                            GUILayout.Label(row.isReceiver ? "受信" : "送信", EditorStyles.miniLabel, GUILayout.Width(40f));
+                            GUILayout.Label(new GUIContent(row.path, row.path), _wrapLabel, GUILayout.MinWidth(100f), GUILayout.MaxWidth(300f));
+                            if (!row.counted)
+                                GUILayout.Label(new GUIContent("無料(ローカル)", "ローカル専用コンタクトはカウント対象外(常に残ります)"), EditorStyles.miniLabel, GUILayout.Width(96f));
+                            GUILayout.FlexibleSpace();
+                            DrawPhysBonePingButton(row.path);
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>1制約分のメーター行(上限以下=緑 / 超過=赤)を色付き表示する。</summary>
+        private void DrawDynamicsMeterLine(string label, int value, int limit)
+        {
+            bool over = value > limit;
+            var prev = GUI.color;
+            GUI.color = over ? OverLimitColor : UploadOkColor;
+            EditorGUILayout.LabelField(label + ": " + value + " / 上限 " + limit + (over ? "  超過!" : ""), EditorStyles.miniBoldLabel);
+            GUI.color = prev;
         }
 
         // Quest(Android)PhysBoneコンポーネントのランク別上限のうち Excellent/Good は公開定数が無い
@@ -1206,21 +1325,14 @@ namespace RARA.QuestConverter
                 return bc.CompareTo(ac);
             });
 
-            var selectedRows = new List<PhysBonePreviewRow>();
-            int kept = 0;
-            foreach (PhysBonePreviewRow row in sorted)
-            {
-                // 稼働に加算されるコンポーネント数。マージ有効ならグループは1本に統合されるが、
-                // マージ無効ならグループの各メンバーがそのまま残るため、メンバー数分を数える。
-                int rowCost = 1;
-                if (!_settings.mergePhysBones && row.isGroup && row.memberPaths != null)
-                {
-                    rowCost = Mathf.Max(1, row.memberPaths.Count);
-                }
-                if (kept + rowCost > QuestLimits.PoorPhysBoneComponents) break; // 上限を超える行は選ばない
-                selectedRows.Add(row);
-                kept += rowCost;
-            }
+            // [1.11.0][A] コンポーネント数だけでなく、影響Transform数・コライダー数・衝突チェック数の
+            // 4上限(QuestのPoor上限)をすべて満たすよう貪欲に稼働する行を選ぶ(SDKと同じ式でマージ後の形を見積もる)。
+            GameObject avatarRoot = _avatar != null ? _avatar.gameObject : null;
+            AvatarDynamicsLimits limits = AvatarDynamicsLimits.Quest();
+            // メーター(DrawDynamicsMetersAndContacts)と同じコライダー集合で見積もるため、Quest除外サブツリーを渡す。
+            List<Transform> excludedRoots = AvatarQuestConverter.ResolvePreviewExcludedRoots(_avatar, _settings);
+            List<PhysBonePreviewRow> selectedRows = AvatarDynamicsCost.GreedySelectRows(
+                avatarRoot, sorted, _settings.mergePhysBones, limits, excludedRoots, out AvatarDynamicsUsage keptUsage, out string binding);
 
             if (selectedRows.Count == 0)
             {
@@ -1233,12 +1345,14 @@ namespace RARA.QuestConverter
             {
                 summary.AppendLine("・" + DescribePhysBoneRowForDialog(row, _settings.mergePhysBones));
             }
-            // 実際に稼働として残るコンポーネント数(kept)を提示する。マージ無効時はグループの
-            // メンバーが各1本残るため、選択行数(selectedRows.Count)ではなくコンポーネント数で表す。
+            // コンポーネント8・影響Transform 64・コライダー16・チェック64 をすべて満たすよう選定した旨を提示する。
             bool ok = EditorUtility.DisplayDialog("優先度で自動選択",
-                "名前の優先度が高い順に、Poor上限(" + QuestLimits.PoorPhysBoneComponents + ")内で次の " +
-                selectedRows.Count + " グループ/単独(稼働コンポーネント " + kept +
-                " 個)を稼働に設定します(現在の稼働選択は置き換えられます):\n\n" +
+                "名前の優先度が高い順に、コンポーネント" + limits.physBoneComponents + "・影響Transform " + limits.physBoneTransforms +
+                "・コライダー " + limits.physBoneColliders + "・チェック " + limits.physBoneCollisionChecks +
+                " をすべて満たすよう次の " + selectedRows.Count + " グループ/単独を稼働に設定します(現在の稼働選択は置き換えられます):\n\n" +
+                "選定後(概算): コンポーネント " + keptUsage.physBoneComponents + " / 影響Transform " + keptUsage.physBoneTransforms +
+                " / コライダー " + keptUsage.physBoneColliders + " / チェック " + keptUsage.physBoneCollisionChecks + "\n" +
+                "制約になったのは: " + binding + "\n\n" +
                 summary +
                 "\n設定しますか?",
                 "設定する", "キャンセル");
@@ -1460,11 +1574,14 @@ namespace RARA.QuestConverter
                     _settings.physBoneLooseMerge,
                     excludedRoots);
                 _physBoneRowDisplays = BuildPhysBoneRowDisplays(_physBonePreview.rows);
+                // [1.11.0] コンタクト一覧も同じ除外条件で更新する(5制約メーター・残す/削除UI用)。
+                _contactPreview = ContactSelection.PreviewContacts(_avatar.gameObject, excludedRoots);
             }
             catch (Exception ex)
             {
                 _physBonePreview = null;
                 _physBoneRowDisplays = null;
+                _contactPreview = null;
                 _physBonePreviewFailed = true;
                 Debug.LogError("[RARA QuestConverter] PhysBoneプレビューの計算に失敗しました: " + ex);
             }

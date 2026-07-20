@@ -618,6 +618,15 @@ namespace RARA.QuestConverter
                     EditorUtility.DisplayProgressBar(ProgressTitle, "PhysBoneをPoor上限内に調整中...", 0.9f);
                     ComponentRemover.TrimPhysBones(clone, report);
                 }
+                // [1.11.0][B] 残るPhysBoneが確定したので、どのPhysBoneからも参照されていないコライダーを掃除する
+                // (マージで先頭メンバー以外のコライダーが浮くことがあるため、マージ・削除・トリムの後に行う)。
+                ComponentRemover.RemoveUnreferencedColliders(clone, report);
+                // [1.11.0][C] 「残す」を外したコンタクト(VRCContact)を複製から削除する(コンタクト数 Poor上限16 対策)。
+                if (settings.contactRemovePaths != null && settings.contactRemovePaths.Count > 0)
+                {
+                    EditorUtility.DisplayProgressBar(ProgressTitle, "コンタクトの選択を適用中...", 0.9f);
+                    ContactSelection.RemoveSelectedContacts(clone, settings.contactRemovePaths, report);
+                }
 
                 // --- PhysBone Poor上限(コンポーネント8)の厳格チェック ---
                 // モバイルではランク計算がPoor上限を超えると、実行時に全PhysBone・コンタクト・

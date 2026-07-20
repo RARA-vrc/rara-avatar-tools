@@ -250,6 +250,11 @@ namespace RARA.QuestConverter
         [Tooltip("OptInモードで残すPhysBoneの識別パス(プレビューで「残す」を選んだもの)。マージ後(POST-MERGE)のレイアウト基準")]
         public List<string> physBoneKeepPaths = new List<string>();
 
+        // 【コンタクト識別パスの規則】AvatarDynamicsCost.GetContactIdentityPath 準拠のスラッシュ区切り相対パス
+        //  (同一GameObjectに複数のコンタクトがある場合のみ末尾 "#序数")。手書きせず、プレビュー選択から生成する。
+        [Tooltip("削除指定されたコンタクト(VRCContact)の識別パス(一覧で「残す」を外したもの)。変換時に複製から削除される。コンタクト数 Poor上限16 対策")]
+        public List<string> contactRemovePaths = new List<string>();
+
         [Tooltip("PhysBoneなどの揺れ物へNetwork IDを割り当て、PC(_Opt)版とQuest(_Quest)版で同じ揺れ物が同じIDになるようにする。他ユーザーから見た掴み/ポーズ/ストレッチの同期がPC/Quest間でズレるのを防ぐ(元アバター基準で採番。既定はオン)")]
         public bool assignNetworkIds = true;
 

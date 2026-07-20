@@ -114,6 +114,7 @@ namespace RARA.AvatarStudio
             // 常に空 → 全PhysBoneが削除されてしまうため使わない)。
             quest.physBoneSelectionMode = PhysBoneSelectionMode.KeepAll;
             quest.physBoneNoMergePaths = s.questPhysBoneNoMergePaths;            // 参照共有(Quest固有)
+            quest.contactRemovePaths = s.contactRemovePaths;                     // 参照共有([1.11.0][C] コンタクト削除指定)
 
             // ---- Quest固有 ----
             quest.shaderTarget = s.shaderTarget;

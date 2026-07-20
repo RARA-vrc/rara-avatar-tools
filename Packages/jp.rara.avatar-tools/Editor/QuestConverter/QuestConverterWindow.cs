@@ -49,6 +49,7 @@ namespace RARA.QuestConverter
         private bool _physBonePreviewRefreshQueued;                // PhysBoneプレビュー再計算の再入ガード
         private bool _physBonePreviewFailed;                       // PhysBoneプレビュー計算の失敗ラッチ(毎OnGUIの再試行を防ぐ)
         private List<PhysBoneRowDisplay> _physBoneRowDisplays;     // セクション4の行表示キャッシュ(プレビュー構築時に作成。毎フレームの文字列生成を避ける)
+        private ContactPreview _contactPreview;                    // [1.11.0] コンタクト(VRCContact)一覧のプレビュー(PhysBoneプレビューと同時に更新)
         private List<ToggleGroup> _toggleGroups;                   // セクション5「衣装・トグル整理」: 検出されたトグルグループ(未検出ならnull)
         private bool _toggleGroupsRefreshQueued;                   // トグル検出の再入ガード
         private bool _toggleGroupsFailed;                          // トグル検出の失敗ラッチ(毎OnGUIの再試行を防ぐ)

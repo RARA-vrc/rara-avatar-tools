@@ -944,6 +944,9 @@ namespace RARA.AvatarStudio
             // 「戻す」で復元できるようにする(旧QuestConverterウィンドウと同じ round-trip 対策)。
             changed |= DrawPhysBoneRemoveList(avatarRoot, s.physBoneRemovePaths);
 
+            // [1.11.0][D][C] Avatar Dynamics 5制約メーター + コンタクト(残す/削除・自動選定)
+            changed |= DrawDynamicsMetersAndContacts(avatarRoot, s, preview, cache);
+
             // [S1] Quest上限の注記は PC単独(Quest非対象)では意味がないため隠す。共通の注意だけ常時表示する。
             string physBoneNote =
                 "Transform数は目安です(VRChatの正式カウントとは一致しません)。「残す」を外した PhysBone は変換後アバターから除かれ、残りは全て残ります。";
@@ -1114,6 +1117,128 @@ namespace RARA.AvatarStudio
         }
 
         /// <summary>
+        /// [1.11.0][D][C] Avatar Dynamics の5制約(コンポーネント/影響Transform/コライダー/衝突チェック/コンタクト)の
+        /// 使用量メーターを、対象(Quest優先、無ければPC)に合わせて色付き表示し、続けてコンタクトの残す/削除一覧と
+        /// 「頭・手優先で自動選定」ボタンを描画する。変更があれば true。
+        /// PhysBoneの4項目は現在の選択(削除指定を反映したプレビュー行=残る揺れもの)から、コンタクトは
+        /// 削除指定を反映して見積もる。SDKと同じ式を使うが表示は概算(正式カウントとは端数が異なることがある)。
+        /// </summary>
+        private static bool DrawDynamicsMetersAndContacts(GameObject avatarRoot, AvatarStudioSettings s, PhysBonePreview preview, AvatarStudioPreviewCache cache)
+        {
+            if (avatarRoot == null || s == null || preview == null) return false;
+            bool changed = false;
+            EnsureList(ref s.contactRemovePaths);
+
+            // 対象の上限(Quest優先。PC単独なら目標ランク)。両方非対象なら Quest 表示にフォールバック。
+            bool questBasis = s.targetQuest || !s.targetPC;
+            AvatarDynamicsLimits limits = questBasis ? AvatarDynamicsLimits.Quest() : AvatarDynamicsLimits.Pc(s.pcTargetRank);
+            string basisName = questBasis ? "Quest" : "PC " + AvatarStudioDiagnostics.GoalRankNames[Mathf.Clamp((int)s.pcTargetRank, 0, 3)];
+
+            List<Transform> excludedRoots = s.targetQuest ? ResolveExcludedRoots(avatarRoot, s.questExcludePaths) : null;
+
+            // --- PhysBone 4項目の使用量(残る揺れもの = プレビュー行。削除指定は既にプレビューへ反映済み)---
+            var map = AvatarDynamicsCost.BuildPhysBoneMap(avatarRoot);
+            var colliders = AvatarDynamicsCost.BuildAvatarColliderSet(avatarRoot, excludedRoots);
+            var units = AvatarDynamicsCost.BuildKeptUnits(preview.rows, map, s.mergePhysBones, p => true);
+            AvatarDynamicsUsage usage = AvatarDynamicsCost.ComputeUsageForUnits(units, avatarRoot.transform, colliders);
+
+            // --- コンタクト一覧(残す/削除)---
+            ContactPreview contacts = cache.GetOrBuild("contacts",
+                avatarRoot.GetInstanceID() + "|" + (s.targetQuest ? HashPaths(s.questExcludePaths) : "-"),
+                () => ContactSelection.PreviewContacts(avatarRoot, excludedRoots));
+
+            var contactRemoveSet = new HashSet<string>(s.contactRemovePaths, StringComparer.Ordinal);
+            int contactsKept = 0;
+            if (contacts != null && contacts.rows != null)
+            {
+                foreach (ContactPreviewRow row in contacts.rows)
+                {
+                    if (row != null && row.counted && !string.IsNullOrEmpty(row.path) && !contactRemoveSet.Contains(row.path)) contactsKept++;
+                }
+            }
+            usage.contacts = contactsKept;
+
+            // --- 5制約メーター ---
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                EditorGUILayout.LabelField("Avatar Dynamics 5制約(" + basisName + "上限。どれか1つでも超過すると実機で揺れもの・コンタクト・コンストレイントが全停止)", EditorStyles.boldLabel);
+                DrawDynamicsMeterLine("PhysBoneコンポーネント", usage.physBoneComponents, limits.physBoneComponents);
+                DrawDynamicsMeterLine("影響Transform", usage.physBoneTransforms, limits.physBoneTransforms);
+                DrawDynamicsMeterLine("コライダー", usage.physBoneColliders, limits.physBoneColliders);
+                DrawDynamicsMeterLine("衝突チェック", usage.physBoneCollisionChecks, limits.physBoneCollisionChecks);
+                DrawDynamicsMeterLine("コンタクト", usage.contacts, limits.contacts);
+                EditorGUILayout.LabelField("PhysBoneの3項目(影響Transform・コライダー・衝突チェック)はSDKと同じ式による概算です。", EditorStyles.wordWrappedMiniLabel);
+            }
+
+            // --- コンタクト(VRCContact)残す/削除 + 自動選定 ---
+            if (contacts != null && contacts.rows != null && contacts.rows.Count > 0)
+            {
+                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+                {
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        EditorGUILayout.LabelField(string.Format("コンタクト(残す {0} / 上限 {1})", contactsKept, limits.contacts), EditorStyles.boldLabel);
+                        GUILayout.FlexibleSpace();
+                        if (GUILayout.Button(new GUIContent("頭・手優先で自動選定(" + limits.contacts + "以内)",
+                            "頭なで等のレシーバーを優先して残し、コンタクト数を " + limits.contacts + " 以内へ絞ります(ローカル専用は無料のため常に残します)。"),
+                            GUILayout.Width(240f)))
+                        {
+                            List<string> newRemove = ContactSelection.AutoSelectContacts(contacts, limits.contacts, out int keptC, out bool wasBinding);
+                            bool ok = EditorUtility.DisplayDialog("コンタクト自動選定",
+                                "頭・手系のレシーバーを優先して残し、コンタクト数を " + limits.contacts + " 以内へ絞ります。\n\n" +
+                                "残すカウント対象: " + keptC + " / " + limits.contacts +
+                                (wasBinding ? "\n(上限を超えたコンタクトを削除にしました)" : "\n(すべて上限内です)") +
+                                "\n\n設定しますか?",
+                                "設定する", "キャンセル");
+                            if (ok)
+                            {
+                                s.contactRemovePaths.Clear();
+                                s.contactRemovePaths.AddRange(newRemove);
+                                changed = true;
+                            }
+                        }
+                    }
+                    DrawBuildExcludedHiddenNote(contacts.hiddenExcludedCount);
+
+                    int shownC = 0;
+                    foreach (ContactPreviewRow row in contacts.rows)
+                    {
+                        if (row == null || string.IsNullOrEmpty(row.path)) continue;
+                        if (shownC++ >= MaxRows) { EditorGUILayout.LabelField("...(以下省略)", EditorStyles.miniLabel); break; }
+                        using (new EditorGUILayout.HorizontalScope())
+                        {
+                            GUILayout.Label(row.isReceiver ? "受信" : "送信", EditorStyles.miniLabel, GUILayout.Width(40f));
+                            GUILayout.Label(new GUIContent(Trunc(row.path, 46), row.path), EditorStyles.miniLabel, GUILayout.MinWidth(100f), GUILayout.MaxWidth(300f));
+                            if (!row.counted)
+                                GUILayout.Label(new GUIContent("無料(ローカル)", "ローカル専用コンタクトはカウント対象外(常に残ります)"), EditorStyles.miniLabel, GUILayout.Width(96f));
+                            GUILayout.FlexibleSpace();
+                            DrawPhysBonePingButton(avatarRoot, row.path);
+                            using (new EditorGUI.DisabledScope(!row.counted))
+                            {
+                                bool keep = !IsOptedOut(s.contactRemovePaths, row.path);
+                                bool newKeep = GUILayout.Toggle(keep, new GUIContent("残す", "オフにするとこのコンタクトを変換時に削除します"), GUILayout.Width(52f));
+                                if (newKeep != keep) { TogglePath(s.contactRemovePaths, row.path, !newKeep); changed = true; }
+                            }
+                        }
+                    }
+                }
+            }
+
+            return changed;
+        }
+
+        /// <summary>1制約分のメーター行(上限以下=緑 / 超過=赤)。値・上限を色付きで表示する。</summary>
+        private static void DrawDynamicsMeterLine(string label, int value, int limit)
+        {
+            bool over = value > limit;
+            Color color = over ? AvatarStudioDiagnostics.OverLimitColor : new Color(0.6f, 0.9f, 0.6f);
+            Color prev = GUI.color;
+            GUI.color = color;
+            EditorGUILayout.LabelField(string.Format("{0}: {1} / 上限 {2}{3}", label, value, limit, over ? "  超過!" : ""), EditorStyles.miniBoldLabel);
+            GUI.color = prev;
+        }
+
+        /// <summary>
         /// 名前の優先度(髪・胸など)が高い順に、指定した上限 cap 本内で残すPhysBoneを自動選択する。
         /// cap は対象で決まる(Quest対象=Quest上限8 / PC単独=目標ランクのPCコンポーネント上限)。
         /// 本ツールはKeepAll方式のため、選ばれなかったPhysBoneを physBoneRemovePaths へ登録して削除にする
@@ -1165,20 +1290,19 @@ namespace RARA.AvatarStudio
                 return bc.CompareTo(ac);
             });
 
-            // Quest上限内で残す行を貪欲に選ぶ。マージ無効時はグループの各メンバーが個別に残るため本数で数える。
+            // [1.11.0][A] コンポーネント数だけでなく、影響Transform数・コライダー数・衝突チェック数の
+            // 4上限をすべて満たすよう貪欲に残す行を選ぶ(SDKと同じ式でマージ後の形を見積もる)。
+            // 上限を超える行は選ばず、後続のより小さい行が入る余地を残す(best-fit)。
+            AvatarDynamicsLimits limits = s.targetQuest
+                ? AvatarDynamicsLimits.Quest()
+                : AvatarDynamicsLimits.Pc(s.pcTargetRank);
+            // メーター(DrawDynamicsMetersAndContacts)と同じコライダー集合で見積もるため、Quest除外サブツリーを渡す。
+            List<Transform> excludedRoots = s.targetQuest ? ResolveExcludedRoots(avatarRoot, s.questExcludePaths) : null;
+            List<PhysBonePreviewRow> selectedRows = AvatarDynamicsCost.GreedySelectRows(
+                avatarRoot, sorted, s.mergePhysBones, limits, excludedRoots, out AvatarDynamicsUsage keptUsage, out string binding);
+
             var keepPaths = new HashSet<string>(StringComparer.Ordinal);
-            int kept = 0;
-            foreach (PhysBonePreviewRow row in sorted)
-            {
-                int rowCost = 1;
-                if (!s.mergePhysBones && row.isGroup && row.memberPaths != null)
-                    rowCost = Mathf.Max(1, row.memberPaths.Count);
-                // 上限を超える行は選ばず、後続のより小さい行が入る余地を残す(best-fit)。
-                // マージ有効時は rowCost が常に1なので prefix と同じ結果になる。
-                if (kept + rowCost > cap) continue;
-                AddRowPaths(row, keepPaths);
-                kept += rowCost;
-            }
+            foreach (PhysBonePreviewRow row in selectedRows) AddRowPaths(row, keepPaths);
 
             // 残す集合に入らなかった全PhysBoneを削除指定にする(= physBoneRemovePaths を作り直す)。
             var newRemove = new List<string>();
@@ -1198,9 +1322,13 @@ namespace RARA.AvatarStudio
             }
 
             bool ok = EditorUtility.DisplayDialog("優先度で自動選択",
-                "名前の優先度が高い順に、" + basisLabel +
-                "内で残すPhysBoneを選び、残りを削除にします(現在の削除選択は置き換えられます)。\n\n" +
-                "残す本数(概算): " + kept + " 本\n\n設定しますか?",
+                "名前の優先度が高い順に、" + basisLabel + "を基準に、コンポーネント" + limits.physBoneComponents +
+                "・影響Transform " + limits.physBoneTransforms + "・コライダー " + limits.physBoneColliders +
+                "・チェック " + limits.physBoneCollisionChecks + " をすべて満たすよう残すPhysBoneを選定します" +
+                "(現在の削除選択は置き換えられます)。\n\n" +
+                "選定後(概算): コンポーネント " + keptUsage.physBoneComponents + " / 影響Transform " + keptUsage.physBoneTransforms +
+                " / コライダー " + keptUsage.physBoneColliders + " / チェック " + keptUsage.physBoneCollisionChecks + "\n" +
+                "制約になったのは: " + binding + "\n\n設定しますか?",
                 "設定する", "キャンセル");
             if (!ok) return false;
 

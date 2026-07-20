@@ -107,6 +107,9 @@ namespace RARA.AvatarStudio
         [Tooltip("削除指定するPhysBoneの識別パス(physBoneKeepPaths が空のときに適用)。PC・Quest共通")]
         public List<string> physBoneRemovePaths = new List<string>();
 
+        [Tooltip("削除指定するコンタクト(VRCContact)の識別パス(一覧で「残す」を外したもの)。変換時に複製から削除される(コンタクト数 Poor上限16 対策)。PC・Quest共通")]
+        public List<string> contactRemovePaths = new List<string>();
+
         [Tooltip("AAOのTrace and Optimizeが無ければ複製へ追加し、ビルド時のメッシュ/スロット統合・未使用ボーン削減を有効にする")]
         public bool ensureTraceAndOptimize = true;
 

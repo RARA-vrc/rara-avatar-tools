@@ -312,6 +312,53 @@ namespace RARA.QuestConverter
         }
 
         /// <summary>
+        /// [1.11.0][B] どのPhysBone(残存・非EditorOnly)からも参照されていない VRCPhysBoneCollider を
+        /// 複製アバターから削除する(実行時カウント対象外の「浮いた」コライダーの掃除)。
+        /// PhysBoneの選択・マージ・削除がすべて終わった後に呼ぶこと(残るPhysBoneが確定してから参照を判定する)。
+        /// 変換(複製)専用。元アバターは触らない。削除数を返す。
+        /// </summary>
+        public static int RemoveUnreferencedColliders(GameObject root, ConversionReport report)
+        {
+            if (root == null) return 0;
+
+            // 残存(非EditorOnly)PhysBoneが参照するコライダー集合
+            var referenced = new HashSet<VRCPhysBoneColliderBase>();
+            foreach (VRCPhysBone pb in root.GetComponentsInChildren<VRCPhysBone>(true))
+            {
+                if (pb == null || IsInEditorOnlySubtree(pb.transform, root.transform)) continue;
+                if (pb.colliders == null) continue;
+                foreach (VRCPhysBoneColliderBase c in pb.colliders)
+                {
+                    if (c != null) referenced.Add(c);
+                }
+            }
+
+            var doomed = new List<VRCPhysBoneCollider>();
+            foreach (VRCPhysBoneCollider collider in root.GetComponentsInChildren<VRCPhysBoneCollider>(true))
+            {
+                if (collider == null) continue;
+                if (IsInEditorOnlySubtree(collider.transform, root.transform)) continue; // ビルドで消えるため対象外
+                if (!referenced.Contains(collider)) doomed.Add(collider);
+            }
+
+            if (doomed.Count == 0)
+            {
+                report.Info("未参照のPhysBoneコライダーはありませんでした(掃除不要)。");
+                return 0;
+            }
+
+            int removed = 0;
+            foreach (VRCPhysBoneCollider collider in doomed)
+            {
+                if (collider == null) continue;
+                UnityEngine.Object.DestroyImmediate(collider);
+                removed++;
+            }
+            report.Info($"どのPhysBoneからも参照されていないコライダーを {removed} 件削除しました(コライダー数の削減)。");
+            return removed;
+        }
+
+        /// <summary>
         /// 各PhysBoneのコライダーリストから参照切れ(null / 破棄済みmissing)エントリを除去し、
         /// 除去したエントリ数を返す。TrimPhysBones と RemoveSelectedPhysBones の共通後始末。
         /// シリアライズ上のフィールド名は "colliders"(VRCPhysBoneBase.colliders / プレハブYAMLで確認済み)。
